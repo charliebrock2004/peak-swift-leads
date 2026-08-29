@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+
+# Build / deploy output
+.vercel/
+.output/
+.nitro/
+dist/
+*.tsbuildinfo
+
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+
+# Logs and OS
+*.log
+.DS_Store
+Thumbs.db
+
+# Local QA / sandbox-only
+screenshots/
+artifacts/
+.grok/preview.log
+.grok/status
+.grok/og-pending
+.project_id
+.node_modules.lock
+
+# Editor
+.vscode/
+.idea/

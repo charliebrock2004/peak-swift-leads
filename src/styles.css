@@ -1,0 +1,226 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@theme {
+  --color-bg: #0e0e0c;
+  --color-surface: #161614;
+  --color-surface-2: #1f1f1b;
+  --color-fg: #eceae3;
+  --color-muted: #9a978c;
+  --color-subtle: #6f6c63;
+  --color-border: #2c2c27;
+  --color-accent: #d4d0c4;
+  --color-accent-fg: #121210;
+  --color-hot: #d46a5a;
+  --color-warm-lead: #c4a05a;
+  --color-cold-lead: #8a8d93;
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "IBM Plex Serif", ui-serif, Georgia, serif;
+  --font-mono: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --radius-xs: 0.25rem;
+  --radius-sm: 0.5rem;
+  --radius-md: 0.75rem;
+  --radius-lg: 1rem;
+  --radius-xl: 1.5rem;
+}
+
+:root {
+  --shadow-border: 0 0 0 1px rgba(236, 234, 227, 0.1);
+  --shadow-border-hover: 0 0 0 1px rgba(236, 234, 227, 0.16);
+  --shadow-focus: 0 0 0 1px rgba(212, 208, 196, 0.7);
+  --shadow-overlay:
+    0 0 0 1px rgba(236, 234, 227, 0.1),
+    0 24px 48px -16px rgba(0, 0, 0, 0.55);
+  --motion-micro: 80ms;
+  --motion-quick: 150ms;
+  --motion-fast: 250ms;
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  html,
+  body,
+  #root {
+    min-height: 100%;
+    background: var(--color-bg);
+    color: var(--color-fg);
+  }
+
+  body {
+    font-family: var(--font-sans);
+    line-height: 1.5;
+  }
+
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+
+  h1,
+  h2,
+  h3 {
+    text-wrap: balance;
+  }
+
+  ::selection {
+    background: color-mix(in oklab, var(--color-accent) 30%, transparent);
+    color: var(--color-fg);
+  }
+}
+
+.sheet-scroll {
+  overflow: auto;
+  min-height: 0;
+  flex: 1;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+
+.sheet-table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 0.875rem;
+}
+
+.sheet-table th,
+.sheet-table td {
+  border-bottom: 1px solid var(--color-border);
+  border-right: 1px solid color-mix(in oklab, var(--color-fg) 6%, transparent);
+  vertical-align: middle;
+}
+
+.sheet-table th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--color-surface-2);
+  color: var(--color-muted);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  text-align: left;
+  white-space: nowrap;
+  padding: 0;
+}
+
+.sheet-table th:first-child,
+.sheet-table td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+}
+
+.sheet-table th:first-child {
+  z-index: 3;
+}
+
+.sheet-table tr:last-child td {
+  border-bottom: none;
+}
+
+.sheet-input,
+.sheet-select {
+  width: 100%;
+  min-height: 2.5rem;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  padding: 0.5rem 0.75rem;
+  outline: none;
+}
+
+.sheet-input:focus,
+.sheet-select:focus {
+  background: var(--color-bg);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--color-accent) 70%, transparent);
+}
+
+.sheet-select {
+  appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--color-subtle) 50%),
+    linear-gradient(135deg, var(--color-subtle) 50%, transparent 50%);
+  background-position:
+    calc(100% - 14px) calc(50% - 2px),
+    calc(100% - 9px) calc(50% - 2px);
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 1.5rem;
+}
+
+.sheet-select option {
+  background: var(--color-surface);
+  color: var(--color-fg);
+}
+
+.row-hot td,
+.row-hot th {
+  background: color-mix(in oklab, var(--color-hot) 11%, var(--color-surface));
+}
+
+.row-warm td,
+.row-warm th {
+  background: color-mix(in oklab, var(--color-warm-lead) 10%, var(--color-surface));
+}
+
+.row-cold td,
+.row-cold th {
+  background: var(--color-surface);
+}
+
+.sheet-table tbody tr:hover td,
+.sheet-table tbody tr:hover th {
+  background: var(--color-surface-2);
+}
+
+.row-hot:hover td,
+.row-hot:hover th {
+  background: color-mix(in oklab, var(--color-hot) 16%, var(--color-surface-2));
+}
+
+.row-warm:hover td,
+.row-warm:hover th {
+  background: color-mix(in oklab, var(--color-warm-lead) 15%, var(--color-surface-2));
+}
+
+.row-hot td:first-child {
+  box-shadow: inset 3px 0 0 var(--color-hot);
+}
+
+.row-warm td:first-child {
+  box-shadow: inset 3px 0 0 var(--color-warm-lead);
+}
+
+.lead-card {
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  padding: 12px;
+  box-shadow: var(--shadow-border);
+}
+
+.lead-card-hot {
+  box-shadow: inset 3px 0 0 var(--color-hot), var(--shadow-border);
+}
+
+.lead-card-warm {
+  box-shadow: inset 3px 0 0 var(--color-warm-lead), var(--shadow-border);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
