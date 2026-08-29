@@ -3,32 +3,37 @@ import { PriorityBadge } from "@/components/leads/priority-badge";
 import {
   CALLED_OPTIONS,
   CALL_RESULT_OPTIONS,
+  WEBSITE_STATUS_OPTIONS,
   computePriority,
   isFollowUpDue,
   mapsHref,
   parseNumberInput,
   formatRating,
   phoneHref,
+  priorityReason,
+  resolveWebsiteStatus,
   websiteHref,
   type CallResult,
   type CalledStatus,
   type Lead,
   type SortDir,
   type SortKey,
+  type WebsiteStatus,
 } from "@/lib/leads";
 import { cn } from "@/lib/utils";
 
 const COLUMNS: { key: SortKey; label: string; width: string }[] = [
   { key: "businessName", label: "Business name", width: "w-52 min-w-52" },
-  { key: "trade", label: "Trade", width: "w-36 min-w-36" },
-  { key: "town", label: "Town", width: "w-36 min-w-36" },
+  { key: "trade", label: "Trade", width: "w-32 min-w-32" },
+  { key: "town", label: "Town", width: "w-32 min-w-32" },
   { key: "phone", label: "Phone number", width: "w-40 min-w-40" },
   { key: "rating", label: "Google rating", width: "w-28 min-w-28" },
   { key: "reviews", label: "Reviews", width: "w-24 min-w-24" },
-  { key: "website", label: "Website", width: "w-44 min-w-44" },
+  { key: "website", label: "Website", width: "w-40 min-w-40" },
+  { key: "websiteStatus", label: "Website status", width: "w-40 min-w-40" },
   { key: "priority", label: "Priority", width: "w-28 min-w-28" },
-  { key: "called", label: "Called?", width: "w-40 min-w-40" },
-  { key: "callResult", label: "Call result", width: "w-40 min-w-40" },
+  { key: "called", label: "Called?", width: "w-36 min-w-36" },
+  { key: "callResult", label: "Call result", width: "w-36 min-w-36" },
   { key: "followUpDate", label: "Follow-up date", width: "w-40 min-w-40" },
 ];
 
@@ -94,8 +99,8 @@ export function LeadTable({
                 onSort={onSort}
               />
             ))}
-            <th className="w-44 min-w-44">
-              <span className="flex h-10 items-center px-3">Google Maps link</span>
+            <th className="w-40 min-w-40">
+              <span className="flex h-10 items-center px-3">Google Maps</span>
             </th>
             {COLUMNS.slice(7).map((column) => (
               <SortHeader
@@ -106,7 +111,7 @@ export function LeadTable({
                 onSort={onSort}
               />
             ))}
-            <th className="w-56 min-w-56">
+            <th className="w-64 min-w-64">
               <span className="flex h-10 items-center px-3">Notes</span>
             </th>
             <th className="w-12 min-w-12">
@@ -121,12 +126,14 @@ export function LeadTable({
             const site = websiteHref(lead.website);
             const tel = phoneHref(lead.phone);
             const due = isFollowUpDue(lead);
+            const status = resolveWebsiteStatus(lead);
             return (
               <tr
                 key={lead.id}
                 className={cn(
                   priority === "HOT" ? "row-hot" : priority === "WARM" ? "row-warm" : "row-cold",
                 )}
+                title={priorityReason(lead)}
               >
                 <td className="w-52 min-w-52">
                   <input
@@ -136,7 +143,7 @@ export function LeadTable({
                     aria-label="Business name"
                   />
                 </td>
-                <td className="w-36 min-w-36">
+                <td className="w-32 min-w-32">
                   <input
                     className="sheet-input"
                     list="trade-list"
@@ -145,7 +152,7 @@ export function LeadTable({
                     aria-label="Trade"
                   />
                 </td>
-                <td className="w-36 min-w-36">
+                <td className="w-32 min-w-32">
                   <input
                     className="sheet-input"
                     list="town-list"
@@ -196,7 +203,7 @@ export function LeadTable({
                     aria-label="Number of reviews"
                   />
                 </td>
-                <td className="w-44 min-w-44">
+                <td className="w-40 min-w-40">
                   <div className="flex items-center">
                     <input
                       className="sheet-input"
@@ -218,7 +225,7 @@ export function LeadTable({
                     ) : null}
                   </div>
                 </td>
-                <td className="w-44 min-w-44">
+                <td className="w-40 min-w-40">
                   <div className="flex items-center">
                     <input
                       className="sheet-input"
@@ -240,10 +247,26 @@ export function LeadTable({
                     ) : null}
                   </div>
                 </td>
+                <td className="w-40 min-w-40">
+                  <select
+                    className="sheet-select"
+                    value={status}
+                    onChange={(event) =>
+                      onChange(lead.id, { websiteStatus: event.target.value as WebsiteStatus })
+                    }
+                    aria-label="Website status"
+                  >
+                    {WEBSITE_STATUS_OPTIONS.map((option) => (
+                      <option key={option} value={option}>
+                        {option}
+                      </option>
+                    ))}
+                  </select>
+                </td>
                 <td className="w-28 min-w-28 px-3">
                   <PriorityBadge priority={priority} />
                 </td>
-                <td className="w-40 min-w-40">
+                <td className="w-36 min-w-36">
                   <select
                     className="sheet-select"
                     value={lead.called}
@@ -259,7 +282,7 @@ export function LeadTable({
                     ))}
                   </select>
                 </td>
-                <td className="w-40 min-w-40">
+                <td className="w-36 min-w-36">
                   <select
                     className="sheet-select"
                     value={lead.callResult}
@@ -285,12 +308,13 @@ export function LeadTable({
                     aria-label="Follow-up date"
                   />
                 </td>
-                <td className="w-56 min-w-56">
+                <td className="w-64 min-w-64">
                   <input
                     className="sheet-input"
                     value={lead.notes}
                     onChange={(event) => onChange(lead.id, { notes: event.target.value })}
                     aria-label="Notes"
+                    title={priorityReason(lead)}
                   />
                 </td>
                 <td className="w-12 min-w-12">

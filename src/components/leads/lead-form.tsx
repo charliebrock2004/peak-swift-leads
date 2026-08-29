@@ -10,16 +10,21 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { PriorityBadge } from "@/components/leads/priority-badge";
+import { WebsiteStatusBadge } from "@/components/leads/website-status";
 import {
   CALLED_OPTIONS,
   CALL_RESULT_OPTIONS,
+  WEBSITE_STATUS_OPTIONS,
   computePriority,
   createLead,
   formatRating,
   parseNumberInput,
+  priorityReason,
+  resolveWebsiteStatus,
   type CallResult,
   type CalledStatus,
   type Lead,
+  type WebsiteStatus,
 } from "@/lib/leads";
 import { cn } from "@/lib/utils";
 
@@ -81,7 +86,7 @@ export function LeadFormDialog({
           <DialogHeader>
             <DialogTitle>{editing ? "Edit lead" : "Add lead"}</DialogTitle>
             <DialogDescription>
-              Priority updates from website, reviews and rating.
+              Priority updates from website status, reviews and rating.
             </DialogDescription>
           </DialogHeader>
           <div className="grid min-h-0 gap-3 overflow-y-auto px-5 py-1 sm:grid-cols-2">
@@ -156,8 +161,23 @@ export function LeadFormDialog({
               <Input
                 value={draft.website}
                 onChange={(event) => patch({ website: event.target.value })}
-                placeholder="Leave blank if they have no proper site"
+                placeholder="Independent site, social URL, or blank"
               />
+            </Field>
+            <Field label="Website status" className="sm:col-span-2">
+              <select
+                className={fieldClass}
+                value={resolveWebsiteStatus(draft)}
+                onChange={(event) =>
+                  patch({ websiteStatus: event.target.value as WebsiteStatus })
+                }
+              >
+                {WEBSITE_STATUS_OPTIONS.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
             </Field>
             <Field label="Called?">
               <select
@@ -193,11 +213,13 @@ export function LeadFormDialog({
                 onChange={(event) => patch({ followUpDate: event.target.value })}
               />
             </Field>
-            <div className="flex items-end pb-1">
-              <div className="flex items-center gap-2 text-sm text-muted">
+            <div className="flex flex-col justify-end gap-2 pb-1 sm:col-span-2">
+              <div className="flex flex-wrap items-center gap-2 text-sm text-muted">
                 Ranked
                 <PriorityBadge priority={priority} />
+                <WebsiteStatusBadge status={resolveWebsiteStatus(draft)} />
               </div>
+              <p className="text-sm text-muted">{priorityReason(draft)}</p>
             </div>
             <Field label="Notes" className="sm:col-span-2">
               <textarea

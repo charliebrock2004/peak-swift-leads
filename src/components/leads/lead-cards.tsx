@@ -1,12 +1,17 @@
-import { MapPin, Pencil, Phone, Trash2 } from "lucide-react";
+import { ExternalLink, MapPin, Pencil, Phone, Trash2 } from "lucide-react";
 import { PriorityBadge } from "@/components/leads/priority-badge";
+import { WebsiteStatusBadge } from "@/components/leads/website-status";
 import {
   CALLED_OPTIONS,
+  CALL_RESULT_OPTIONS,
   computePriority,
-  hasWebsite,
   isFollowUpDue,
   mapsHref,
   phoneHref,
+  priorityReason,
+  resolveWebsiteStatus,
+  websiteHref,
+  type CallResult,
   type CalledStatus,
   type Lead,
 } from "@/lib/leads";
@@ -29,8 +34,9 @@ export function LeadCards({
         const priority = computePriority(lead);
         const tel = phoneHref(lead.phone);
         const maps = mapsHref(lead);
+        const site = websiteHref(lead.website);
         const due = isFollowUpDue(lead);
-        const noSite = !hasWebsite(lead.website);
+        const status = resolveWebsiteStatus(lead);
         return (
           <li
             key={lead.id}
@@ -44,7 +50,7 @@ export function LeadCards({
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <PriorityBadge priority={priority} />
-                  {noSite ? <span className="text-xs text-hot">No website</span> : null}
+                  <WebsiteStatusBadge status={status} />
                   {due ? <span className="text-xs text-hot">Follow-up due</span> : null}
                 </div>
                 <h2 className="mt-2 truncate font-medium leading-snug">
@@ -53,7 +59,10 @@ export function LeadCards({
                 <p className="mt-0.5 truncate text-sm text-muted">
                   {[lead.trade, lead.town].filter(Boolean).join(" · ") || "No trade or town"}
                 </p>
+                <p className="mt-1 text-sm text-muted">{priorityReason(lead)}</p>
                 <p className="mt-1 text-sm tabular-nums text-muted">
+                  {lead.phone || "No phone"}
+                  {" · "}
                   {lead.rating !== "" ? `${lead.rating} rating` : "No rating"}
                   {" · "}
                   {lead.reviews !== "" ? `${lead.reviews} reviews` : "No reviews"}
@@ -108,6 +117,17 @@ export function LeadCards({
                 </span>
               )}
             </div>
+            {site ? (
+              <a
+                href={site}
+                target="_blank"
+                rel="noreferrer"
+                className="mt-2 inline-flex h-11 w-full items-center justify-center gap-2 rounded-md bg-surface-2 text-sm font-medium text-fg"
+              >
+                <ExternalLink className="size-4" />
+                Open website
+              </a>
+            ) : null}
             <label className="mt-3 flex flex-col gap-1.5">
               <span className="text-xs font-medium text-muted">Called?</span>
               <select
@@ -121,6 +141,35 @@ export function LeadCards({
                   </option>
                 ))}
               </select>
+            </label>
+            <label className="mt-3 flex flex-col gap-1.5">
+              <span className="text-xs font-medium text-muted">Call result</span>
+              <select
+                className="h-11 rounded-md bg-bg px-3 text-sm text-fg shadow-(--shadow-border) outline-none"
+                value={lead.callResult}
+                onChange={(event) =>
+                  onChange(lead.id, { callResult: event.target.value as CallResult })
+                }
+              >
+                <option value="">—</option>
+                {CALL_RESULT_OPTIONS.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="mt-3 flex flex-col gap-1.5">
+              <span className="text-xs font-medium text-muted">Follow-up date</span>
+              <input
+                type="date"
+                className={cn(
+                  "h-11 rounded-md bg-bg px-3 text-sm text-fg shadow-(--shadow-border) outline-none",
+                  due && "text-hot",
+                )}
+                value={lead.followUpDate}
+                onChange={(event) => onChange(lead.id, { followUpDate: event.target.value })}
+              />
             </label>
             {lead.notes ? <p className="mt-2 line-clamp-2 text-sm text-muted">{lead.notes}</p> : null}
           </li>

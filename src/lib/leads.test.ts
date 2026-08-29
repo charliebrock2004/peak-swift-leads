@@ -1,0 +1,206 @@
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import {
+  classifyWebsiteUrl,
+  compareLeads,
+  computePriority,
+  createLead,
+  findDuplicate,
+  leadsToCsv,
+  migrateLead,
+  normalizeName,
+  normalizePhone,
+  priorityReason,
+  resolveWebsiteStatus,
+  summarise,
+  type Lead,
+} from "./leads.ts";
+
+function lead(partial: Partial<Lead>): Lead {
+  return createLead(partial);
+}
+
+describe("website classification", () => {
+  it("treats empty as no website", () => {
+    assert.equal(classifyWebsiteUrl(""), "No Website Found");
+    assert.equal(classifyWebsiteUrl("none"), "No Website Found");
+  });
+
+  it("detects social and directory hosts", () => {
+    assert.equal(classifyWebsiteUrl("https://www.facebook.com/foo"), "Social Only");
+    assert.equal(classifyWebsiteUrl("instagram.com/bar"), "Social Only");
+    assert.equal(classifyWebsiteUrl("https://www.yell.com/biz/foo"), "Directory Only");
+    assert.equal(classifyWebsiteUrl("https://maps.google.com/?q=foo"), "Directory Only");
+  });
+
+  it("treats independent domains as a proper website", () => {
+    assert.equal(classifyWebsiteUrl("https://monziejoinery.co.uk"), "Proper Website");
+  });
+});
+
+describe("priority", () => {
+  it("keeps HOT as no proper site + 20 reviews + 4.5 rating", () => {
+    assert.equal(
+      computePriority(lead({ website: "", reviews: 47, rating: 4.8, websiteStatus: "No Website Found" })),
+      "HOT",
+    );
+  });
+
+  it("does not treat a proper website as HOT even with strong reviews", () => {
+    assert.equal(
+      computePriority(
+        lead({
+          website: "https://bridgeofallandental.co.uk",
+          reviews: 120,
+          rating: 4.9,
+          websiteStatus: "Proper Website",
+        }),
+      ),
+      "COLD",
+    );
+  });
+
+  it("ranks social-only with reviews as HOT when the numbers qualify", () => {
+    assert.equal(
+      computePriority(
+        lead({
+          website: "https://facebook.com/garage",
+          reviews: 61,
+          rating: 4.6,
+          websiteStatus: "Social Only",
+        }),
+      ),
+      "HOT",
+    );
+  });
+
+  it("ranks no-site with some reviews as WARM", () => {
+    assert.equal(
+      computePriority(lead({ website: "", reviews: 8, rating: 5, websiteStatus: "No Website Found" })),
+      "WARM",
+    );
+  });
+
+  it("ranks unclear listings with no reviews as COLD", () => {
+    assert.equal(
+      computePriority(lead({ website: "", reviews: "", rating: "", websiteStatus: "Unclear" })),
+      "COLD",
+    );
+  });
+
+  it("explains the score in plain language", () => {
+    const reason = priorityReason(
+      lead({ website: "", reviews: 48, rating: 4.8, websiteStatus: "No Website Found", phone: "01764 650000" }),
+    );
+    assert.equal(reason, "HOT — 48 reviews, 4.8 rating, no proper website found.");
+  });
+});
+
+describe("duplicates", () => {
+  const existing: Lead[] = [
+    lead({
+      id: "a",
+      businessName: "W B Dodds Ltd",
+      town: "Crieff",
+      phone: "01764 652264",
+      mapsLink: "https://www.google.com/maps/search/?api=1&query=Dodds+Crieff",
+    }),
+  ];
+
+  it("matches on phone", () => {
+    const match = findDuplicate({ businessName: "Dodds", town: "Perth", phone: "+44 1764 652264", mapsLink: "" }, existing);
+    assert.equal(match?.via, "phone");
+  });
+
+  it("matches on name + town ignoring Ltd", () => {
+    const match = findDuplicate(
+      { businessName: "WB Dodds", town: "Crieff", phone: "", mapsLink: "" },
+      existing,
+    );
+    assert.equal(match?.via, "name+town");
+    assert.equal(normalizeName("W B Dodds Ltd"), normalizeName("WB Dodds"));
+  });
+
+  it("matches on maps URL", () => {
+    const match = findDuplicate(
+      {
+        businessName: "Other",
+        town: "Perth",
+        phone: "",
+        mapsLink: "https://www.google.com/maps/search/?api=1&query=Dodds+Crieff",
+      },
+      existing,
+    );
+    assert.equal(match?.via, "maps");
+  });
+
+  it("does not treat different Maps search queries as the same place", () => {
+    const match = findDuplicate(
+      {
+        businessName: "Cafe Rhubarb",
+        town: "Crieff",
+        phone: "",
+        mapsLink: "https://www.google.com/maps/search/?api=1&query=Cafe+Rhubarb+Crieff",
+      },
+      existing,
+    );
+    assert.equal(match, null);
+  });
+
+  it("does not match a different business", () => {
+    assert.equal(
+      findDuplicate({ businessName: "Monzie Joinery", town: "Crieff", phone: "01764 111111", mapsLink: "" }, existing),
+      null,
+    );
+  });
+});
+
+describe("migrate, csv, summary", () => {
+  it("infers website status for old records", () => {
+    const next = migrateLead({
+      id: "old",
+      businessName: "Test",
+      website: "https://facebook.com/x",
+    } as Partial<Lead>);
+    assert.equal(resolveWebsiteStatus(next), "Social Only");
+  });
+
+  it("exports website status and reason", () => {
+    const csv = leadsToCsv([
+      lead({
+        businessName: "Wee Bakehouse",
+        town: "Crieff",
+        reviews: 47,
+        rating: 4.8,
+        websiteStatus: "No Website Found",
+      }),
+    ]);
+    assert.match(csv, /Website Status/);
+    assert.match(csv, /No Website Found/);
+    assert.match(csv, /HOT/);
+  });
+
+  it("counts follow-up due as callbacks", () => {
+    const summary = summarise([
+      lead({
+        called: "Callback",
+        callResult: "Callback",
+        followUpDate: "2020-01-01",
+      }),
+      lead({ called: "Callback", callResult: "Callback", followUpDate: "2099-01-01" }),
+    ]);
+    assert.equal(summary.callbacks, 1);
+  });
+
+  it("sorts HOT before COLD by default", () => {
+    const hot = lead({ reviews: 40, rating: 4.8, websiteStatus: "No Website Found" });
+    const cold = lead({ reviews: 40, rating: 4.8, websiteStatus: "Proper Website", website: "https://x.co" });
+    assert.ok(compareLeads(hot, cold, "priority", "asc") < 0);
+  });
+});
+
+describe("phone normalize", () => {
+  it("treats +44 and 0 prefixes as the same UK number", () => {
+    assert.equal(normalizePhone("+44 1764 652264"), normalizePhone("01764 652264"));
+  });
+});

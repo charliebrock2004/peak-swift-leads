@@ -215,6 +215,12 @@
   box-shadow: inset 3px 0 0 var(--color-warm-lead), var(--shadow-border);
 }
 
+.find-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

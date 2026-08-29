@@ -1,33 +1,33 @@
 # Peak Swift Leads
 
-A lead sheet for finding and contacting **local businesses that do not have a proper website**.
+A prospecting tool for Peak Swift Studios: find local businesses that may need a website, review them, import the good ones, then call.
 
-Built as a TanStack Start + React + Tailwind app. Leads live in the browser (`localStorage`). No account or database is required.
+## Workflow
 
-## What it does
+1. **Find leads** — pick a town and trade. Grok searches the public web.
+2. **Review** — website status, HOT/WARM/COLD score, and evidence. Tick the ones you want.
+3. **Import** — only selected, non-duplicate prospects join your sheet.
+4. **Call** — tap Call / Maps / Website from your phone. Track the result and follow-up.
 
-Columns:
+## Website status
 
-- Business Name, Trade, Town, Phone Number
-- Google Rating, Number of Reviews, Website, Google Maps Link
-- Priority (automatic), Called?, Call Result, Follow-Up Date, Notes
+Empty website fields are **not** treated as “no website”. Research classifies:
 
-**Priority ranks itself as you type:**
+- Proper Website
+- Social Only
+- Directory Only
+- No Website Found
+- Unclear
 
-| Rank | Rule |
-| --- | --- |
-| **HOT** | No website + 20 or more reviews + rating 4.5 or higher |
-| **WARM** | No website + some reviews |
-| **COLD** | Everything else |
-
-Summary at the top: Total Leads, Hot Leads, Not Called, Interested, Callbacks, Booked.
-
-You can search, filter, sort, add/edit/delete leads, and export CSV. On a phone it switches to cards with Call and Maps.
+**HOT** = no proper website, 20+ Google reviews, rating 4.5+.
+**WARM** = no proper website with some reviews, or social-only.
+**COLD** = already has a proper site, or not enough evidence.
 
 ## Requirements
 
 - Node.js 22+
 - npm 10+
+- For **Find leads**: `XAI_API_KEY` on the server (injected automatically in Grok Build). Never expose it to the browser.
 
 ## Install and run
 
@@ -40,52 +40,20 @@ npm run dev
 
 Open [http://localhost:8080](http://localhost:8080).
 
-Optional env file (not required for local use):
-
-```bash
-cp .env.example .env
-```
+Leads stay in the browser (`localStorage`). No database required.
 
 ## Other commands
 
 ```bash
-npm run typecheck   # TypeScript
-npm run build       # Production build (Vercel output)
-npm run preview     # Serve the production build
-npm test            # Script / unit tests
-npm run lint        # ESLint
+npm run typecheck
+npm run build
+npm test
+npm run lint
 ```
 
 ## Deploy
 
-The Vite config builds with the Nitro **Vercel** preset.
-
-1. Push this repo to GitHub.
-2. Import the project in [Vercel](https://vercel.com).
-3. Set `VITE_AUTH_ENABLED=false` in the Vercel project env if you want to match local behaviour.
-4. Deploy. No database is required for the lead sheet.
-
-If you later add auth or Postgres, set the names in `.env.example` — never commit real values.
-
-## Project layout
-
-```
-src/
-  routes/                 App routes (TanStack Start)
-  components/leads/       Spreadsheet, cards, form, summary
-  store/leads-store.ts    Zustand + localStorage
-  lib/leads.ts            Types, ranking rules, sample data, CSV
-  styles.css              Design tokens
-public/favicon.svg
-scripts/                  Dev / build helpers used by npm scripts
-```
-
-## Notes for reviewers
-
-- Sample Perthshire leads are seeded on first load so the sheet is usable immediately.
-- Priority is computed from Website / Reviews / Rating — it is not a stored field.
-- Auth, database, and Grok sandbox helpers are in the tree because this was generated on the Grok Build stack. They are unused while `VITE_AUTH_ENABLED=false`.
-- Do not commit `.env`, API keys, or OAuth secrets.
+Builds with the Nitro Vercel preset. Set `VITE_AUTH_ENABLED=false`. For Find leads on a self-hosted deploy, set server-only `XAI_API_KEY`.
 
 ## License
 
