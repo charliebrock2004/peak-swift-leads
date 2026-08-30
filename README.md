@@ -13,14 +13,14 @@ A prospecting tool for Peak Swift Studios: find local businesses that may need a
 
 Empty website fields are **not** treated as “no website”. Research classifies:
 
-- Proper Website
-- Social Only
-- Directory Only
-- No Website Found
-- Unclear
+- Proper Website — live independent site confirmed
+- Social Only — Facebook / Instagram / similar
+- Directory Only — Yell, Checkatrade, Maps, etc.
+- No Website Found — search found the business, but no site
+- Unclear — mixed or unconfirmed evidence
 
-**HOT** = no proper website, 20+ Google reviews, rating 4.5+.
-**WARM** = no proper website with some reviews, or social-only.
+**HOT** = no proper website, 20+ reviews, rating 4.5+.
+**WARM** = no proper website with some reviews, or social/directory only.
 **COLD** = already has a proper site, or not enough evidence.
 
 ## Requirements
