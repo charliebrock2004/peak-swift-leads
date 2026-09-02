@@ -48,7 +48,10 @@ import {
 } from "./preview";
 
 // Kick (and share) PGLite bootstrap as soon as the auth server module loads.
-void ensureDbReady();
+// The `.catch` is load-bearing: `void` on a rejecting promise is an unhandled
+// rejection, which kills the Node process. A database that cannot start must
+// fail the requests that need it, not the whole server.
+void ensureDbReady().catch(() => undefined);
 
 /**
  * Preview secret must outlive module reloads: PGLite (and its session rows) is

@@ -13,6 +13,9 @@ import {
   priorityReason,
   resolveWebsiteStatus,
   summarise,
+  addDays,
+  callOutcomePatch,
+  todayIso,
   type Lead,
 } from "./leads.ts";
 
@@ -192,6 +195,22 @@ describe("migrate, csv, summary", () => {
     assert.equal(summary.callbacks, 1);
   });
 
+  it("counts an interested lead whose follow-up has arrived", () => {
+    const summary = summarise([
+      lead({ called: "Interested", callResult: "Interested", followUpDate: "2020-01-01" }),
+    ]);
+    assert.equal(summary.callbacks, 1, "an interested lead due today is still something to chase");
+  });
+
+  it("does not chase a lead that is already booked or dead", () => {
+    const summary = summarise([
+      lead({ called: "Called", callResult: "Booked", followUpDate: "2020-01-01" }),
+      lead({ called: "Not Interested", callResult: "Not Interested", followUpDate: "2020-01-01" }),
+      lead({ called: "Called", callResult: "Wrong Number", followUpDate: "2020-01-01" }),
+    ]);
+    assert.equal(summary.callbacks, 0);
+  });
+
   it("sorts HOT before COLD by default", () => {
     const hot = lead({ reviews: 40, rating: 4.8, websiteStatus: "No Website Found" });
     const cold = lead({ reviews: 40, rating: 4.8, websiteStatus: "Proper Website", website: "https://x.co" });
@@ -202,5 +221,37 @@ describe("migrate, csv, summary", () => {
 describe("phone normalize", () => {
   it("treats +44 and 0 prefixes as the same UK number", () => {
     assert.equal(normalizePhone("+44 1764 652264"), normalizePhone("01764 652264"));
+  });
+});
+
+describe("recording a call outcome in one tap", () => {
+  it("sets called, result and a sensible next date together", () => {
+    const patch = callOutcomePatch("Callback", { followUpDate: "" });
+    assert.equal(patch.called, "Callback");
+    assert.equal(patch.callResult, "Callback");
+    assert.equal(patch.followUpDate, addDays(todayIso(), 1));
+  });
+
+  it("never overwrites a follow-up date already chosen by hand", () => {
+    const patch = callOutcomePatch("No Answer", { followUpDate: "2030-05-05" });
+    assert.equal(patch.followUpDate, "2030-05-05");
+  });
+
+  it("clears the follow-up when the lead is closed out", () => {
+    assert.equal(callOutcomePatch("Not Interested", { followUpDate: "2030-05-05" }).followUpDate, "");
+    assert.equal(callOutcomePatch("Wrong Number", { followUpDate: "2030-05-05" }).followUpDate, "");
+  });
+
+  it("keeps the follow-up on a booked lead — that date is the appointment", () => {
+    const patch = callOutcomePatch("Booked", { followUpDate: "2030-05-05" });
+    assert.equal(patch.callResult, "Booked");
+    assert.equal(patch.followUpDate, undefined);
+  });
+});
+
+describe("date arithmetic", () => {
+  it("adds days across a month boundary", () => {
+    assert.equal(addDays("2026-01-30", 3), "2026-02-02");
+    assert.equal(addDays("2026-12-31", 1), "2027-01-01");
   });
 });

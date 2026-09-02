@@ -1,7 +1,7 @@
 import { pendingMigrations } from "../../scripts/migration-plan.mjs";
 
 /** Which database backend is active. */
-export type DbSource = "neon" | "pglite";
+export type DbSource = "neon" | "pglite" | "none";
 
 // An empty/whitespace DATABASE_URL (an easy misconfig in deploy UIs) must mean
 // "unset" — otherwise production would silently run on the PGLite fallback.
@@ -11,12 +11,35 @@ const databaseUrl =
   rawDatabaseUrl && rawDatabaseUrl.trim() ? rawDatabaseUrl : undefined;
 
 /**
- * Active backend: real **Neon** when `DATABASE_URL` is set (deployed / configured
- * sandbox), otherwise a local embedded **PGLite** (Postgres compiled to WASM) so
- * the app has a working database even with nothing configured — the live preview
- * included. Swap in Neon later by just setting `DATABASE_URL`; no code changes.
+ * The embedded PGLite fallback is for DEVELOPMENT and the live preview only.
+ *
+ * Two reasons it must not run in a production build, both found the hard way in
+ * this app's built output:
+ *
+ * 1. **It crashes.** PGLite's WASM data file is not carried into the bundled
+ *    Vercel function, so loading it throws — from a promise nothing observes,
+ *    which takes down the whole Node process rather than failing one request.
+ * 2. **It would lie.** Even if it loaded, each serverless instance would get its
+ *    own empty in-memory database and silently drop every write. For a tool
+ *    whose whole job is not losing a day of calls, "no database" is a far
+ *    better answer than "a database that forgets".
+ *
+ * So a production server with no `DATABASE_URL` has no database, and says so:
+ * `getSql()` fails fast, and the app's local-first path carries on.
  */
-export const dbSource: DbSource = databaseUrl ? "neon" : "pglite";
+const embeddedFallbackAllowed = !import.meta.env?.PROD;
+
+/**
+ * Active backend: real **Neon** when `DATABASE_URL` is set (deployed / configured
+ * sandbox), the local embedded **PGLite** (Postgres compiled to WASM) in dev and
+ * the live preview, and `"none"` for a production build with nothing configured.
+ * Swap in Neon later by just setting `DATABASE_URL`; no code changes.
+ */
+export const dbSource: DbSource = databaseUrl
+  ? "neon"
+  : embeddedFallbackAllowed
+    ? "pglite"
+    : "none";
 
 /**
  * Minimal shared SQL surface, satisfied by both Neon and PGLite. Both the
@@ -176,6 +199,12 @@ async function createSql(): Promise<Sql> {
         "or a server route loader, never from client code.",
     );
   }
+  if (dbSource === "none") {
+    throw new Error(
+      "No database configured. Set DATABASE_URL to persist data in production " +
+        "(the embedded PGLite fallback is development-only — see `dbSource`).",
+    );
+  }
   return dbSource === "neon" ? createNeonSql() : createPgliteSql();
 }
 
@@ -233,6 +262,12 @@ if (typeof window === "undefined" && dbSource === "pglite") {
   globalBoot.__pgBootstrapPromise__ ??= ensureDbReady().catch((err) => {
     globalBoot.__pgBootstrapPromise__ = undefined;
     console.error("[db] PGLite bootstrap failed:", err);
-    throw err;
+    // Deliberately NOT re-thrown. Nothing awaits this promise, so a rejection
+    // here is an *unhandled* rejection, which takes the whole Node process down
+    // — the server stops answering every request, not just database ones.
+    // Observed for real: the built Vercel output does not carry PGLite's
+    // `pglite.data`, so a deploy with no DATABASE_URL crashed on first request.
+    // Real callers still see the failure: `getSql()` keeps its own rejection
+    // and clears its memo so the next call retries.
   });
 }

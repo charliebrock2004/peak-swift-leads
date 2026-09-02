@@ -22,6 +22,7 @@ Thumbs.db
 screenshots/
 artifacts/
 .grok/preview.log
+.grok/preview.pid
 .grok/status
 .grok/og-pending
 .project_id
