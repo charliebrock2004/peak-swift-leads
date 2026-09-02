@@ -35,16 +35,25 @@ export type Lead = {
   trade: string;
   town: string;
   phone: string;
+  /** Kept for follow-up by email; empty for most Maps-sourced leads. */
+  email: string;
   rating: number | "";
   reviews: number | "";
   website: string;
   mapsLink: string;
   websiteStatus: WebsiteStatus | "";
+  /** Where this lead came from: research, spreadsheet import, added by hand. */
   source: string;
   called: CalledStatus;
   callResult: CallResult;
   followUpDate: string;
   notes: string;
+  /** Demo site built for this prospect (Netlify/preview URL). Empty until built. */
+  demoUrl: string;
+  /** ISO timestamp, client clock. Used to resolve two devices editing one lead. */
+  updatedAt: string;
+  /** Soft delete: ISO timestamp, or "" when live. Tombstones let deletes sync. */
+  deletedAt: string;
 };
 
 export const TRADE_SUGGESTIONS = [
@@ -263,20 +272,79 @@ export function todayIso(): string {
   return `${now.getFullYear()}-${month}-${day}`;
 }
 
+/** Add days to a `YYYY-MM-DD` date without dragging a timezone into it. */
+export function addDays(iso: string, days: number): string {
+  const base = iso ? new Date(`${iso}T12:00:00Z`) : new Date();
+  base.setUTCDate(base.getUTCDate() + days);
+  return base.toISOString().slice(0, 10);
+}
+
+/** Outcomes that close a lead out — nothing left to chase. */
+const FINISHED_RESULTS = new Set<CallResult>(["Booked", "Not Interested", "Wrong Number"]);
+
+/**
+ * Is this lead waiting on you today?
+ *
+ * Any lead with a follow-up date that has arrived and an outcome still open —
+ * not just a callback. An "Interested, send the demo Thursday" lead is exactly
+ * the one that must not slip.
+ */
 export function isFollowUpDue(lead: Lead): boolean {
   if (!lead.followUpDate) return false;
-  const waiting =
-    lead.called === "Callback" || lead.callResult === "Callback" || lead.called === "No Answer";
-  return waiting && lead.followUpDate <= todayIso();
+  if (FINISHED_RESULTS.has(lead.callResult)) return false;
+  if (lead.called === "Not Interested") return false;
+  return lead.followUpDate <= todayIso();
+}
+
+/**
+ * The whole record of one call, in one tap.
+ *
+ * Recording an outcome should never be three dropdowns while you are stood in
+ * the van. Each outcome sets the called status, the result, and — where the next
+ * step is obvious — a follow-up date, without ever overwriting a date already
+ * chosen by hand.
+ */
+export function callOutcomePatch(result: CallResult, lead: Pick<Lead, "followUpDate">): Partial<Lead> {
+  const today = todayIso();
+  const keepOrSet = (days: number) => (lead.followUpDate ? lead.followUpDate : addDays(today, days));
+  switch (result) {
+    case "No Answer":
+      return { called: "No Answer", callResult: "No Answer", followUpDate: keepOrSet(2) };
+    case "Callback":
+      return { called: "Callback", callResult: "Callback", followUpDate: keepOrSet(1) };
+    case "Interested":
+      return { called: "Interested", callResult: "Interested", followUpDate: keepOrSet(2) };
+    case "Not Interested":
+      return { called: "Not Interested", callResult: "Not Interested", followUpDate: "" };
+    case "Wrong Number":
+      return { called: "Called", callResult: "Wrong Number", followUpDate: "" };
+    case "Booked":
+      return { called: "Called", callResult: "Booked" };
+    default:
+      return { called: "Not Called", callResult: "" };
+  }
+}
+
+/**
+ * A stable id, preferring `crypto.randomUUID`. Safari only exposes it on secure
+ * origins, and the CSV importer mints ids in bulk, so fall back rather than
+ * throwing halfway through an import.
+ */
+export function newLeadId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `lead-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 export function createLead(partial: Partial<Lead> = {}): Lead {
   return {
-    id: crypto.randomUUID(),
+    id: newLeadId(),
     businessName: "",
     trade: "",
     town: "",
     phone: "",
+    email: "",
     rating: "",
     reviews: "",
     website: "",
@@ -287,6 +355,9 @@ export function createLead(partial: Partial<Lead> = {}): Lead {
     callResult: "",
     followUpDate: "",
     notes: "",
+    demoUrl: "",
+    updatedAt: new Date().toISOString(),
+    deletedAt: "",
     ...partial,
   };
 }
@@ -294,12 +365,17 @@ export function createLead(partial: Partial<Lead> = {}): Lead {
 export function migrateLead(raw: Partial<Lead> & { id?: string }): Lead {
   const lead = createLead({
     ...raw,
-    id: raw.id || crypto.randomUUID(),
+    id: raw.id || newLeadId(),
   });
   if (!lead.websiteStatus) {
     lead.websiteStatus = hasWebsite(lead.website) ? classifyWebsiteUrl(lead.website) : "No Website Found";
   }
   return lead;
+}
+
+/** Live leads only — tombstones stay in the store so deletes can reach other devices. */
+export function liveLeads(leads: Lead[]): Lead[] {
+  return leads.filter((lead) => !lead.deletedAt);
 }
 
 function csvCell(value: string | number): string {
@@ -314,6 +390,7 @@ export function leadsToCsv(leads: Lead[]): string {
     "Trade",
     "Town",
     "Phone Number",
+    "Email",
     "Google Rating",
     "Number of Reviews",
     "Website",
@@ -324,6 +401,7 @@ export function leadsToCsv(leads: Lead[]): string {
     "Called?",
     "Call Result",
     "Follow-Up Date",
+    "Demo URL",
     "Source",
     "Notes",
   ];
@@ -333,6 +411,7 @@ export function leadsToCsv(leads: Lead[]): string {
       lead.trade,
       lead.town,
       lead.phone,
+      lead.email,
       lead.rating,
       lead.reviews,
       lead.website,
@@ -343,6 +422,7 @@ export function leadsToCsv(leads: Lead[]): string {
       lead.called,
       lead.callResult,
       lead.followUpDate,
+      lead.demoUrl,
       lead.source,
       lead.notes,
     ]

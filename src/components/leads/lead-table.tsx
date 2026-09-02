@@ -100,7 +100,7 @@ export function LeadTable({
               />
             ))}
             <th className="w-40 min-w-40">
-              <span className="flex h-10 items-center px-3">Google Maps</span>
+              <span className="flex h-10 items-center px-3 normal-case">Google Maps</span>
             </th>
             {COLUMNS.slice(7).map((column) => (
               <SortHeader
@@ -112,7 +112,7 @@ export function LeadTable({
               />
             ))}
             <th className="w-64 min-w-64">
-              <span className="flex h-10 items-center px-3">Notes</span>
+              <span className="flex h-10 items-center px-3 normal-case">Notes</span>
             </th>
             <th className="w-12 min-w-12">
               <span className="sr-only">Delete</span>

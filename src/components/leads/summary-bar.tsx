@@ -30,13 +30,15 @@ export function SummaryBar({
           type="button"
           onClick={() => onSelect?.(item.key)}
           className={cn(
-            "bg-surface px-3 py-3 text-left md:px-4",
+            // Tighter on a phone: this block sits between you and the first
+            // lead, and six full-size tiles pushed the list below the fold.
+            "bg-surface px-3 py-2 text-left md:px-4 md:py-3",
             active === item.key && "bg-surface-2",
           )}
         >
           <p className="text-xs font-medium text-muted">{item.label}</p>
           <p
-            className={`mt-1 font-display text-2xl leading-none font-medium tabular-nums tracking-tight ${item.key === "hot" ? "text-hot" : "text-fg"}`}
+            className={`mt-0.5 font-display text-xl leading-none font-medium tabular-nums tracking-tight md:mt-1 md:text-2xl ${item.key === "hot" ? "text-hot" : "text-fg"}`}
           >
             {summary[item.key]}
           </p>

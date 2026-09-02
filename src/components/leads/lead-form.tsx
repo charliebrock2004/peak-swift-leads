@@ -127,7 +127,17 @@ export function LeadFormDialog({
                 placeholder="01764 652184"
               />
             </Field>
-            <Field label="Google Maps link">
+            <Field label="Email">
+              <Input
+                id="lead-email"
+                type="email"
+                inputMode="email"
+                value={draft.email}
+                onChange={(event) => patch({ email: event.target.value })}
+                placeholder="hello@business.co.uk"
+              />
+            </Field>
+            <Field label="Google Maps link" className="sm:col-span-2">
               <Input
                 value={draft.mapsLink}
                 onChange={(event) => patch({ mapsLink: event.target.value })}
@@ -211,6 +221,13 @@ export function LeadFormDialog({
                 type="date"
                 value={draft.followUpDate}
                 onChange={(event) => patch({ followUpDate: event.target.value })}
+              />
+            </Field>
+            <Field label="Demo site" className="sm:col-span-2">
+              <Input
+                value={draft.demoUrl}
+                onChange={(event) => patch({ demoUrl: event.target.value })}
+                placeholder="Link to the demo you built for them"
               />
             </Field>
             <div className="flex flex-col justify-end gap-2 pb-1 sm:col-span-2">

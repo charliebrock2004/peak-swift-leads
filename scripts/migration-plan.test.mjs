@@ -56,10 +56,18 @@ test("non-.sql entries are dropped (readdir also yields the auth/ directory)", (
   assert.deepEqual(pendingMigrations(["auth", "README.md"], []), []);
 });
 
-test("the auth schema ships outside the globbed directory", () => {
+test("the auth schema's source stays outside the globbed directory", () => {
+  // This app persists leads, so `migrations/` is no longer empty — but neither
+  // applier may descend into `auth/`. The schema reaches a database only as the
+  // basename-identical copy checked below, never straight from its source
+  // directory (which would key it twice and apply it twice).
   const migrationsDir = join(projectRoot(), "migrations");
-  assert.deepEqual(pendingMigrations(readdirSync(migrationsDir), []), []);
+  const entries = readdirSync(migrationsDir);
+  assert.ok(entries.includes("auth"), "the auth schema source directory must stay");
   assert.ok(readdirSync(join(migrationsDir, "auth")).includes("0001_auth.sql"));
+  for (const { path } of pendingMigrations(entries, [])) {
+    assert.ok(!path.includes("/"), `${path} — the appliers do not descend into subdirectories`);
+  }
 });
 
 test("this workspace's auth schema copy is byte-identical to its source", () => {
