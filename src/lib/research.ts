@@ -6,29 +6,12 @@ import {
   normalizeName,
   parseNumberInput,
   priorityReason,
-  type Priority,
   type WebsiteStatus,
 } from "@/lib/leads";
+import { MAX_PER_BATCH } from "@/lib/regions";
+import type { Prospect, ResearchResult } from "@/lib/research-types";
 
-export type Prospect = {
-  businessName: string;
-  trade: string;
-  town: string;
-  phone: string;
-  rating: number | "";
-  reviews: number | "";
-  website: string;
-  mapsLink: string;
-  websiteStatus: WebsiteStatus;
-  notes: string;
-  source: string;
-  priority: Priority;
-  reason: string;
-};
-
-export type ResearchResult =
-  | { ok: true; prospects: Prospect[]; location: string; businessType: string }
-  | { ok: false; error: string };
+export type { Prospect, ResearchResult };
 
 const HINT_TO_STATUS: Record<string, WebsiteStatus> = {
   proper: "Proper Website",
@@ -124,14 +107,119 @@ function uniqueProspects(list: Prospect[]): Prospect[] {
   return next;
 }
 
+/**
+ * The xAI endpoint. Overridable ONLY so an end-to-end test can point the search
+ * at a local stand-in; production never sets it, so there is no path by which
+ * invented data reaches the app.
+ */
+function apiBase(): string {
+  const override = process.env.XAI_API_BASE?.trim();
+  return (override || "https://api.x.ai/v1").replace(/\/+$/, "");
+}
+
+/** Retry once on the failures that are worth retrying: rate limits and 5xx. */
+const RETRY_STATUSES = new Set([429, 500, 502, 503, 504]);
+const RETRY_DELAY_MS = 1500;
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+type XaiPayload = {
+  output_text?: unknown;
+  output?: Array<{ type?: string; content?: Array<{ text?: string }> }>;
+  error?: { message?: string };
+};
+
+type CallOutcome =
+  | { ok: true; payload: XaiPayload }
+  | { ok: false; error: string };
+
+async function callXai(apiKey: string, prompt: string, attempt = 0): Promise<CallOutcome> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 55000);
+  try {
+    const response = await fetch(`${apiBase()}/responses`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: "grok-4.20-0309-non-reasoning",
+        input: [
+          {
+            role: "system",
+            content:
+              "You research real local Scottish businesses using web search. Never invent details. Return JSON only.",
+          },
+          { role: "user", content: prompt },
+        ],
+        tools: [{ type: "web_search" }],
+        max_output_tokens: 3600,
+      }),
+    });
+    const payload = (await response.json().catch(() => ({}))) as XaiPayload;
+    if (response.ok) return { ok: true, payload };
+    if (RETRY_STATUSES.has(response.status) && attempt === 0) {
+      clearTimeout(timer);
+      await sleep(RETRY_DELAY_MS);
+      return callXai(apiKey, prompt, attempt + 1);
+    }
+    if (response.status === 429) {
+      return { ok: false, error: "xAI rate limit reached. Wait a moment and search again." };
+    }
+    return { ok: false, error: payload.error?.message || `Research failed (${response.status})` };
+  } catch (error) {
+    const aborted = error instanceof Error && error.name === "AbortError";
+    if (!aborted && attempt === 0) {
+      clearTimeout(timer);
+      await sleep(RETRY_DELAY_MS);
+      return callXai(apiKey, prompt, attempt + 1);
+    }
+    return {
+      ok: false,
+      error: aborted
+        ? "That search took too long. Try a smaller area or fewer prospects."
+        : "Could not reach Grok research just now. Try again.",
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Research one batch of businesses in one place.
+ *
+ * A large search calls this many times — see `@/lib/prospect-search`, which owns
+ * the sweep, the deduplication and the stopping. This function's only job is:
+ * find up to `limit` real businesses in `location`, skipping the ones already
+ * found, and never make any of them up.
+ */
 export const researchProspects = createServerFn({ method: "POST" })
   .validator((input: unknown) => {
     if (!input || typeof input !== "object") throw new Error("Enter a location and business type");
-    const location = asString((input as { location?: unknown }).location).slice(0, 80);
-    const businessType = asString((input as { businessType?: unknown }).businessType).slice(0, 80);
+    const source = input as {
+      location?: unknown;
+      businessType?: unknown;
+      limit?: unknown;
+      exclude?: unknown;
+      context?: unknown;
+    };
+    const location = asString(source.location).slice(0, 80);
+    const businessType = asString(source.businessType).slice(0, 80);
     if (location.length < 2) throw new Error("Enter a location");
     if (businessType.length < 2) throw new Error("Enter a business type");
-    return { location, businessType };
+    const rawLimit = Number(source.limit);
+    const limit = Number.isFinite(rawLimit)
+      ? Math.max(1, Math.min(MAX_PER_BATCH, Math.round(rawLimit)))
+      : 8;
+    // Bounded: the exclude list rides in the prompt, and an unbounded one would
+    // blow the context window (and the bill) on a long sweep.
+    const exclude = Array.isArray(source.exclude)
+      ? source.exclude.map((name) => asString(name).slice(0, 80)).filter(Boolean).slice(0, 40)
+      : [];
+    const context = asString(source.context).slice(0, 80);
+    return { location, businessType, limit, exclude, context };
   })
   .handler(async ({ data }): Promise<ResearchResult> => {
     const apiKey = process.env.XAI_API_KEY;
@@ -142,15 +230,25 @@ export const researchProspects = createServerFn({ method: "POST" })
       };
     }
 
-    const prompt = `Find up to 8 real ${data.businessType} businesses in or serving ${data.location}, Scotland.
+    const where = data.context && data.context !== data.location
+      ? `${data.location} (in ${data.context}), Scotland`
+      : `${data.location}, Scotland`;
+    const skip =
+      data.exclude.length > 0
+        ? `\n\nAlready found — do NOT return any of these again:\n${data.exclude.map((n) => `- ${n}`).join("\n")}`
+        : "";
+
+    const prompt = `Find up to ${data.limit} real ${data.businessType} businesses in or serving ${where}.
 
 Rules:
 - Only include businesses you actually found on the public web (Google, Maps, Yell, Thomson Local, Facebook, company sites).
-- Never invent a name, phone, rating, review count, or website.
-- If a field is unknown, use an empty string or null.
+- NEVER invent a name, phone, rating, review count, or website. It is far better to return 3 real businesses than ${data.limit} with any made up.
+- Return fewer than ${data.limit} if that is all that genuinely exists there.
+- If a field is unknown, use an empty string or null. Do not guess a phone number.
 - Prefer independent local businesses over national chains.
 - For each business, check whether they have a proper independent website, only a social page, only a directory listing, or no meaningful web presence.
 - Do not assume a missing website field means they have no website — search for one.
+- Set "town" to the actual town the business is in, which may differ from the search area.${skip}
 
 Return JSON only:
 {"prospects":[{
@@ -167,47 +265,9 @@ Return JSON only:
   "evidence":""
 }]}`;
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 55000);
-
-    let payload: { output_text?: unknown; output?: Array<{ type?: string; content?: Array<{ text?: string }> }>; error?: { message?: string } };
-    try {
-      const response = await fetch("https://api.x.ai/v1/responses", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-        },
-        signal: controller.signal,
-        body: JSON.stringify({
-          model: "grok-4.20-0309-non-reasoning",
-          input: [
-            {
-              role: "system",
-              content:
-                "You research real local Scottish businesses using web search. Never invent details. Return JSON only.",
-            },
-            { role: "user", content: prompt },
-          ],
-          tools: [{ type: "web_search" }],
-          max_output_tokens: 3200,
-        }),
-      });
-      payload = (await response.json()) as typeof payload;
-      if (!response.ok) {
-        return { ok: false, error: payload.error?.message || `Research failed (${response.status})` };
-      }
-    } catch (error) {
-      const aborted = error instanceof Error && error.name === "AbortError";
-      return {
-        ok: false,
-        error: aborted
-          ? "That search took too long. Try a more specific town or trade."
-          : "Could not reach Grok research just now. Try again.",
-      };
-    } finally {
-      clearTimeout(timer);
-    }
+    const call = await callXai(apiKey, prompt);
+    if (!call.ok) return { ok: false, error: call.error };
+    const payload = call.payload;
 
     let parsed: { prospects?: unknown };
     try {
@@ -247,7 +307,7 @@ Return JSON only:
       });
     }
 
-    const toVerify = draft.filter((item) => item.website).slice(0, 8);
+    const toVerify = draft.filter((item) => item.website).slice(0, MAX_PER_BATCH);
     const verified = await Promise.all(toVerify.map((item) => verifyWebsite(item.website)));
     const verifiedByName = new Map(toVerify.map((item, index) => [item.businessName, verified[index] ?? null]));
 
@@ -287,12 +347,8 @@ Return JSON only:
       return bReviews - aReviews;
     });
 
-    if (prospects.length === 0) {
-      return {
-        ok: false,
-        error: `No verified ${data.businessType.toLowerCase()} businesses found in ${data.location}. Try a nearby town.`,
-      };
-    }
-
+    // An empty batch is a fact about the place, not a failure: a village with no
+    // joiners is exactly the answer, and a sweep must not count it as a broken
+    // call and give up. The caller decides what to say about a whole empty sweep.
     return { ok: true, prospects, location: data.location, businessType: data.businessType };
   });

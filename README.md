@@ -4,10 +4,41 @@ A prospecting tool for Peak Swift Studios: find local businesses that may need a
 
 ## Workflow
 
-1. **Find leads** — pick a town and trade. Grok searches the public web.
+1. **Find leads** — pick an area, a trade, and how many. Grok searches the public web.
 2. **Import** — bring in a research spreadsheet, or tick prospects from a search. Duplicates merge instead of piling up.
 3. **Call** — tap Call from your phone, then record the outcome in one tap.
 4. **Follow up** — an outcome sets the next date for you; **Due today** shows who is waiting.
+
+## Finding leads at scale
+
+Search a **Town**, a **City**, a **District / Region**, or all of **Scotland**, for
+**25**, **50** or **100** prospects.
+
+A region is not one giant shallow query. `Perthshire → Joiner → 100` sweeps the
+real towns inside Perthshire — Perth, Crieff, Blairgowrie, Pitlochry and the rest
+— a few at a time, round-robin, so a search that ends early has still covered the
+whole area rather than one town. A city sweeps its own districts and satellite
+towns for the same reason. Results are combined, deduplicated, researched,
+scored HOT/WARM/COLD and ranked best-first.
+
+**"100" means up to 100 real, unique, researched businesses.** If only 63 exist
+on the public web, you get 63 and the app says so. Nothing is ever invented to
+reach the number.
+
+While a big search runs, a pinned bar shows how many have been found, how many
+searches have been spent of the budget, and which places are done. **Stop** ends
+it early and keeps everything found so far. If the API rate-limits or fails
+halfway, the prospects already found are kept and shown, not discarded.
+
+On the results screen the totals double as the bulk selectors: tap **32 HOT** to
+select every HOT prospect, tap **40 WARM** to add those too, then **Import
+selected**. Prospects already on your sheet are shown, counted, and locked so
+they cannot be imported twice.
+
+Search cost is bounded: a call budget that scales with the target and caps out,
+one place per concurrent batch, each follow-up call told which businesses that
+place already gave, and an early stop as soon as the target is met or the area
+stops yielding anything new.
 
 ## Where your leads are stored
 

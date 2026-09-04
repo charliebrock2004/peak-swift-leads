@@ -526,32 +526,49 @@ export function normalizeMaps(value: string): string {
   return href.replace(/\/+$/, "");
 }
 
+export type DuplicateVia = "phone" | "maps" | "name+town";
+
 export type DuplicateMatch = {
   lead: Lead;
-  via: "phone" | "maps" | "name+town";
+  via: DuplicateVia;
 };
 
-export function findDuplicate(
-  candidate: Pick<Lead, "businessName" | "town" | "phone" | "mapsLink">,
-  leads: Lead[],
-): DuplicateMatch | null {
+/** The fields it takes to tell two records apart. Prospects have them too. */
+export type LeadLike = Pick<Lead, "businessName" | "town" | "phone" | "mapsLink">;
+
+/**
+ * The same-business test, over anything lead-shaped.
+ *
+ * Split out from `findDuplicate` so a large search can also check its own
+ * results against each other — the same joiner turns up under several towns
+ * across a Perthshire sweep, and paying to research them twice is waste.
+ */
+export function matchLeadLike<T extends LeadLike>(
+  candidate: LeadLike,
+  list: readonly T[],
+): { match: T; via: DuplicateVia } | null {
   const phone = normalizePhone(candidate.phone);
   const maps = candidate.mapsLink.trim() ? normalizeMaps(candidate.mapsLink) : "";
   const name = normalizeName(candidate.businessName);
   const town = candidate.town.trim().toLowerCase();
 
-  for (const lead of leads) {
-    const leadPhone = normalizePhone(lead.phone);
-    if (phone.length >= 10 && leadPhone.length >= 10 && phone === leadPhone) {
-      return { lead, via: "phone" };
+  for (const entry of list) {
+    const entryPhone = normalizePhone(entry.phone);
+    if (phone.length >= 10 && entryPhone.length >= 10 && phone === entryPhone) {
+      return { match: entry, via: "phone" };
     }
-    const leadMaps = lead.mapsLink.trim() ? normalizeMaps(lead.mapsLink) : "";
-    if (maps && leadMaps && maps === leadMaps) return { lead, via: "maps" };
-    const sameName = name.length >= 3 && name === normalizeName(lead.businessName);
-    const sameTown = town && lead.town.trim().toLowerCase() === town;
-    if (sameName && sameTown) return { lead, via: "name+town" };
+    const entryMaps = entry.mapsLink.trim() ? normalizeMaps(entry.mapsLink) : "";
+    if (maps && entryMaps && maps === entryMaps) return { match: entry, via: "maps" };
+    const sameName = name.length >= 3 && name === normalizeName(entry.businessName);
+    const sameTown = town && entry.town.trim().toLowerCase() === town;
+    if (sameName && sameTown) return { match: entry, via: "name+town" };
   }
   return null;
+}
+
+export function findDuplicate(candidate: LeadLike, leads: Lead[]): DuplicateMatch | null {
+  const hit = matchLeadLike(candidate, leads);
+  return hit ? { lead: hit.match, via: hit.via } : null;
 }
 
 export const SAMPLE_LEADS: Lead[] = [

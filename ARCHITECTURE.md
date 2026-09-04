@@ -86,6 +86,49 @@ database. Kept here because they are easy to reintroduce:
    and silently drop every write. `dbSource` is now `"none"` for a production
    build with no `DATABASE_URL`: a clear failure beats a database that forgets.
 
+## Large-area prospecting
+
+One API call cannot return a hundred real businesses, so a big search is many
+small calls swept across an area and stitched together.
+
+| Piece | File |
+| --- | --- |
+| Scottish geography; region → towns; call budget; batch queue | `src/lib/regions.ts` |
+| The sweep: waves, deduplication, stopping, ranking (pure) | `src/lib/prospect-search.ts` |
+| The batch runner that calls the server function | `src/lib/prospect-search-client.ts` |
+| One batch: prompt, retries, website verification | `src/lib/research.ts` |
+
+Key decisions:
+
+- **The geography is hardcoded, not asked for.** Resolving "Perthshire" to its
+  towns from a table is free, deterministic and testable; asking the model costs
+  a call per search and can answer differently each time. A region that is not in
+  the table still works — it is searched directly over several passes.
+- **Breadth before depth.** The queue is round-robin across the area's towns, so
+  a sweep that stops early has covered Perthshire shallowly rather than Perth
+  deeply. That is the whole reason for asking for a region.
+- **The exclude list is per place, not global.** This was worth 35 prospects vs
+  84 on `Perthshire → 100`. A twenty-town sweep coming back round to Perth has to
+  tell the model which Perth firms it already named; a global recency window has
+  long since scrolled them out, so the call returns the same twelve and buys
+  nothing.
+- **A wave never contains the same place twice.** Concurrent calls cannot see
+  each other's results, so two for one town go out with identical exclude lists
+  and come back with identical businesses. A one-town search therefore runs one
+  call at a time.
+- **An empty batch is not a failure.** A village with no joiners is the answer,
+  not a broken call, and must not count towards the "the API is dead" trip-wire.
+  Only three real failures with nothing found at all abandons a sweep.
+- **Every prospect is banked as it arrives.** A rate limit at call 12 of 20
+  returns the 84 already found, importable, with an explanation.
+- **Nothing is ever padded.** The prompt says so explicitly, the sweep returns
+  what it has, and `describeOutcome` says plainly that a short result is short
+  because that is all that exists.
+
+`XAI_API_BASE` exists solely so an end-to-end test can point the search at a
+local stand-in; production never sets it, so there is no path by which invented
+data reaches the app.
+
 ## Product decisions
 
 - **One tap records a whole call.** The six outcome chips on a lead card set
