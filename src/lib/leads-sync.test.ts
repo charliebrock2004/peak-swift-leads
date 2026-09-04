@@ -83,8 +83,8 @@ describe("status wording", () => {
     assert.equal(describeSync("synced", 0, true), "Saved to your account");
   });
 
-  it("is honest about being offline or signed out", () => {
-    assert.equal(describeSync("error", 3, true), "Offline — saved on this device");
+  it("is honest about local-only vs a failed sync", () => {
+    assert.equal(describeSync("error", 3, true), "Could not sync — saved on this device");
     assert.equal(describeSync("local-only", 3, true), "This device only");
   });
 

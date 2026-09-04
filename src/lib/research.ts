@@ -2,11 +2,15 @@ import { createServerFn } from "@tanstack/react-start";
 import {
   classifyWebsiteUrl,
   computePriority,
+  extractIndependentUrl,
   mapsHref,
+  mergeWebsiteEvidence,
   normalizeName,
   parseNumberInput,
   priorityReason,
+  RESULT_LIMITS,
   type Priority,
+  type ResultLimit,
   type WebsiteStatus,
 } from "@/lib/leads";
 
@@ -30,26 +34,33 @@ export type ResearchResult =
   | { ok: true; prospects: Prospect[]; location: string; businessType: string }
   | { ok: false; error: string };
 
-const HINT_TO_STATUS: Record<string, WebsiteStatus> = {
-  proper: "Proper Website",
-  "proper website": "Proper Website",
-  social: "Social Only",
-  "social only": "Social Only",
-  directory: "Directory Only",
-  "directory only": "Directory Only",
-  none: "No Website Found",
-  "no website": "No Website Found",
-  "no website found": "No Website Found",
-  unclear: "Unclear",
-};
+const RESEARCH_MODEL = "grok-4.5";
+/** Leave headroom under Vercel's function limit for website verification. */
+const RESEARCH_TIMEOUT_MS = 110_000;
 
 function extractJsonObject(text: string): unknown {
   const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const raw = fence?.[1] ?? text;
   const start = raw.indexOf("{");
+  if (start < 0) throw new Error("Research did not return a usable list");
   const end = raw.lastIndexOf("}");
-  if (start < 0 || end <= start) throw new Error("Research did not return a usable list");
-  return JSON.parse(raw.slice(start, end + 1)) as unknown;
+  const slice = end > start ? raw.slice(start, end + 1) : raw.slice(start);
+  try {
+    return JSON.parse(slice) as unknown;
+  } catch {
+    return JSON.parse(repairJson(slice)) as unknown;
+  }
+}
+
+function repairJson(raw: string): string {
+  let text = raw.trim().replace(/,\s*$/, "");
+  const openArr = (text.match(/\[/g) || []).length;
+  const closeArr = (text.match(/\]/g) || []).length;
+  const opens = (text.match(/\{/g) || []).length;
+  const closes = (text.match(/\}/g) || []).length;
+  if (openArr > closeArr) text += "]".repeat(openArr - closeArr);
+  if (opens > closes) text += "}".repeat(opens - closes);
+  return text;
 }
 
 function asString(value: unknown): string {
@@ -65,19 +76,58 @@ function asNumber(value: unknown, decimals = 0): number | "" {
   return parseNumberInput(String(value), decimals);
 }
 
-function outputText(payload: {
+function asPhone(value: unknown): string {
+  const text = asString(value);
+  if (!text || /^(n\/a|na|none|unknown|not found|unlisted|-)$/i.test(text)) return "";
+  return text.slice(0, 40);
+}
+
+function collectText(payload: {
   output_text?: unknown;
   output?: Array<{ type?: string; content?: Array<{ text?: string; type?: string }> }>;
 }): string {
   if (typeof payload.output_text === "string" && payload.output_text.trim()) return payload.output_text;
-  const chunks: string[] = [];
+  const messages: string[] = [];
   for (const item of payload.output ?? []) {
     if (item.type !== "message") continue;
+    const chunks: string[] = [];
     for (const part of item.content ?? []) {
       if (part.text) chunks.push(part.text);
     }
+    const text = chunks.join("\n").trim();
+    if (text) messages.push(text);
   }
-  return chunks.join("\n");
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (messages[i].includes("{")) return messages[i];
+  }
+  return messages.join("\n");
+}
+
+function firstSocialUrl(...texts: string[]): string {
+  for (const text of texts) {
+    const match = text.match(
+      /https?:\/\/(?:www\.)?(?:facebook\.com|fb\.com|instagram\.com)\/[^\s"'<>)]+/i,
+    );
+    if (match) return match[0].replace(/[.,;]+$/, "");
+  }
+  return "";
+}
+
+function describeXaiFailure(status: number, payload: { error?: { message?: string; code?: string } }): string {
+  const message = payload.error?.message?.trim() || "";
+  const code = payload.error?.code?.trim() || "";
+  if (status === 401 || status === 403) {
+    return "Lead search failed because the server xAI API key was rejected. XAI_API_KEY must be a valid server-side key.";
+  }
+  if (status === 429) {
+    return "Lead search hit the xAI rate limit. Wait a minute and try again.";
+  }
+  if (/model/i.test(message) && /not found|invalid|unavailable/i.test(message)) {
+    return `Lead search failed because the xAI model is unavailable (${RESEARCH_MODEL}). ${message}`;
+  }
+  if (message) return `Lead search failed (${status}): ${message}`;
+  if (code) return `Lead search failed (${status} ${code}).`;
+  return `Lead search failed because xAI returned HTTP ${status}.`;
 }
 
 async function verifyWebsite(url: string): Promise<WebsiteStatus | null> {
@@ -100,18 +150,6 @@ async function verifyWebsite(url: string): Promise<WebsiteStatus | null> {
   }
 }
 
-function mergeStatus(hint: string, url: string, verified: WebsiteStatus | null): WebsiteStatus {
-  const fromUrl = url ? classifyWebsiteUrl(url) : "No Website Found";
-  const fromHint = HINT_TO_STATUS[hint.trim().toLowerCase()];
-  if (verified === "Social Only" || verified === "Directory Only") return verified;
-  if (verified === "Proper Website") return "Proper Website";
-  if (fromUrl === "Social Only" || fromUrl === "Directory Only") return fromUrl;
-  if (fromUrl === "Proper Website") return "Proper Website";
-  if (fromHint) return fromHint;
-  if (!url) return "No Website Found";
-  return "Unclear";
-}
-
 function uniqueProspects(list: Prospect[]): Prospect[] {
   const seen = new Set<string>();
   const next: Prospect[] = [];
@@ -124,33 +162,60 @@ function uniqueProspects(list: Prospect[]): Prospect[] {
   return next;
 }
 
+function appendNote(notes: string, extra: string): string {
+  if (!extra) return notes;
+  if (!notes) return extra;
+  if (notes.toLowerCase().includes(extra.toLowerCase())) return notes;
+  return `${notes} ${extra}`.trim();
+}
+
 export const researchProspects = createServerFn({ method: "POST" })
   .validator((input: unknown) => {
     if (!input || typeof input !== "object") throw new Error("Enter a location and business type");
     const location = asString((input as { location?: unknown }).location).slice(0, 80);
     const businessType = asString((input as { businessType?: unknown }).businessType).slice(0, 80);
+    const rawLimit = Number((input as { limit?: unknown }).limit);
+    const limit = (RESULT_LIMITS as readonly number[]).includes(rawLimit)
+      ? (rawLimit as ResultLimit)
+      : 8;
     if (location.length < 2) throw new Error("Enter a location");
     if (businessType.length < 2) throw new Error("Enter a business type");
-    return { location, businessType };
+    return { location, businessType, limit };
   })
   .handler(async ({ data }): Promise<ResearchResult> => {
     const apiKey = process.env.XAI_API_KEY;
     if (!apiKey) {
       return {
         ok: false,
-        error: "Research is not available in this environment. Grok web search needs an xAI API key.",
+        error:
+          "Lead search failed because XAI_API_KEY is missing from the production server. It must be set as a server environment variable, not a VITE_ frontend variable.",
       };
     }
 
-    const prompt = `Find up to 8 real ${data.businessType} businesses in or serving ${data.location}, Scotland.
+    const prompt = `Find up to ${data.limit} real ${data.businessType} businesses in or serving ${data.location}, Scotland.
+
+Use web search, then return JSON only. Do not write progress messages.
+
+Keep the search short — about 6 to 10 searches:
+1. "${data.businessType} ${data.location} Scotland"
+2. Yell, Thomson Local, Checkatrade, MyBuilder and Facebook for the same query
+3. For the strongest candidates, confirm phone, rating/reviews, and whether they have an independent website
 
 Rules:
-- Only include businesses you actually found on the public web (Google, Maps, Yell, Thomson Local, Facebook, company sites).
+- Only include businesses you actually found on the public web.
 - Never invent a name, phone, rating, review count, or website.
-- If a field is unknown, use an empty string or null.
+- If a field is unknown, use an empty string or null. Do not guess.
 - Prefer independent local businesses over national chains.
-- For each business, check whether they have a proper independent website, only a social page, only a directory listing, or no meaningful web presence.
-- Do not assume a missing website field means they have no website — search for one.
+- Include real local businesses even if they already have a website — we will rank them.
+- Put the actual URL you found in "website":
+  - independent site → that URL, websiteHint=proper
+  - Facebook/Instagram only → that profile URL, websiteHint=social
+  - directory listing only (Yell, Thomson Local, Checkatrade, Google Maps, MyBuilder) → that listing URL, websiteHint=directory
+  - nothing found → website="", websiteHint=none
+  - mixed or thin evidence → websiteHint=unclear
+- A Facebook page, Instagram page or directory listing is NOT a proper website.
+- Phone numbers from Yell, Thomson Local or the business site are valid.
+- Prefer Google Maps rating and review count. If you only have Checkatrade or MyBuilder figures, still include them and say so in notes.
 
 Return JSON only:
 {"prospects":[{
@@ -168,9 +233,17 @@ Return JSON only:
 }]}`;
 
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 55000);
+    const timer = setTimeout(() => controller.abort(), RESEARCH_TIMEOUT_MS);
 
-    let payload: { output_text?: unknown; output?: Array<{ type?: string; content?: Array<{ text?: string }> }>; error?: { message?: string } };
+    type XaiPayload = {
+      output_text?: unknown;
+      output?: Array<{ type?: string; content?: Array<{ text?: string }> }>;
+      error?: { message?: string; code?: string };
+      status?: string;
+      incomplete_details?: { reason?: string };
+    };
+
+    let payload: XaiPayload;
     try {
       const response = await fetch("https://api.x.ai/v1/responses", {
         method: "POST",
@@ -180,51 +253,83 @@ Return JSON only:
         },
         signal: controller.signal,
         body: JSON.stringify({
-          model: "grok-4.20-0309-non-reasoning",
+          model: RESEARCH_MODEL,
           input: [
             {
               role: "system",
               content:
-                "You research real local Scottish businesses using web search. Never invent details. Return JSON only.",
+                "You research real local Scottish businesses using web search. Never invent details. After searching, output JSON only — no commentary.",
             },
             { role: "user", content: prompt },
           ],
           tools: [{ type: "web_search" }],
-          max_output_tokens: 3200,
+          max_output_tokens: 5000,
+          max_tool_calls: 10,
+          store: false,
         }),
       });
-      payload = (await response.json()) as typeof payload;
+      payload = (await response.json()) as XaiPayload;
       if (!response.ok) {
-        return { ok: false, error: payload.error?.message || `Research failed (${response.status})` };
+        console.error("[research] xAI HTTP", response.status, payload.error);
+        return { ok: false, error: describeXaiFailure(response.status, payload) };
       }
     } catch (error) {
       const aborted = error instanceof Error && error.name === "AbortError";
+      console.error("[research] xAI request failed:", error);
       return {
         ok: false,
         error: aborted
-          ? "That search took too long. Try a more specific town or trade."
-          : "Could not reach Grok research just now. Try again.",
+          ? "That search took too long. Try a more specific town or fewer results."
+          : "Could not reach the xAI research API just now. Try again.",
       };
     } finally {
       clearTimeout(timer);
     }
 
+    const rawText = collectText(payload);
     let parsed: { prospects?: unknown };
     try {
-      parsed = extractJsonObject(outputText(payload)) as { prospects?: unknown };
+      parsed = extractJsonObject(rawText) as { prospects?: unknown };
     } catch {
-      return { ok: false, error: "Research came back in an unexpected format. Try again." };
+      const reason = payload.incomplete_details?.reason;
+      const status = payload.status;
+      console.error("[research] unusable xAI output", { status, reason, preview: rawText.slice(0, 400) });
+      if (status === "incomplete") {
+        return {
+          ok: false,
+          error: reason
+            ? `Lead search stopped early (${reason}). Try fewer results or a more specific town.`
+            : "Lead search stopped before it finished. Try fewer results or a more specific town.",
+        };
+      }
+      if (!rawText.trim()) {
+        return {
+          ok: false,
+          error: "Lead search returned an empty response from xAI. Try again.",
+        };
+      }
+      return {
+        ok: false,
+        error: "Research came back in an unexpected format. Try again.",
+      };
     }
 
     const rawList = Array.isArray(parsed.prospects) ? parsed.prospects : [];
-    const draft: Array<Prospect & { websiteHint?: string }> = [];
+    const draft: Array<Prospect & { websiteHint?: string; candidateSite?: string }> = [];
     for (const raw of rawList) {
       if (!raw || typeof raw !== "object") continue;
       const row = raw as Record<string, unknown>;
       const businessName = asString(row.businessName || row.name);
       if (businessName.length < 2) continue;
       const town = asString(row.town) || data.location;
-      const website = asString(row.website);
+      const notes = asString(row.notes).slice(0, 400);
+      const source = asString(row.evidence || row.source).slice(0, 400);
+      let website = asString(row.website);
+      if (!website) website = firstSocialUrl(notes, source);
+      const candidateSite =
+        classifyWebsiteUrl(website) === "Proper Website"
+          ? ""
+          : extractIndependentUrl([website, notes, source].join(" "));
       const mapsLink =
         asString(row.mapsLink) ||
         mapsHref({ mapsLink: "", businessName, town }) ||
@@ -233,33 +338,46 @@ Return JSON only:
         businessName: businessName.slice(0, 120),
         trade: (asString(row.trade) || data.businessType).slice(0, 60),
         town: town.slice(0, 60),
-        phone: asString(row.phone).slice(0, 40),
+        phone: asPhone(row.phone),
         rating: asNumber(row.rating, 1),
         reviews: asNumber(row.reviews, 0),
         website,
         mapsLink,
         websiteStatus: "Unclear",
-        notes: asString(row.notes).slice(0, 400),
-        source: asString(row.evidence || row.source).slice(0, 400),
+        notes,
+        source,
         websiteHint: asString(row.websiteHint),
+        candidateSite,
         priority: "COLD",
         reason: "",
       });
     }
 
-    const toVerify = draft.filter((item) => item.website).slice(0, 8);
-    const verified = await Promise.all(toVerify.map((item) => verifyWebsite(item.website)));
-    const verifiedByName = new Map(toVerify.map((item, index) => [item.businessName, verified[index] ?? null]));
+    const toVerify = draft
+      .flatMap((item) =>
+        [item.website, item.candidateSite].filter((url): url is string => Boolean(url)),
+      )
+      .slice(0, data.limit * 2);
+    const verified = await Promise.all(toVerify.map((url) => verifyWebsite(url)));
+    const verifiedByUrl = new Map(toVerify.map((url, index) => [url, verified[index] ?? null]));
 
     const prospects = uniqueProspects(
       draft.map((item) => {
-        const websiteStatus = mergeStatus(
-          item.websiteHint ?? "",
-          item.website,
-          verifiedByName.get(item.businessName) ?? null,
-        );
+        let website = item.website;
+        let live = website ? (verifiedByUrl.get(website) ?? null) : null;
+        if (item.candidateSite && verifiedByUrl.get(item.candidateSite) === "Proper Website") {
+          website = item.candidateSite;
+          live = "Proper Website";
+        }
+        const websiteStatus = mergeWebsiteEvidence(item.websiteHint ?? "", website, live);
+        let notes = item.notes;
+        if (website && classifyWebsiteUrl(website) === "Proper Website" && live === null) {
+          notes = appendNote(notes, "Listed website did not load.");
+        }
         const scored = {
           ...item,
+          website,
+          notes,
           websiteStatus,
         };
         const priority = computePriority(scored);
@@ -279,13 +397,15 @@ Return JSON only:
           reason: priorityReason(scored),
         };
       }),
-    ).sort((a, b) => {
-      const rank = { HOT: 0, WARM: 1, COLD: 2 };
-      if (rank[a.priority] !== rank[b.priority]) return rank[a.priority] - rank[b.priority];
-      const aReviews = typeof a.reviews === "number" ? a.reviews : -1;
-      const bReviews = typeof b.reviews === "number" ? b.reviews : -1;
-      return bReviews - aReviews;
-    });
+    )
+      .sort((a, b) => {
+        const rank = { HOT: 0, WARM: 1, COLD: 2 };
+        if (rank[a.priority] !== rank[b.priority]) return rank[a.priority] - rank[b.priority];
+        const aReviews = typeof a.reviews === "number" ? a.reviews : -1;
+        const bReviews = typeof b.reviews === "number" ? b.reviews : -1;
+        return bReviews - aReviews;
+      })
+      .slice(0, data.limit);
 
     if (prospects.length === 0) {
       return {

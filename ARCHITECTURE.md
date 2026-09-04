@@ -15,6 +15,23 @@ FIND → QUALIFY → CALL → RECORD THE OUTCOME → FOLLOW UP → DEMO → WIN
 Every feature should answer "does this help win a website customer faster?".
 It is deliberately **not** a CRM.
 
+## Find leads (live web research)
+
+`src/lib/research.ts` is a **server-only** `createServerFn`. It calls the xAI
+Responses API with `grok-4.5` and `web_search`, then verifies candidate websites
+with a live fetch before scoring HOT / WARM / COLD.
+
+The production copy used to call `grok-4.20-0309-non-reasoning` with a 55s abort
+and treated unverified independent URLs as Proper Website. Both of those made
+Crieff joiners unreliable: searches timed out, and dead domains looked like they
+already had a site. Current rules:
+
+- `XAI_API_KEY` is read only on the server. A missing key is an explicit error,
+  not "no leads found".
+- Unconfirmed independent URLs are **Unclear**, never Proper Website.
+- Empty website is **not** "No Website Found".
+- The Vercel function is given `maxDuration: 300` so a real search can finish.
+
 ## The data layer
 
 ### How it used to be

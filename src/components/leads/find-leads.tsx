@@ -7,18 +7,32 @@ import { WebsiteStatusBadge } from "@/components/leads/website-status";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
+  RESULT_LIMITS,
   TOWN_SUGGESTIONS,
   TRADE_SUGGESTIONS,
   findDuplicate,
   mapsHref,
   phoneHref,
+  websiteActionLabel,
   websiteHref,
   type Lead,
+  type ResultLimit,
 } from "@/lib/leads";
 import { researchProspects, type Prospect } from "@/lib/research";
 import { cn } from "@/lib/utils";
 
 const TRADE_CHIPS = [...TRADE_SUGGESTIONS];
+
+function searchFailure(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err ?? "");
+  if (/504|503|502|timeout|timed out|abort/i.test(message)) {
+    return "That search took too long on the server. Try 6 results, or a more specific town.";
+  }
+  if (/failed to fetch|networkerror|load failed/i.test(message)) {
+    return "Could not reach the lead search server. Check your connection and try again.";
+  }
+  return message || "Search failed. Try again.";
+}
 
 type ReviewRow = Prospect & {
   selected: boolean;
@@ -36,17 +50,28 @@ export function FindLeadsPanel({
 }) {
   const [location, setLocation] = useState("Crieff");
   const [businessType, setBusinessType] = useState("Joiner");
+  const [limit, setLimit] = useState<ResultLimit>(8);
   const [busy, setBusy] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
   const [error, setError] = useState("");
   const [rows, setRows] = useState<ReviewRow[] | null>(null);
+  const [mounted, setMounted] = useState(false);
 
   const selectedCount = rows?.filter((row) => row.selected).length ?? 0;
   const hotCount = rows?.filter((row) => row.priority === "HOT" && !row.duplicate).length ?? 0;
-  const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
     setMounted(true);
   }, []);
+
+  useEffect(() => {
+    if (!busy) {
+      setElapsed(0);
+      return;
+    }
+    const timer = window.setInterval(() => setElapsed((value) => value + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [busy]);
 
   async function runSearch() {
     const town = location.trim();
@@ -59,7 +84,7 @@ export function FindLeadsPanel({
     setError("");
     setRows(null);
     try {
-      const result = await researchProspects({ data: { location: town, businessType: trade } });
+      const result = await researchProspects({ data: { location: town, businessType: trade, limit } });
       if (!result.ok) {
         setError(result.error);
         return;
@@ -75,17 +100,17 @@ export function FindLeadsPanel({
         }),
       );
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Search failed. Try again.");
+      setError(err instanceof Error ? searchFailure(err) : "Search failed. Try again.");
     } finally {
       setBusy(false);
     }
   }
 
   function toggle(index: number, value?: boolean) {
-    setRows((current) =>
-      current?.map((row, i) =>
-        i === index ? { ...row, selected: value ?? !row.selected } : row,
-      ) ?? null,
+    setRows(
+      (current) =>
+        current?.map((row, i) => (i === index ? { ...row, selected: value ?? !row.selected } : row)) ??
+        null,
     );
   }
 
@@ -115,7 +140,7 @@ export function FindLeadsPanel({
 
   const panel = (
     <div className="find-overlay flex flex-col bg-bg text-fg">
-      <header className="flex shrink-0 items-center gap-3 border-b border-border px-4 py-3 md:px-6">
+      <header className="flex shrink-0 items-center gap-3 border-b border-border px-4 py-3 pt-[max(0.75rem,env(safe-area-inset-top))] md:px-6">
         <button
           type="button"
           className="flex size-11 items-center justify-center rounded-md text-muted hover:bg-surface-2 hover:text-fg"
@@ -132,71 +157,121 @@ export function FindLeadsPanel({
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-3xl px-4 py-5 md:px-6 md:py-8">
-          <p className="text-sm text-muted">
-            Choose a town and trade. Grok searches the public web, checks for a proper website, then
-            you pick who to import.
-          </p>
-
-          <div className="mt-5 grid gap-4">
-            <fieldset>
-              <legend className="text-xs font-medium text-muted">Location</legend>
-              <div className="mt-2 flex flex-wrap gap-2">
-                {TOWN_SUGGESTIONS.map((town) => (
-                  <Chip
-                    key={town}
-                    label={town}
-                    active={location === town}
-                    onClick={() => setLocation(town)}
-                  />
-                ))}
-              </div>
-              <Input
-                className="mt-3 h-11"
-                value={location}
-                onChange={(event) => setLocation(event.target.value)}
-                placeholder="Or type a town"
-                aria-label="Location"
-              />
-            </fieldset>
-
-            <fieldset>
-              <legend className="text-xs font-medium text-muted">Business type</legend>
-              <div className="mt-2 flex flex-wrap gap-2">
-                {TRADE_CHIPS.map((trade) => (
-                  <Chip
-                    key={trade}
-                    label={trade}
-                    active={businessType === trade}
-                    onClick={() => setBusinessType(trade)}
-                  />
-                ))}
-              </div>
-              <Input
-                className="mt-3 h-11"
-                value={businessType}
-                onChange={(event) => setBusinessType(event.target.value)}
-                placeholder="Or type a trade"
-                aria-label="Business type"
-                list="trade-list"
-              />
-            </fieldset>
-          </div>
-
-          <Button className="mt-5 h-12 w-full md:w-auto" onClick={() => void runSearch()} disabled={busy}>
-            {busy ? <Loader2 className="animate-spin" /> : <Search />}
-            {busy ? "Searching…" : "Find prospects"}
-          </Button>
           {busy ? (
-            <p className="mt-3 text-sm text-muted">Usually takes about 30 seconds. Don’t close this screen.</p>
-          ) : null}
-          {error ? <p className="mt-3 text-sm text-hot">{error}</p> : null}
+            <div className="rounded-xl bg-surface px-5 py-12 text-center shadow-(--shadow-border)">
+              <Loader2 className="mx-auto size-6 animate-spin text-muted" />
+              <p className="mt-4 font-medium" aria-live="polite">
+                Researching local businesses{elapsed ? `… ${elapsed}s` : "…"}
+              </p>
+              <p className="mt-2 text-sm text-muted">
+                {location} · {businessType}
+              </p>
+              <p className="mt-2 text-sm text-subtle">
+                Checking directories, Maps listings and websites. This can take a minute or two.
+              </p>
+            </div>
+          ) : rows ? (
+            <div className="flex flex-col gap-3 rounded-xl bg-surface px-4 py-3 shadow-(--shadow-border) sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-sm">
+                {location} · {businessType} · {rows.length} found
+              </p>
+              <div className="flex gap-2">
+                <Button variant="secondary" size="sm" onClick={() => setRows(null)}>
+                  Change search
+                </Button>
+                <Button size="sm" onClick={() => void runSearch()}>
+                  <Search />
+                  Search again
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <p className="text-sm text-muted">
+                Choose a town and trade. Grok searches the public web, checks for a proper website, then
+                you pick who to import.
+              </p>
 
-          {rows ? <ReviewList rows={rows} onToggle={toggle} /> : null}
+              <div className="mt-5 grid gap-4">
+                <fieldset>
+                  <legend className="text-xs font-medium text-muted">Location</legend>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {TOWN_SUGGESTIONS.map((town) => (
+                      <Chip
+                        key={town}
+                        label={town}
+                        active={location === town}
+                        onClick={() => setLocation(town)}
+                      />
+                    ))}
+                  </div>
+                  <Input
+                    className="mt-3 h-11"
+                    value={location}
+                    onChange={(event) => setLocation(event.target.value)}
+                    placeholder="Or type a town"
+                    aria-label="Location"
+                  />
+                </fieldset>
+
+                <fieldset>
+                  <legend className="text-xs font-medium text-muted">Business type</legend>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {TRADE_CHIPS.map((trade) => (
+                      <Chip
+                        key={trade}
+                        label={trade}
+                        active={businessType === trade}
+                        onClick={() => setBusinessType(trade)}
+                      />
+                    ))}
+                  </div>
+                  <Input
+                    className="mt-3 h-11"
+                    value={businessType}
+                    onChange={(event) => setBusinessType(event.target.value)}
+                    placeholder="Or type a trade"
+                    aria-label="Business type"
+                    list="trade-list"
+                  />
+                </fieldset>
+
+                <fieldset>
+                  <legend className="text-xs font-medium text-muted">How many</legend>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {RESULT_LIMITS.map((count) => (
+                      <Chip
+                        key={count}
+                        label={String(count)}
+                        active={limit === count}
+                        onClick={() => setLimit(count)}
+                      />
+                    ))}
+                  </div>
+                </fieldset>
+              </div>
+
+              <Button className="mt-5 h-12 w-full md:w-auto" onClick={() => void runSearch()}>
+                <Search />
+                Find prospects
+              </Button>
+              {error ? (
+                <div className="mt-3">
+                  <p className="text-sm text-hot">{error}</p>
+                  <Button variant="secondary" className="mt-3 h-11" onClick={() => void runSearch()}>
+                    Try again
+                  </Button>
+                </div>
+              ) : null}
+            </>
+          )}
+
+          {rows && !busy ? <ReviewList rows={rows} onToggle={toggle} /> : null}
         </div>
       </div>
 
-      {rows ? (
-        <footer className="shrink-0 border-t border-border bg-surface px-4 py-3 md:px-6">
+      {rows && !busy ? (
+        <footer className="shrink-0 border-t border-border bg-surface px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-6">
           <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex flex-wrap gap-2">
               <Button variant="secondary" size="sm" onClick={() => selectAll(true)}>
@@ -206,7 +281,7 @@ export function FindLeadsPanel({
                 Select HOT
               </Button>
               <Button variant="ghost" size="sm" onClick={() => selectAll(false)}>
-                Clear
+                Clear selection
               </Button>
             </div>
             <Button className="h-12 sm:h-10" onClick={importSelected} disabled={selectedCount === 0}>
@@ -236,7 +311,7 @@ function Chip({
       type="button"
       onClick={onClick}
       className={cn(
-        "h-10 rounded-full px-3.5 text-sm font-medium transition-colors duration-(--motion-quick)",
+        "h-11 rounded-full px-3.5 text-sm font-medium transition-colors duration-(--motion-quick)",
         active ? "bg-accent text-accent-fg" : "bg-surface text-muted shadow-(--shadow-border) hover:text-fg",
       )}
     >
@@ -298,7 +373,12 @@ function ReviewList({
                     <WebsiteStatusBadge status={row.websiteStatus} />
                     {row.duplicate ? (
                       <span className="text-xs font-medium text-hot">
-                        Already in sheet ({row.duplicate.lead.businessName})
+                        Already in sheet
+                        {row.duplicate.via === "phone"
+                          ? " (same phone)"
+                          : row.duplicate.via === "maps"
+                            ? " (same Maps listing)"
+                            : " (same name)"}
                       </span>
                     ) : null}
                   </div>
@@ -314,16 +394,20 @@ function ReviewList({
                     {" · "}
                     {row.reviews !== "" ? `${row.reviews} reviews` : "No reviews"}
                   </p>
+                  {row.website ? (
+                    <p className="mt-1 truncate text-sm text-subtle">{row.website}</p>
+                  ) : null}
                   {row.notes ? <p className="mt-2 text-sm text-muted">{row.notes}</p> : null}
+                  {row.source ? <p className="mt-1 text-xs text-subtle">{row.source}</p> : null}
                   <div className="mt-3 flex flex-wrap gap-2">
                     {tel ? (
                       <a
                         href={tel}
-                        className="inline-flex h-10 items-center gap-1.5 rounded-md bg-surface-2 px-3 text-sm font-medium"
+                        className="inline-flex h-11 items-center gap-1.5 rounded-md bg-accent px-3 text-sm font-medium text-accent-fg"
                         onClick={(event) => event.stopPropagation()}
                       >
                         <Phone className="size-3.5" />
-                        Call
+                        {row.phone}
                       </a>
                     ) : null}
                     {maps ? (
@@ -331,7 +415,7 @@ function ReviewList({
                         href={maps}
                         target="_blank"
                         rel="noreferrer"
-                        className="inline-flex h-10 items-center gap-1.5 rounded-md bg-surface-2 px-3 text-sm font-medium"
+                        className="inline-flex h-11 items-center gap-1.5 rounded-md bg-surface-2 px-3 text-sm font-medium"
                         onClick={(event) => event.stopPropagation()}
                       >
                         <MapPin className="size-3.5" />
@@ -343,10 +427,10 @@ function ReviewList({
                         href={site}
                         target="_blank"
                         rel="noreferrer"
-                        className="inline-flex h-10 items-center rounded-md bg-surface-2 px-3 text-sm font-medium"
+                        className="inline-flex h-11 items-center rounded-md bg-surface-2 px-3 text-sm font-medium"
                         onClick={(event) => event.stopPropagation()}
                       >
-                        Website
+                        {websiteActionLabel(row.website, row.websiteStatus)}
                       </a>
                     ) : null}
                   </div>

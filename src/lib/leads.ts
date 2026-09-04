@@ -97,6 +97,9 @@ export const TOWN_SUGGESTIONS = [
   "Stirling",
 ] as const;
 
+export const RESULT_LIMITS = [6, 8, 12] as const;
+export type ResultLimit = (typeof RESULT_LIMITS)[number];
+
 export type SortKey =
   | "businessName"
   | "trade"
@@ -150,6 +153,8 @@ const DIRECTORY_HOSTS = [
   "trustpilot.com",
   "checkatrade.com",
   "mybuilder.com",
+  "bookabuilderuk.com",
+  "trustatrader.com",
   "ratedpeople.com",
   "bark.com",
   "houzz.com",
@@ -173,6 +178,19 @@ const DIRECTORY_HOSTS = [
   "tripadvisor.com",
   "opentable.com",
 ];
+
+const HINT_TO_STATUS: Record<string, WebsiteStatus> = {
+  proper: "Proper Website",
+  "proper website": "Proper Website",
+  social: "Social Only",
+  "social only": "Social Only",
+  directory: "Directory Only",
+  "directory only": "Directory Only",
+  none: "No Website Found",
+  "no website": "No Website Found",
+  "no website found": "No Website Found",
+  unclear: "Unclear",
+};
 
 export function hasWebsite(website: string): boolean {
   return !NO_SITE.has(website.trim().toLowerCase());
@@ -202,6 +220,55 @@ export function classifyWebsiteUrl(website: string): WebsiteStatus {
   return "Proper Website";
 }
 
+/**
+ * Pull a real independent site out of notes/evidence without treating ratings
+ * ("4.9") or public suffixes (".co.uk") as URLs.
+ */
+export function extractIndependentUrl(text: string): string {
+  const tokens =
+    text.match(/https?:\/\/[^\s"'<>)]+|www\.[a-z0-9.-]+\.[a-z.]+|\b[a-z][a-z0-9-]*(?:\.[a-z0-9-]+)+/gi) ??
+    [];
+  for (const token of tokens) {
+    const raw = token.replace(/[.,;:/]+$/, "");
+    if (!raw) continue;
+    const url = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+    const host = hostnameOf(url);
+    if (!host || !/[a-z]/i.test(host)) continue;
+    if (/^\d/.test(host)) continue;
+    if (!/\.(?:co\.uk|org\.uk|ac\.uk|com|scot|uk|net|org|io|co)$/i.test(host)) continue;
+    if (/^(?:co\.uk|org\.uk|ac\.uk|com|scot|uk|net|org|io|co)$/i.test(host)) continue;
+    if (classifyWebsiteUrl(url) === "Proper Website") return url;
+  }
+  return "";
+}
+
+/**
+ * Conservative website status. An unverified independent URL is Unclear, not
+ * Proper Website — a dead NXDOMAIN must not look like they already have a site.
+ * An empty URL is not automatically "No Website Found".
+ */
+export function mergeWebsiteEvidence(
+  hint: string,
+  url: string,
+  verified: WebsiteStatus | null,
+): WebsiteStatus {
+  const trimmed = url.trim();
+  const fromUrl = trimmed ? classifyWebsiteUrl(trimmed) : "No Website Found";
+  const fromHint = HINT_TO_STATUS[hint.trim().toLowerCase()];
+
+  if (verified === "Social Only" || verified === "Directory Only" || verified === "Proper Website") {
+    return verified;
+  }
+  if (fromUrl === "Social Only" || fromUrl === "Directory Only") return fromUrl;
+  if (fromUrl === "Proper Website") return "Unclear";
+  if (!trimmed) {
+    if (fromHint === "Proper Website") return "Unclear";
+    return fromHint ?? "Unclear";
+  }
+  if (fromHint) return fromHint;
+  return "Unclear";
+}
+
 export function resolveWebsiteStatus(lead: Pick<Lead, "website" | "websiteStatus">): WebsiteStatus {
   if (lead.websiteStatus) return lead.websiteStatus;
   return classifyWebsiteUrl(lead.website);
@@ -217,11 +284,12 @@ export function computePriority(
 ): Priority {
   const reviews = typeof lead.reviews === "number" ? lead.reviews : 0;
   const rating = typeof lead.rating === "number" ? lead.rating : 0;
+  const status = resolveWebsiteStatus(lead);
   const prospect = lacksProperWebsite(lead);
 
   if (prospect && reviews >= 20 && rating >= 4.5) return "HOT";
   if (prospect && reviews > 0) return "WARM";
-  if (prospect && resolveWebsiteStatus(lead) === "Social Only") return "WARM";
+  if (prospect && (status === "Social Only" || status === "Directory Only")) return "WARM";
   return "COLD";
 }
 
@@ -247,6 +315,21 @@ export function websiteHref(website: string): string | null {
   if (!hasWebsite(value)) return null;
   if (/^https?:\/\//i.test(value)) return value;
   return `https://${value}`;
+}
+
+export function websiteActionLabel(
+  website: string,
+  status: WebsiteStatus | "" = "",
+): string {
+  const resolved = status || classifyWebsiteUrl(website);
+  if (resolved === "Directory Only") return "Listing";
+  if (resolved === "Social Only") {
+    const host = hostnameOf(website);
+    if (host.includes("instagram")) return "Instagram";
+    if (host.includes("facebook") || host === "fb.com" || host.endsWith(".fb.com")) return "Facebook";
+    return "Social";
+  }
+  return "Website";
 }
 
 export function mapsHref(lead: Pick<Lead, "mapsLink" | "businessName" | "town">): string | null {
@@ -439,7 +522,10 @@ export function downloadCsv(leads: Lead[]): void {
   const stamp = new Date().toISOString().slice(0, 10);
   anchor.href = url;
   anchor.download = `peak-swift-leads-${stamp}.csv`;
+  anchor.rel = "noopener";
+  document.body.appendChild(anchor);
   anchor.click();
+  anchor.remove();
   URL.revokeObjectURL(url);
 }
 
@@ -528,7 +614,7 @@ export function normalizeMaps(value: string): string {
 
 export type DuplicateMatch = {
   lead: Lead;
-  via: "phone" | "maps" | "name+town";
+  via: "phone" | "maps" | "name" | "name+town";
 };
 
 export function findDuplicate(
@@ -550,6 +636,11 @@ export function findDuplicate(
     const sameName = name.length >= 3 && name === normalizeName(lead.businessName);
     const sameTown = town && lead.town.trim().toLowerCase() === town;
     if (sameName && sameTown) return { lead, via: "name+town" };
+  }
+
+  for (const lead of leads) {
+    const sameName = name.length >= 8 && name.includes(" ") && name === normalizeName(lead.businessName);
+    if (sameName) return { lead, via: "name" };
   }
   return null;
 }

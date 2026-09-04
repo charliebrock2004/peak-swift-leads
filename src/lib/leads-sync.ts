@@ -34,9 +34,10 @@ export type SyncFailure = {
   ok: false;
   /**
    * `signed-out` — nobody is signed in, so there is no sheet to sync with.
-   * `unavailable` — the database could not be reached or is not configured.
+   * `not-configured` — production has no database; this device is the only copy.
+   * `unavailable` — the database could not be reached (network or server error).
    */
-  reason: "signed-out" | "unavailable";
+  reason: "signed-out" | "not-configured" | "unavailable";
   message: string;
 };
 
@@ -114,7 +115,7 @@ export type SyncState =
 
 export function describeSync(state: SyncState, pending: number, durable: boolean): string {
   if (state === "syncing") return "Saving…";
-  if (state === "error") return "Offline — saved on this device";
+  if (state === "error") return "Could not sync — saved on this device";
   if (state === "local-only") return "This device only";
   if (!durable) return "Preview storage";
   if (pending > 0) return `${pending} to save`;

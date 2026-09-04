@@ -64,7 +64,7 @@ export function SyncBadge() {
                 ? "Your leads are saved in this browser and work offline, but they are not on your account yet — another phone or laptop will not see them."
                 : null}
               {state === "error"
-                ? "Your leads are safe in this browser. They will go up to your account automatically as soon as the connection is back."
+                ? "Your leads are safe in this browser. They could not be copied to your account just now — this is not the same as being offline."
                 : null}
               {state !== "local-only" && state !== "error" && !durable
                 ? "This is a preview database — it resets when the server restarts. Your browser copy is the real one here."

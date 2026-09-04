@@ -20,6 +20,7 @@ import {
   phoneHref,
   priorityReason,
   resolveWebsiteStatus,
+  websiteActionLabel,
   websiteHref,
   type CallResult,
   type Lead,
@@ -218,7 +219,7 @@ export function LeadCards({
                         className="inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-md bg-surface-2 text-sm font-medium text-fg"
                       >
                         <ExternalLink className="size-4" />
-                        Their site
+                        {websiteActionLabel(lead.website, status)}
                       </a>
                     ) : null}
                     {demo ? (

@@ -5,8 +5,10 @@ import {
   compareLeads,
   computePriority,
   createLead,
+  extractIndependentUrl,
   findDuplicate,
   leadsToCsv,
+  mergeWebsiteEvidence,
   migrateLead,
   normalizeName,
   normalizePhone,
@@ -16,6 +18,7 @@ import {
   addDays,
   callOutcomePatch,
   todayIso,
+  websiteActionLabel,
   type Lead,
 } from "./leads.ts";
 
@@ -34,10 +37,46 @@ describe("website classification", () => {
     assert.equal(classifyWebsiteUrl("instagram.com/bar"), "Social Only");
     assert.equal(classifyWebsiteUrl("https://www.yell.com/biz/foo"), "Directory Only");
     assert.equal(classifyWebsiteUrl("https://maps.google.com/?q=foo"), "Directory Only");
+    assert.equal(classifyWebsiteUrl("https://bookabuilderuk.com/profile/matt"), "Directory Only");
   });
 
   it("treats independent domains as a proper website", () => {
     assert.equal(classifyWebsiteUrl("https://monziejoinery.co.uk"), "Proper Website");
+  });
+
+  it("does not treat a missing URL as a proper website even if hinted", () => {
+    assert.equal(mergeWebsiteEvidence("proper", "", null), "Unclear");
+    assert.equal(mergeWebsiteEvidence("none", "", null), "No Website Found");
+    assert.equal(mergeWebsiteEvidence("proper", "https://facebook.com/x", null), "Social Only");
+  });
+
+  it("does not treat an unconfirmed independent URL as a proper website", () => {
+    assert.equal(mergeWebsiteEvidence("proper", "https://gavinbrock-joiner.co.uk", null), "Unclear");
+  });
+
+  it("keeps a live independent URL as a proper website", () => {
+    assert.equal(
+      mergeWebsiteEvidence("proper", "https://monziejoinery.co.uk", "Proper Website"),
+      "Proper Website",
+    );
+  });
+
+  it("treats an empty URL with no hint as unclear", () => {
+    assert.equal(mergeWebsiteEvidence("", "", null), "Unclear");
+  });
+
+  it("pulls an independent domain out of directory notes", () => {
+    assert.equal(
+      extractIndependentUrl("Yell listing. Website references to wbdodds.co.uk found in directories."),
+      "https://wbdodds.co.uk",
+    );
+    assert.equal(extractIndependentUrl("https://www.yell.com/biz/dodds"), "");
+  });
+
+  it("does not treat ratings, postcodes or public suffixes as websites", () => {
+    assert.equal(extractIndependentUrl("MyBuilder 4.9/5 from 48 reviews. Checkatrade 10/10."), "");
+    assert.equal(extractIndependentUrl("Address 22 Monteath Street, PH7 3EG"), "");
+    assert.equal(extractIndependentUrl("Some directories list a .co.uk site."), "");
   });
 });
 
@@ -60,6 +99,20 @@ describe("priority", () => {
         }),
       ),
       "COLD",
+    );
+  });
+
+  it("ranks directory-only listings as WARM even without review counts", () => {
+    assert.equal(
+      computePriority(
+        lead({
+          website: "https://www.yell.com/biz/dodds",
+          reviews: "",
+          rating: "",
+          websiteStatus: "Directory Only",
+        }),
+      ),
+      "WARM",
     );
   });
 
@@ -155,6 +208,14 @@ describe("duplicates", () => {
       findDuplicate({ businessName: "Monzie Joinery", town: "Crieff", phone: "01764 111111", mapsLink: "" }, existing),
       null,
     );
+  });
+
+  it("matches a distinctive name even in another town", () => {
+    const match = findDuplicate(
+      { businessName: "W B Dodds Limited", town: "Perth", phone: "", mapsLink: "" },
+      existing,
+    );
+    assert.equal(match?.via, "name");
   });
 });
 
@@ -253,5 +314,13 @@ describe("date arithmetic", () => {
   it("adds days across a month boundary", () => {
     assert.equal(addDays("2026-01-30", 3), "2026-02-02");
     assert.equal(addDays("2026-12-31", 1), "2027-01-01");
+  });
+});
+
+describe("link labels", () => {
+  it("labels social and directory links clearly", () => {
+    assert.equal(websiteActionLabel("https://facebook.com/jed", "Social Only"), "Facebook");
+    assert.equal(websiteActionLabel("https://www.yell.com/biz/x", "Directory Only"), "Listing");
+    assert.equal(websiteActionLabel("https://monziejoinery.co.uk", "Proper Website"), "Website");
   });
 });

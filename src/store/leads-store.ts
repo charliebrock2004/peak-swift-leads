@@ -137,7 +137,7 @@ export const useLeadsStore = create<LeadsState>()(
 
           if (!result.ok) {
             set({
-              syncState: result.reason === "signed-out" ? "local-only" : "error",
+              syncState: result.reason === "unavailable" ? "error" : "local-only",
               syncMessage: result.message,
             });
             return;

@@ -16,6 +16,13 @@ function isUnauthorized(error: unknown): boolean {
 }
 
 export async function runLeadSync(request: SyncRequest): Promise<SyncResponse> {
+  if (typeof navigator !== "undefined" && navigator.onLine === false) {
+    return {
+      ok: false,
+      reason: "unavailable",
+      message: "You are offline. Leads stay on this device until you are back online.",
+    };
+  }
   try {
     return await syncLeads({ data: request });
   } catch (error) {
@@ -23,13 +30,13 @@ export async function runLeadSync(request: SyncRequest): Promise<SyncResponse> {
       return {
         ok: false,
         reason: "signed-out",
-        message: "Sign in to keep this sheet on every device.",
+        message: "Leads stay on this device. Sign in to keep the same sheet on every device.",
       };
     }
     return {
       ok: false,
       reason: "unavailable",
-      message: "Could not reach your saved sheet just now.",
+      message: "Could not reach your saved sheet just now. Leads stay on this device.",
     };
   }
 }

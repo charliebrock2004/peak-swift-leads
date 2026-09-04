@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Download, FileUp, Plus, Search, SlidersHorizontal } from "lucide-react";
 import { toast } from "sonner";
 import { FindLeadsPanel } from "@/components/leads/find-leads";
@@ -77,6 +77,15 @@ export function LeadApp() {
   const [importing, setImporting] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [summaryKey, setSummaryKey] = useState<keyof LeadSummary | null>(null);
+  const [hydrated, setHydrated] = useState(true);
+
+  useEffect(() => {
+    const persist = useLeadsStore.persist;
+    if (!persist) return;
+    if (persist.hasHydrated()) return;
+    setHydrated(false);
+    return persist.onFinishHydration(() => setHydrated(true));
+  }, []);
 
   const towns = useMemo(() => {
     const set = new Set<string>(TOWN_SUGGESTIONS);
@@ -366,6 +375,28 @@ export function LeadApp() {
             >
               Due today
             </button>
+            <button
+              type="button"
+              onClick={() => {
+                setQuery("");
+                setPriorityFilter("HOT");
+                setCalledFilter("Not Called");
+                setResultFilter("ALL");
+                setTownFilter("ALL");
+                setTradeFilter("ALL");
+                setStatusFilter("ALL");
+                setDueOnly(false);
+                setSummaryKey("hot");
+              }}
+              className={cn(
+                "h-10 rounded-full px-3.5 text-sm font-medium transition-colors duration-(--motion-quick)",
+                priorityFilter === "HOT" && calledFilter === "Not Called" && !dueOnly
+                  ? "bg-accent text-accent-fg"
+                  : "bg-surface text-muted shadow-(--shadow-border) hover:text-fg",
+              )}
+            >
+              Ready to call
+            </button>
             {filtersOn ? (
               <button type="button" className="h-9 px-2 text-sm text-muted hover:text-fg" onClick={clearFilters}>
                 Clear
@@ -375,7 +406,11 @@ export function LeadApp() {
           </div>
         </div>
 
-        {visibleLeads.length === 0 ? (
+        {!hydrated ? (
+          <div className="rounded-xl bg-surface px-5 py-14 text-center shadow-(--shadow-border)">
+            <p className="text-sm text-muted">Loading your sheet…</p>
+          </div>
+        ) : visibleLeads.length === 0 ? (
           <div className="rounded-xl bg-surface px-5 py-14 text-center shadow-(--shadow-border)">
             <p className="font-medium">
               {leads.length === 0 ? "No leads yet" : "No leads match these filters"}

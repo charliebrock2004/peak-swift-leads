@@ -22,7 +22,7 @@ what makes the same sheet appear on your phone and your laptop:
 | Deployed with a database | Leads sync to Postgres, scoped to your account | Saved to your account |
 | Local `npm run dev` | Syncs to an embedded database that resets on restart | Preview storage |
 | Signed out / no database | Works fully, this browser only | This device only |
-| Offline | Works fully, syncs when the connection returns | Offline — saved on this device |
+| Sync failed | Works fully, retry later | Could not sync — saved on this device |
 
 The badge in the header never overstates things — tap it for the detail and a
 retry. Nothing is ever deleted locally because a sync failed.

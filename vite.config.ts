@@ -175,6 +175,14 @@ export default defineConfig(({ command, isPreview }) => ({
             // manifest + head-tag middleware). Nitro v3 defaults serverDir to
             // false, so removing this silently unwires /?install=1 on deploys.
             serverDir: "./server",
+            vercel: {
+              functions: {
+                // Find-leads does live web research. Default Vercel limits
+                // (10s hobby / 60s some plans) kill the search before Grok
+                // finishes. 300s is the Pro ceiling.
+                maxDuration: 300,
+              },
+            },
           }),
         ]
       : []),

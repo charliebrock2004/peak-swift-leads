@@ -295,7 +295,7 @@ export type ImportEntry = {
   draft: ImportDraft;
   /** The lead this row already exists as, if any. */
   existing: Lead | null;
-  matchedVia: "phone" | "maps" | "name+town" | null;
+  matchedVia: "phone" | "maps" | "name" | "name+town" | null;
   /** Fields a merge would fill in on the existing lead. Empty means nothing to do. */
   fills: ImportField[];
   action: ImportAction;

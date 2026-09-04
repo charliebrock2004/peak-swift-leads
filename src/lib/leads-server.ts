@@ -107,6 +107,14 @@ export const syncLeads = createServerFn({ method: "POST" })
     const { getSql, dbSource } = await import("@/lib/db");
     const userId = context.userId;
 
+    if (dbSource === "none") {
+      return {
+        ok: false,
+        reason: "not-configured",
+        message: "Cloud sync is not configured. Leads stay on this device.",
+      };
+    }
+
     try {
       const sql = await getSql();
 
