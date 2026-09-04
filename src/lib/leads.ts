@@ -97,7 +97,7 @@ export const TOWN_SUGGESTIONS = [
   "Stirling",
 ] as const;
 
-export const RESULT_LIMITS = [6, 8, 12] as const;
+export const RESULT_LIMITS = [6, 8, 12, 25, 50, 100] as const;
 export type ResultLimit = (typeof RESULT_LIMITS)[number];
 
 export type SortKey =
@@ -613,15 +613,17 @@ export function normalizeMaps(value: string): string {
   return href.replace(/\/+$/, "");
 }
 
-export type DuplicateMatch = {
-  lead: Lead;
+export type LeadIdentity = Pick<Lead, "businessName" | "town" | "phone" | "mapsLink">;
+
+export type DuplicateMatch<T extends LeadIdentity = Lead> = {
+  lead: T;
   via: "phone" | "maps" | "name" | "name+town";
 };
 
-export function findDuplicate(
-  candidate: Pick<Lead, "businessName" | "town" | "phone" | "mapsLink">,
-  leads: Lead[],
-): DuplicateMatch | null {
+export function findDuplicate<T extends LeadIdentity>(
+  candidate: LeadIdentity,
+  leads: readonly T[],
+): DuplicateMatch<T> | null {
   const phone = normalizePhone(candidate.phone);
   const maps = candidate.mapsLink.trim() ? normalizeMaps(candidate.mapsLink) : "";
   const name = normalizeName(candidate.businessName);

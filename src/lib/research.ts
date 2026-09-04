@@ -3,16 +3,15 @@ import {
   classifyWebsiteUrl,
   computePriority,
   extractIndependentUrl,
+  findDuplicate,
   mapsHref,
   mergeWebsiteEvidence,
-  normalizeName,
   parseNumberInput,
   priorityReason,
-  RESULT_LIMITS,
   type Priority,
-  type ResultLimit,
   type WebsiteStatus,
 } from "@/lib/leads";
+import { RESEARCH_BATCH_MAX } from "@/lib/scotland-places";
 
 export type Prospect = {
   businessName: string;
@@ -151,12 +150,9 @@ async function verifyWebsite(url: string): Promise<WebsiteStatus | null> {
 }
 
 function uniqueProspects(list: Prospect[]): Prospect[] {
-  const seen = new Set<string>();
   const next: Prospect[] = [];
   for (const item of list) {
-    const key = `${normalizeName(item.businessName)}|${item.town.trim().toLowerCase()}|${item.phone.replace(/\D/g, "").slice(-10)}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
+    if (findDuplicate(item, next)) continue;
     next.push(item);
   }
   return next;
@@ -175,12 +171,19 @@ export const researchProspects = createServerFn({ method: "POST" })
     const location = asString((input as { location?: unknown }).location).slice(0, 80);
     const businessType = asString((input as { businessType?: unknown }).businessType).slice(0, 80);
     const rawLimit = Number((input as { limit?: unknown }).limit);
-    const limit = (RESULT_LIMITS as readonly number[]).includes(rawLimit)
-      ? (rawLimit as ResultLimit)
+    const limit = Number.isFinite(rawLimit)
+      ? Math.min(RESEARCH_BATCH_MAX, Math.max(1, Math.round(rawLimit)))
       : 8;
+    const excludeRaw = (input as { excludeNames?: unknown }).excludeNames;
+    const excludeNames = Array.isArray(excludeRaw)
+      ? excludeRaw
+          .map((value) => asString(value).slice(0, 80))
+          .filter((name) => name.length >= 2)
+          .slice(0, 40)
+      : [];
     if (location.length < 2) throw new Error("Enter a location");
     if (businessType.length < 2) throw new Error("Enter a business type");
-    return { location, businessType, limit };
+    return { location, businessType, limit, excludeNames };
   })
   .handler(async ({ data }): Promise<ResearchResult> => {
     const apiKey = process.env.XAI_API_KEY;
@@ -191,6 +194,11 @@ export const researchProspects = createServerFn({ method: "POST" })
           "Lead search failed because XAI_API_KEY is missing from the production server. In Vercel open peak-swift-leads → Settings → Environment Variables. Add XAI_API_KEY (server only — do not prefix with VITE_), tick Production, then Redeploy. Create a key at console.x.ai if you do not have one.",
       };
     }
+
+    const skip =
+      data.excludeNames.length > 0
+        ? `\n- Do not include these businesses, they are already found: ${data.excludeNames.join("; ")}.`
+        : "";
 
     const prompt = `Find up to ${data.limit} real ${data.businessType} businesses in or serving ${data.location}, Scotland.
 
@@ -215,7 +223,7 @@ Rules:
   - mixed or thin evidence → websiteHint=unclear
 - A Facebook page, Instagram page or directory listing is NOT a proper website.
 - Phone numbers from Yell, Thomson Local or the business site are valid.
-- Prefer Google Maps rating and review count. If you only have Checkatrade or MyBuilder figures, still include them and say so in notes.
+- Prefer Google Maps rating and review count. If you only have Checkatrade or MyBuilder figures, still include them and say so in notes.${skip}
 
 Return JSON only:
 {"prospects":[{
@@ -408,11 +416,13 @@ Return JSON only:
       .slice(0, data.limit);
 
     if (prospects.length === 0) {
-      return {
-        ok: false,
-        error: `No verified ${data.businessType.toLowerCase()} businesses found in ${data.location}. Try a nearby town.`,
-      };
+      return { ok: true, prospects: [], location: data.location, businessType: data.businessType };
     }
+
+    console.info(
+      `[research] ${data.location} ${data.businessType} → ${prospects.length}`,
+      prospects.map((item) => `${item.priority}:${item.businessName} (${item.town})`).join(" | "),
+    );
 
     return { ok: true, prospects, location: data.location, businessType: data.businessType };
   });

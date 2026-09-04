@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ArrowLeft, Loader2, MapPin, Phone, Search } from "lucide-react";
 import { toast } from "sonner";
@@ -16,17 +16,47 @@ import {
   websiteActionLabel,
   websiteHref,
   type Lead,
+  type Priority,
   type ResultLimit,
 } from "@/lib/leads";
 import { researchProspects, type Prospect } from "@/lib/research";
+import { runPlannedSearch, type SearchProgress } from "@/lib/run-search";
+import {
+  CITY_SUGGESTIONS,
+  REGION_SUGGESTIONS,
+  locationKindFor,
+  planSearch,
+  type PlaceKind,
+} from "@/lib/scotland-places";
 import { cn } from "@/lib/utils";
 
 const TRADE_CHIPS = [...TRADE_SUGGESTIONS];
 
+const KIND_CHIPS: { id: PlaceKind; label: string }[] = [
+  { id: "town", label: "Town" },
+  { id: "city", label: "City" },
+  { id: "region", label: "Region" },
+  { id: "nation", label: "Scotland" },
+];
+
+const KIND_DEFAULT: Record<PlaceKind, string> = {
+  town: "Crieff",
+  city: "Perth",
+  region: "Perthshire",
+  nation: "Scotland",
+};
+
+function chipsFor(kind: PlaceKind): readonly string[] {
+  if (kind === "region") return REGION_SUGGESTIONS;
+  if (kind === "city") return CITY_SUGGESTIONS;
+  if (kind === "nation") return ["Scotland"];
+  return TOWN_SUGGESTIONS;
+}
+
 function searchFailure(err: unknown): string {
   const message = err instanceof Error ? err.message : String(err ?? "");
   if (/504|503|502|timeout|timed out|abort/i.test(message)) {
-    return "That search took too long on the server. Try 6 results, or a more specific town. Vercel Hobby caps functions at about 10s — Find leads needs Pro (up to 5 minutes).";
+    return "That search took too long on the server. Try a smaller area, or fewer results. Vercel Hobby caps functions at about 10s — Find leads needs Pro (up to 5 minutes).";
   }
   if (/failed to fetch|networkerror|load failed/i.test(message)) {
     return "Could not reach the lead search server. Check your connection and try again.";
@@ -48,20 +78,33 @@ export function FindLeadsPanel({
   onClose: () => void;
   onImport: (prospects: Prospect[]) => void;
 }) {
+  const [kind, setKind] = useState<PlaceKind>("town");
   const [location, setLocation] = useState("Crieff");
   const [businessType, setBusinessType] = useState("Joiner");
   const [limit, setLimit] = useState<ResultLimit>(8);
   const [busy, setBusy] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [error, setError] = useState("");
+  const [warning, setWarning] = useState("");
   const [rows, setRows] = useState<ReviewRow[] | null>(null);
+  const [progress, setProgress] = useState<SearchProgress | null>(null);
   const [mounted, setMounted] = useState(false);
+  const [stopping, setStopping] = useState(false);
+  const cancelled = useRef(false);
+  const runId = useRef(0);
 
   const selectedCount = rows?.filter((row) => row.selected).length ?? 0;
   const hotCount = rows?.filter((row) => row.priority === "HOT" && !row.duplicate).length ?? 0;
+  const warmCount = rows?.filter((row) => row.priority === "WARM" && !row.duplicate).length ?? 0;
+  const coldCount = rows?.filter((row) => row.priority === "COLD" && !row.duplicate).length ?? 0;
+
+  const preview = useMemo(() => planSearch(location.trim() || "Crieff", limit), [location, limit]);
 
   useEffect(() => {
     setMounted(true);
+    return () => {
+      cancelled.current = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -73,37 +116,98 @@ export function FindLeadsPanel({
     return () => window.clearInterval(timer);
   }, [busy]);
 
-  async function runSearch() {
-    const town = location.trim();
-    const trade = businessType.trim();
-    if (town.length < 2 || trade.length < 2) {
-      setError("Choose a town and a business type.");
+  function chooseKind(next: PlaceKind) {
+    setKind(next);
+    const current = locationKindFor(location);
+    if (next === "nation") {
+      setLocation("Scotland");
       return;
     }
+    if (current !== next) setLocation(KIND_DEFAULT[next]);
+  }
+
+  function toRows(prospects: Prospect[]): ReviewRow[] {
+    return prospects.map((prospect) => {
+      const duplicate = findDuplicate(prospect, leads);
+      return {
+        ...prospect,
+        duplicate,
+        selected: !duplicate && prospect.priority !== "COLD",
+      };
+    });
+  }
+
+  async function runSearch() {
+    const place = location.trim();
+    const trade = businessType.trim();
+    if (place.length < 2 || trade.length < 2) {
+      setError("Choose a location and a business type.");
+      return;
+    }
+    const id = ++runId.current;
+    cancelled.current = false;
     setBusy(true);
     setError("");
+    setWarning("");
     setRows(null);
+    setProgress(null);
+    setStopping(false);
     try {
-      const result = await researchProspects({ data: { location: town, businessType: trade, limit } });
-      if (!result.ok) {
-        setError(result.error);
+      const result = await runPlannedSearch({
+        location: place,
+        businessType: trade,
+        limit,
+        concurrency: preview.areas.length > 1 ? 2 : 1,
+        shouldCancel: () => cancelled.current || runId.current !== id,
+        onProgress: (next) => {
+          if (runId.current === id) setProgress(next);
+        },
+        research: (input) => researchProspects({ data: input }),
+      });
+      if (runId.current !== id) return;
+      if (result.cancelled && result.prospects.length === 0) {
+        setError("Search cancelled.");
         return;
       }
-      setRows(
-        result.prospects.map((prospect) => {
-          const duplicate = findDuplicate(prospect, leads);
-          return {
-            ...prospect,
-            duplicate,
-            selected: !duplicate && prospect.priority !== "COLD",
-          };
-        }),
-      );
+      if (result.prospects.length === 0) {
+        setError(
+          result.errors[0] ||
+            `No verified ${trade.toLowerCase()} businesses found in ${preview.label}. Try a nearby town.`,
+        );
+        return;
+      }
+      setRows(toRows(result.prospects));
+      const bits: string[] = [];
+      if (result.cancelled) bits.push("Search stopped early. Showing what was found.");
+      if (result.errors.length > 0) {
+        const failed = result.errors.length;
+        const okTowns = result.plan.areas.length - failed;
+        bits.push(
+          `${okTowns} of ${result.plan.areas.length} towns finished. ${failed} failed. Showing ${result.prospects.length} genuine result${result.prospects.length === 1 ? "" : "s"}.`,
+        );
+        bits.push(result.errors[0] ?? "");
+      }
+      setWarning(bits.filter(Boolean).join(" "));
     } catch (err) {
+      if (runId.current !== id) return;
       setError(err instanceof Error ? searchFailure(err) : "Search failed. Try again.");
     } finally {
-      setBusy(false);
+      if (runId.current === id) {
+        setBusy(false);
+        setProgress(null);
+      }
     }
+  }
+
+  function cancelSearch() {
+    cancelled.current = true;
+    setStopping(true);
+  }
+
+  function closePanel() {
+    cancelled.current = true;
+    runId.current += 1;
+    onClose();
   }
 
   function toggle(index: number, value?: boolean) {
@@ -118,12 +222,12 @@ export function FindLeadsPanel({
     setRows((current) => current?.map((row) => ({ ...row, selected: on && !row.duplicate })) ?? null);
   }
 
-  function selectHot() {
+  function selectPriority(priority: Priority) {
     setRows(
       (current) =>
         current?.map((row) => ({
           ...row,
-          selected: !row.duplicate && row.priority === "HOT",
+          selected: !row.duplicate && row.priority === priority,
         })) ?? null,
     );
   }
@@ -138,13 +242,18 @@ export function FindLeadsPanel({
     onImport(chosen);
   }
 
+  const locationChips = chipsFor(kind);
+  const searchingLabel = progress?.active.length
+    ? progress.active.join(" · ")
+    : progress?.area || location;
+
   const panel = (
     <div className="find-overlay flex flex-col bg-bg text-fg">
       <header className="flex shrink-0 items-center gap-3 border-b border-border px-4 py-3 pt-[max(0.75rem,env(safe-area-inset-top))] md:px-6">
         <button
           type="button"
           className="flex size-11 items-center justify-center rounded-md text-muted hover:bg-surface-2 hover:text-fg"
-          onClick={onClose}
+          onClick={closePanel}
           aria-label="Back to lead sheet"
         >
           <ArrowLeft className="size-5" />
@@ -161,19 +270,39 @@ export function FindLeadsPanel({
             <div className="rounded-xl bg-surface px-5 py-12 text-center shadow-(--shadow-border)">
               <Loader2 className="mx-auto size-6 animate-spin text-muted" />
               <p className="mt-4 font-medium" aria-live="polite">
-                Researching local businesses{elapsed ? `… ${elapsed}s` : "…"}
+                {stopping
+                  ? "Stopping after this town…"
+                  : `Researching local businesses${elapsed ? `… ${elapsed}s` : "…"}`}
               </p>
               <p className="mt-2 text-sm text-muted">
-                {location} · {businessType}
+                {searchingLabel}
+                {progress && progress.total > 1
+                  ? ` · ${Math.min(progress.index, progress.total)} of ${progress.total}`
+                  : ""}
               </p>
               <p className="mt-2 text-sm text-subtle">
-                Checking directories, Maps listings and websites. This can take a minute or two.
+                {progress
+                  ? `${progress.found} genuine so far · stops at ${progress.target}`
+                  : `${location} · ${businessType}`}
               </p>
+              {preview.areas.length > 1 ? (
+                <p className="mt-2 text-sm text-subtle">
+                  Searching {preview.areas.length} towns across {preview.label}. Already-found names
+                  are skipped.
+                </p>
+              ) : (
+                <p className="mt-2 text-sm text-subtle">
+                  Checking directories, Maps listings and websites. This can take a minute or two.
+                </p>
+              )}
+              {progress?.errors.length ? (
+                <p className="mt-3 text-sm text-warm-lead">{progress.errors[progress.errors.length - 1]}</p>
+              ) : null}
             </div>
           ) : rows ? (
             <div className="flex flex-col gap-3 rounded-xl bg-surface px-4 py-3 shadow-(--shadow-border) sm:flex-row sm:items-center sm:justify-between">
               <p className="text-sm">
-                {location} · {businessType} · {rows.length} found
+                {preview.label} · {businessType} · {rows.length} found
               </p>
               <div className="flex gap-2">
                 <Button variant="secondary" size="sm" onClick={() => setRows(null)}>
@@ -188,30 +317,56 @@ export function FindLeadsPanel({
           ) : (
             <>
               <p className="text-sm text-muted">
-                Choose a town and trade. Grok searches the public web, checks for a proper website, then
-                you pick who to import.
+                Choose where and what to search. Grok researches the public web, checks for a proper
+                website, then you pick who to import.
               </p>
 
               <div className="mt-5 grid gap-4">
                 <fieldset>
-                  <legend className="text-xs font-medium text-muted">Location</legend>
+                  <legend className="text-xs font-medium text-muted">Location type</legend>
                   <div className="mt-2 flex flex-wrap gap-2">
-                    {TOWN_SUGGESTIONS.map((town) => (
+                    {KIND_CHIPS.map((chip) => (
                       <Chip
-                        key={town}
-                        label={town}
-                        active={location === town}
-                        onClick={() => setLocation(town)}
+                        key={chip.id}
+                        label={chip.label}
+                        active={kind === chip.id}
+                        onClick={() => chooseKind(chip.id)}
                       />
                     ))}
                   </div>
-                  <Input
-                    className="mt-3 h-11"
-                    value={location}
-                    onChange={(event) => setLocation(event.target.value)}
-                    placeholder="Or type a town"
-                    aria-label="Location"
-                  />
+                </fieldset>
+
+                <fieldset>
+                  <legend className="text-xs font-medium text-muted">Location</legend>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {locationChips.map((place) => (
+                      <Chip
+                        key={place}
+                        label={place}
+                        active={location === place}
+                        onClick={() => setLocation(place)}
+                      />
+                    ))}
+                  </div>
+                  {kind !== "nation" ? (
+                    <Input
+                      className="mt-3 h-11"
+                      value={location}
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        setLocation(value);
+                        setKind(locationKindFor(value || "Crieff"));
+                      }}
+                      placeholder={
+                        kind === "region"
+                          ? "Or type a region"
+                          : kind === "city"
+                            ? "Or type a city"
+                            : "Or type a town"
+                      }
+                      aria-label="Location"
+                    />
+                  ) : null}
                 </fieldset>
 
                 <fieldset>
@@ -248,6 +403,15 @@ export function FindLeadsPanel({
                       />
                     ))}
                   </div>
+                  <p className="mt-3 text-sm text-subtle">
+                    {preview.areas.length > 1
+                      ? `Searches ${preview.areas.length} towns across ${preview.label}: ${preview.areas
+                          .slice(0, 4)
+                          .map((area) => area.name)
+                          .join(", ")}${preview.areas.length > 4 ? "…" : ""}. Stops at ${limit} genuine businesses.`
+                      : `One search in ${preview.label}.`}
+                    {limit >= 50 ? " Large searches take several minutes." : ""}
+                  </p>
                 </fieldset>
               </div>
 
@@ -266,9 +430,25 @@ export function FindLeadsPanel({
             </>
           )}
 
-          {rows && !busy ? <ReviewList rows={rows} onToggle={toggle} /> : null}
+          {rows && !busy ? (
+            <>
+              {warning ? <p className="mt-3 text-sm text-warm-lead">{warning}</p> : null}
+              {error && rows ? <p className="mt-3 text-sm text-hot">{error}</p> : null}
+              <ReviewList rows={rows} onToggle={toggle} />
+            </>
+          ) : null}
         </div>
       </div>
+
+      {busy ? (
+        <footer className="shrink-0 border-t border-border bg-surface px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-6">
+          <div className="mx-auto w-full max-w-3xl">
+            <Button variant="secondary" className="h-12 w-full sm:w-auto" onClick={cancelSearch}>
+              Stop search
+            </Button>
+          </div>
+        </footer>
+      ) : null}
 
       {rows && !busy ? (
         <footer className="shrink-0 border-t border-border bg-surface px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-6">
@@ -277,11 +457,17 @@ export function FindLeadsPanel({
               <Button variant="secondary" size="sm" onClick={() => selectAll(true)}>
                 Select all
               </Button>
-              <Button variant="secondary" size="sm" onClick={selectHot} disabled={hotCount === 0}>
+              <Button variant="secondary" size="sm" onClick={() => selectPriority("HOT")} disabled={hotCount === 0}>
                 Select HOT
               </Button>
+              <Button variant="secondary" size="sm" onClick={() => selectPriority("WARM")} disabled={warmCount === 0}>
+                Select WARM
+              </Button>
+              <Button variant="secondary" size="sm" onClick={() => selectPriority("COLD")} disabled={coldCount === 0}>
+                Select COLD
+              </Button>
               <Button variant="ghost" size="sm" onClick={() => selectAll(false)}>
-                Clear selection
+                Clear
               </Button>
             </div>
             <Button className="h-12 sm:h-10" onClick={importSelected} disabled={selectedCount === 0}>
@@ -330,8 +516,9 @@ function ReviewList({
   const summary = useMemo(() => {
     const hot = rows.filter((row) => row.priority === "HOT").length;
     const warm = rows.filter((row) => row.priority === "WARM").length;
+    const cold = rows.filter((row) => row.priority === "COLD").length;
     const dupes = rows.filter((row) => row.duplicate).length;
-    return { hot, warm, dupes };
+    return { hot, warm, cold, dupes };
   }, [rows]);
 
   return (
@@ -340,7 +527,7 @@ function ReviewList({
         <div>
           <h3 className="font-display text-xl font-medium">Review prospects</h3>
           <p className="mt-1 text-sm text-muted">
-            {rows.length} found · {summary.hot} HOT · {summary.warm} WARM
+            {rows.length} found · {summary.hot} HOT · {summary.warm} WARM · {summary.cold} COLD
             {summary.dupes ? ` · ${summary.dupes} already in your sheet` : ""}
           </p>
         </div>
