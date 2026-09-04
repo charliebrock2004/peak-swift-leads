@@ -38,6 +38,10 @@ describe("website classification", () => {
     assert.equal(classifyWebsiteUrl("https://www.yell.com/biz/foo"), "Directory Only");
     assert.equal(classifyWebsiteUrl("https://maps.google.com/?q=foo"), "Directory Only");
     assert.equal(classifyWebsiteUrl("https://bookabuilderuk.com/profile/matt"), "Directory Only");
+    assert.equal(
+      classifyWebsiteUrl("https://www.locallife.co.uk/c-p/brock-contracts-crieff.asp"),
+      "Directory Only",
+    );
   });
 
   it("treats independent domains as a proper website", () => {

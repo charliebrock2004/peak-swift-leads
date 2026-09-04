@@ -26,7 +26,7 @@ const TRADE_CHIPS = [...TRADE_SUGGESTIONS];
 function searchFailure(err: unknown): string {
   const message = err instanceof Error ? err.message : String(err ?? "");
   if (/504|503|502|timeout|timed out|abort/i.test(message)) {
-    return "That search took too long on the server. Try 6 results, or a more specific town.";
+    return "That search took too long on the server. Try 6 results, or a more specific town. Vercel Hobby caps functions at about 10s — Find leads needs Pro (up to 5 minutes).";
   }
   if (/failed to fetch|networkerror|load failed/i.test(message)) {
     return "Could not reach the lead search server. Check your connection and try again.";

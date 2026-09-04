@@ -169,6 +169,7 @@ const DIRECTORY_HOSTS = [
   "fmb.org.uk",
   "carpenterscentral.co.uk",
   "crieff.scot",
+  "locallife.co.uk",
   "justdial.com",
   "hotfrog.co.uk",
   "cylex.uk",

@@ -188,7 +188,7 @@ export const researchProspects = createServerFn({ method: "POST" })
       return {
         ok: false,
         error:
-          "Lead search failed because XAI_API_KEY is missing from the production server. It must be set as a server environment variable, not a VITE_ frontend variable.",
+          "Lead search failed because XAI_API_KEY is missing from the production server. In Vercel open peak-swift-leads → Settings → Environment Variables. Add XAI_API_KEY (server only — do not prefix with VITE_), tick Production, then Redeploy. Create a key at console.x.ai if you do not have one.",
       };
     }
 
