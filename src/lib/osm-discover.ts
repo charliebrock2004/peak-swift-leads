@@ -58,6 +58,7 @@ const CHAINS = [
   "edmundson",
   "yesss electrical",
   "city electrical factors",
+  "rexel",
   "magnet kitchens",
   "kfc",
   "mcdonald",
@@ -142,7 +143,7 @@ const TRADE_PROFILES: Array<{ match: RegExp; profile: TradeProfile }> = [
   },
   {
     match: /build/,
-    profile: { queries: ["builder", "builders"], nominatim: ["builders", "builder"], bounded: false },
+    profile: { queries: ["builder", "builders"], nominatim: ["builders"], bounded: false },
   },
   { match: /roof/, profile: { queries: ["roofer", "roofing"], nominatim: ["roofer", "roofing"], bounded: false } },
   { match: /paint|decorat/, profile: { queries: ["painter", "decorator"], nominatim: ["painter", "decorator"] } },
@@ -220,6 +221,7 @@ export function isRejectedOsm(osmKey: string, osmValue: string, name: string): b
   }
   if (/ (close|lane|gardens|terrace|hill|road|street|wynd)$/i.test(name) && key === "highway") return true;
   if (/^(the )?joinery$/i.test(name) && value === "cafe") return true;
+  if (/^construction$/i.test(name)) return true;
   return false;
 }
 
@@ -686,7 +688,16 @@ async function nominatimOnce(
   const result = await fetchJson(`https://nominatim.openstreetmap.org/search?${params.toString()}`, {
     timeoutMs: 10_000,
   });
-  if (result.status === 429) return { hits: [], error: "Nominatim rate limited — wait a few seconds and try again." };
+  if (result.status === 429) {
+    await sleep(2000);
+    const retry = await fetchJson(`https://nominatim.openstreetmap.org/search?${params.toString()}`, {
+      timeoutMs: 10_000,
+    });
+    if (retry.status === 429) return { hits: [], error: "Nominatim rate limited — wait a few seconds and try again." };
+    if (!retry.ok) return { hits: [], error: `Nominatim: ${retry.error || `HTTP ${retry.status}`}` };
+    if (!Array.isArray(retry.json)) return { hits: [] };
+    return { hits: retry.json as NominatimHit[] };
+  }
   if (!result.ok) return { hits: [], error: `Nominatim: ${result.error || `HTTP ${result.status}`}` };
   if (!Array.isArray(result.json)) {
     const message = asText((result.json as { error?: unknown } | null)?.error);
@@ -703,7 +714,7 @@ async function searchNominatim(
   limit: number,
   fallbackTown: string,
 ): Promise<{ places: DiscoveredPlace[]; error?: string }> {
-  const terms = (profile.nominatim.length ? profile.nominatim : profile.queries).slice(0, 2);
+  const terms = (profile.nominatim.length ? profile.nominatim : profile.queries).slice(0, 1);
   if (terms.length === 0) return { places: [] };
   const bounded = profile.bounded !== false;
   const places: DiscoveredPlace[] = [];
@@ -939,7 +950,7 @@ export async function discoverBusinesses(options: {
   let places = mergePlaces(nominatim.places, photon.places);
   places = mergePlaces(places, biz.places);
 
-  if (places.length === 0 && (nominatim.error || photon.error)) {
+  if (places.length === 0 && (nominatim.error || photon.error) && !/rate limited/i.test(nominatim.error || "")) {
     const extra = await searchOverpass(trade, profile, center, radiusMiles, center.label);
     if (extra.error) warnings.push(`Overpass: ${extra.error}`);
     places = mergePlaces(places, extra.places);
