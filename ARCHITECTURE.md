@@ -61,16 +61,31 @@ fewer if a source is slow.
 
 ## Later phases (not built)
 
-The `Lead` record already carries the hooks. Do not add UI for these until
-asked:
+Phase 2 (website quality, public email, opportunity) is built. Do not add UI
+for these until asked:
 
-1. Website quality analysis — `websiteStatus` / `websiteSignal`
-2. Public email discovery — `email`
-3. AI lead scoring — `computePriority` (HOT / WARM / COLD)
-4. Personalised emails / sending / tracking — `email`, `notes`, `demoUrl`
-5. Follow-up automation — `followUpDate`, call outcomes
-6. Unsubscribe / suppression — add a dedicated field when outreach is built
-7. Outreach analytics — derive from called / result / dates
+1. AI lead analysis / personalised email generation
+2. Email preview, outreach queue, sending limits, send history
+3. Replies, follow-up automation
+4. Unsubscribe / suppression UI — `unsubscribed` already persists empty
+5. Outreach analytics — `outreachStatus`, `lastEmailedAt` already persist empty
+
+Nothing is sent. Phase 3 must stay off until the quality of discovered emails
+has been inspected.
+
+## Phase 2 — qualify, don't send
+
+`src/lib/qualify.ts` scores a fetched page 0–100 and extracts emails that actually appear on it.
+`src/lib/qualify-server.ts` exposes two user-triggered server functions, **one lead per request**:
+
+- `checkLeadWebsite` — fetch the public homepage (skip Facebook/directories without fetching).
+- `findLeadEmail` — parse homepage HTML, then one same-origin contact page if linked.
+
+Bulk Check / Find runs on the **client** two-at-a-time so Vercel Hobby (~10s) is never asked to inspect a whole sheet in one function.
+
+Scoring is conservative: a short but complete site is “Could improve”, never “Poor”. Emails are never invented from a domain.
+
+Phase 3 fields (`outreachStatus`, `unsubscribed`, `lastEmailedAt`) persist empty. **Nothing is sent.**
 
 ## The data layer
 

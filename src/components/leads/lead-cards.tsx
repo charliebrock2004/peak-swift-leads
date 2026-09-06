@@ -2,12 +2,16 @@ import { useState } from "react";
 import {
   ChevronDown,
   ExternalLink,
+  Loader2,
+  Mail,
   MapPin,
   Monitor,
   Pencil,
   Phone,
+  Search,
   Trash2,
 } from "lucide-react";
+import { OpportunityBadge, WebsiteQualityBadge } from "@/components/leads/website-quality";
 import { PriorityBadge } from "@/components/leads/priority-badge";
 import { WebsiteStatusBadge } from "@/components/leads/website-status";
 import {
@@ -15,6 +19,7 @@ import {
   callOutcomePatch,
   computePriority,
   formatRating,
+  hasWebsite,
   isFollowUpDue,
   mapsHref,
   phoneHref,
@@ -58,11 +63,21 @@ export function LeadCards({
   onChange,
   onEdit,
   onDelete,
+  selectedIds,
+  onToggleSelect,
+  onCheckWebsite,
+  onFindEmail,
+  busyById,
 }: {
   leads: Lead[];
   onChange: (id: string, patch: Partial<Lead>) => void;
   onEdit: (lead: Lead) => void;
   onDelete: (lead: Lead) => void;
+  selectedIds: Set<string>;
+  onToggleSelect: (id: string) => void;
+  onCheckWebsite: (lead: Lead) => void;
+  onFindEmail: (lead: Lead) => void;
+  busyById: Record<string, "site" | "email" | undefined>;
 }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
@@ -98,11 +113,22 @@ export function LeadCards({
             <div className="flex flex-wrap items-center gap-1.5">
               <PriorityBadge priority={priority} />
               <WebsiteStatusBadge status={status} />
+              <WebsiteQualityBadge quality={lead.websiteQuality} score={lead.websiteScore} />
+              <OpportunityBadge lead={lead} />
               {due ? (
                 <span className="rounded-full bg-hot/15 px-2 py-0.5 text-xs font-medium text-hot">
                   Due {formatDate(lead.followUpDate)}
                 </span>
               ) : null}
+              <label className="ml-auto flex size-11 items-center justify-center">
+                <input
+                  type="checkbox"
+                  className="size-5"
+                  checked={selectedIds.has(lead.id)}
+                  onChange={() => onToggleSelect(lead.id)}
+                  aria-label={`Select ${lead.businessName || "lead"}`}
+                />
+              </label>
             </div>
 
             <h2 className="mt-2 leading-snug font-medium">
@@ -147,6 +173,37 @@ export function LeadCards({
               </button>
             </div>
 
+            <div className="mt-2 flex gap-2">
+              <button
+                type="button"
+                disabled={!hasWebsite(lead.website) || Boolean(busyById[lead.id])}
+                onClick={() => onCheckWebsite(lead)}
+                className="inline-flex h-11 flex-1 items-center justify-center gap-1.5 rounded-md bg-surface-2 text-sm font-medium text-fg disabled:opacity-40"
+              >
+                {busyById[lead.id] === "site" ? <Loader2 className="size-4 animate-spin" /> : <Search className="size-4" />}
+                Check website
+              </button>
+              <button
+                type="button"
+                disabled={Boolean(busyById[lead.id])}
+                onClick={() => onFindEmail(lead)}
+                className="inline-flex h-11 flex-1 items-center justify-center gap-1.5 rounded-md bg-surface-2 text-sm font-medium text-fg disabled:opacity-40"
+              >
+                {busyById[lead.id] === "email" ? <Loader2 className="size-4 animate-spin" /> : <Mail className="size-4" />}
+                Find email
+              </button>
+            </div>
+
+            {lead.websiteAnalysis || lead.email ? (
+              <p className="mt-2 text-sm text-muted">
+                {lead.websiteAnalysis || null}
+                {lead.websiteAnalysis && lead.email ? " · " : null}
+                {lead.email
+                  ? `${lead.email}${lead.emailConfidence ? ` (${lead.emailConfidence.toLowerCase()})` : ""}`
+                  : null}
+              </p>
+            ) : null}
+
             <fieldset className="mt-3">
               <legend className="mb-1.5 text-xs font-medium text-muted">
                 {lead.callResult ? "Result" : "How did it go?"}
@@ -185,6 +242,16 @@ export function LeadCards({
               <div className="mt-3 flex flex-col gap-3 border-t border-border pt-3">
                 <p className="text-sm text-muted">{priorityReason(lead)}</p>
                 <p className="text-sm tabular-nums text-muted">{lead.phone || "No phone number"}</p>
+                <p className="text-sm text-muted">
+                  {lead.email
+                    ? `${lead.email}${lead.emailSource ? ` · ${lead.emailSource}` : ""}${
+                        lead.emailConfidence ? ` · ${lead.emailConfidence}` : ""
+                      }`
+                    : lead.emailFoundAt
+                      ? "No public email found"
+                      : "Email not searched yet"}
+                </p>
+                {lead.websiteAnalysis ? <p className="text-sm text-muted">{lead.websiteAnalysis}</p> : null}
 
                 <label className="flex flex-col gap-1.5">
                   <span className="text-xs font-medium text-muted">Follow up on</span>

@@ -1,10 +1,12 @@
-import { ArrowDown, ArrowUp, ExternalLink, MapPin, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowUp, ExternalLink, Loader2, Mail, MapPin, Search, Trash2 } from "lucide-react";
+import { OpportunityBadge, WebsiteQualityBadge } from "@/components/leads/website-quality";
 import { PriorityBadge } from "@/components/leads/priority-badge";
 import {
   CALLED_OPTIONS,
   CALL_RESULT_OPTIONS,
   WEBSITE_STATUS_OPTIONS,
   computePriority,
+  hasWebsite,
   isFollowUpDue,
   mapsHref,
   parseNumberInput,
@@ -31,6 +33,13 @@ const COLUMNS: { key: SortKey; label: string; width: string }[] = [
   { key: "reviews", label: "Reviews", width: "w-24 min-w-24" },
   { key: "website", label: "Website", width: "w-40 min-w-40" },
   { key: "websiteStatus", label: "Website status", width: "w-40 min-w-40" },
+  { key: "websiteQuality", label: "Website quality", width: "w-40 min-w-40" },
+  { key: "websiteScore", label: "Website score", width: "w-28 min-w-28" },
+  { key: "websiteAnalysis", label: "Website analysis", width: "w-64 min-w-64" },
+  { key: "email", label: "Email", width: "w-48 min-w-48" },
+  { key: "emailSource", label: "Email source", width: "w-40 min-w-40" },
+  { key: "emailConfidence", label: "Email confidence", width: "w-32 min-w-32" },
+  { key: "opportunityScore", label: "Website opportunity", width: "w-40 min-w-40" },
   { key: "priority", label: "Priority", width: "w-28 min-w-28" },
   { key: "called", label: "Called?", width: "w-36 min-w-36" },
   { key: "callResult", label: "Call result", width: "w-36 min-w-36" },
@@ -76,6 +85,12 @@ export function LeadTable({
   onSort,
   onChange,
   onDelete,
+  selectedIds,
+  onToggleSelect,
+  onToggleSelectAll,
+  onCheckWebsite,
+  onFindEmail,
+  busyById,
 }: {
   leads: Lead[];
   sortKey: SortKey;
@@ -83,22 +98,50 @@ export function LeadTable({
   onSort: (key: SortKey) => void;
   onChange: (id: string, patch: Partial<Lead>) => void;
   onDelete: (lead: Lead) => void;
+  selectedIds: Set<string>;
+  onToggleSelect: (id: string) => void;
+  onToggleSelectAll: () => void;
+  onCheckWebsite: (lead: Lead) => void;
+  onFindEmail: (lead: Lead) => void;
+  busyById: Record<string, "site" | "email" | undefined>;
 }) {
+  const allSelected = leads.length > 0 && leads.every((lead) => selectedIds.has(lead.id));
   return (
     <div className="sheet-scroll h-full">
       <table className="sheet-table">
         <caption className="sr-only">Local business leads</caption>
         <thead>
           <tr>
-            {COLUMNS.slice(0, 7).map((column) => (
-              <SortHeader
-                key={column.key}
-                column={column}
-                sortKey={sortKey}
-                sortDir={sortDir}
-                onSort={onSort}
-              />
-            ))}
+            {COLUMNS.slice(0, 7).map((column) =>
+              column.key === "businessName" ? (
+                <th key={column.key} className={column.width}>
+                  <div className="flex items-center">
+                    <input
+                      type="checkbox"
+                      className="ml-2 size-4 shrink-0"
+                      checked={allSelected}
+                      onChange={onToggleSelectAll}
+                      aria-label="Select all shown leads"
+                    />
+                    <button
+                      type="button"
+                      className="flex h-10 w-full items-center gap-1.5 px-3 text-left hover:text-fg"
+                      onClick={() => onSort(column.key)}
+                    >
+                      {column.label}
+                    </button>
+                  </div>
+                </th>
+              ) : (
+                <SortHeader
+                  key={column.key}
+                  column={column}
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                  onSort={onSort}
+                />
+              ),
+            )}
             <th className="w-40 min-w-40">
               <span className="flex h-10 items-center px-3 normal-case">Google Maps</span>
             </th>
@@ -113,6 +156,9 @@ export function LeadTable({
             ))}
             <th className="w-64 min-w-64">
               <span className="flex h-10 items-center px-3 normal-case">Notes</span>
+            </th>
+            <th className="w-40 min-w-40">
+              <span className="flex h-10 items-center px-3 normal-case">Actions</span>
             </th>
             <th className="w-12 min-w-12">
               <span className="sr-only">Delete</span>
@@ -136,12 +182,21 @@ export function LeadTable({
                 title={priorityReason(lead)}
               >
                 <td className="w-52 min-w-52">
-                  <input
-                    className="sheet-input font-medium"
-                    value={lead.businessName}
-                    onChange={(event) => onChange(lead.id, { businessName: event.target.value })}
-                    aria-label="Business name"
-                  />
+                  <div className="flex items-center">
+                    <input
+                      type="checkbox"
+                      className="ml-2 size-4 shrink-0"
+                      checked={selectedIds.has(lead.id)}
+                      onChange={() => onToggleSelect(lead.id)}
+                      aria-label={`Select ${lead.businessName || "lead"}`}
+                    />
+                    <input
+                      className="sheet-input font-medium"
+                      value={lead.businessName}
+                      onChange={(event) => onChange(lead.id, { businessName: event.target.value })}
+                      aria-label="Business name"
+                    />
+                  </div>
                 </td>
                 <td className="w-32 min-w-32">
                   <input
@@ -263,6 +318,40 @@ export function LeadTable({
                     ))}
                   </select>
                 </td>
+                <td className="w-40 min-w-40 px-3">
+                  <WebsiteQualityBadge
+                    quality={lead.websiteQuality}
+                    score={lead.websiteScore}
+                    analysis={lead.websiteAnalysis}
+                  />
+                </td>
+                <td className="w-28 min-w-28 px-3 tabular-nums text-sm">
+                  {typeof lead.websiteScore === "number" ? lead.websiteScore : "—"}
+                </td>
+                <td className="w-64 min-w-64 px-3 text-sm text-muted">
+                  <span className="line-clamp-2" title={lead.websiteAnalysis || undefined}>
+                    {lead.websiteAnalysis || "—"}
+                  </span>
+                </td>
+                <td className="w-48 min-w-48">
+                  <input
+                    className="sheet-input"
+                    value={lead.email}
+                    onChange={(event) => onChange(lead.id, { email: event.target.value })}
+                    placeholder={lead.emailFoundAt ? "No public email found" : "None"}
+                    aria-label="Email"
+                    title={[lead.emailSource, lead.emailConfidence].filter(Boolean).join(" · ")}
+                  />
+                </td>
+                <td className="w-40 min-w-40 px-3 text-sm text-muted">
+                  {lead.emailSource || "—"}
+                </td>
+                <td className="w-32 min-w-32 px-3 text-xs font-medium text-muted">
+                  {lead.emailConfidence || "—"}
+                </td>
+                <td className="w-40 min-w-40 px-3">
+                  <OpportunityBadge lead={lead} />
+                </td>
                 <td className="w-28 min-w-28 px-3">
                   <PriorityBadge priority={priority} />
                 </td>
@@ -316,6 +405,28 @@ export function LeadTable({
                     aria-label="Notes"
                     title={priorityReason(lead)}
                   />
+                </td>
+                <td className="w-40 min-w-40 px-2">
+                  <div className="flex gap-1">
+                    <button
+                      type="button"
+                      className="inline-flex h-9 items-center gap-1 rounded-md px-2 text-xs font-medium text-muted hover:text-fg disabled:opacity-40"
+                      disabled={!hasWebsite(lead.website) || Boolean(busyById[lead.id])}
+                      onClick={() => onCheckWebsite(lead)}
+                    >
+                      {busyById[lead.id] === "site" ? <Loader2 className="size-3.5 animate-spin" /> : <Search className="size-3.5" />}
+                      Check
+                    </button>
+                    <button
+                      type="button"
+                      className="inline-flex h-9 items-center gap-1 rounded-md px-2 text-xs font-medium text-muted hover:text-fg disabled:opacity-40"
+                      disabled={Boolean(busyById[lead.id])}
+                      onClick={() => onFindEmail(lead)}
+                    >
+                      {busyById[lead.id] === "email" ? <Loader2 className="size-3.5 animate-spin" /> : <Mail className="size-3.5" />}
+                      Email
+                    </button>
+                  </div>
                 </td>
                 <td className="w-12 min-w-12">
                   <button

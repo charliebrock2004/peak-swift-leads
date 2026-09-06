@@ -29,6 +29,17 @@ export type LeadRow = {
   call_result: string;
   follow_up_date: string;
   notes: string;
+  website_quality: string;
+  website_score: number | string | null;
+  website_analysis: string;
+  website_checked_at: string;
+  email_source: string;
+  email_confidence: string;
+  email_found_at: string;
+  opportunity_score: number | string | null;
+  outreach_status: string;
+  unsubscribed: string;
+  last_emailed_at: string;
   deleted_at: Date | string | null;
   updated_at: Date | string;
 };
@@ -70,6 +81,17 @@ export function leadFromRow(row: LeadRow): Lead {
     followUpDate: row.follow_up_date ?? "",
     notes: row.notes ?? "",
     demoUrl: row.demo_url ?? "",
+    websiteQuality: (row.website_quality || "") as Lead["websiteQuality"],
+    websiteScore: numeric(row.website_score),
+    websiteAnalysis: row.website_analysis ?? "",
+    websiteCheckedAt: row.website_checked_at ?? "",
+    emailSource: row.email_source ?? "",
+    emailConfidence: (row.email_confidence || "") as Lead["emailConfidence"],
+    emailFoundAt: row.email_found_at ?? "",
+    opportunityScore: numeric(row.opportunity_score),
+    outreachStatus: row.outreach_status ?? "",
+    unsubscribed: row.unsubscribed ?? "",
+    lastEmailedAt: row.last_emailed_at ?? "",
     updatedAt: iso(row.updated_at) || new Date().toISOString(),
     deletedAt: iso(row.deleted_at),
   });

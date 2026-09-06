@@ -30,13 +30,26 @@ export type CallResult = (typeof CALL_RESULT_OPTIONS)[number] | "";
 export type Priority = "HOT" | "WARM" | "COLD";
 export type WebsiteStatus = (typeof WEBSITE_STATUS_OPTIONS)[number];
 
+export const WEBSITE_QUALITY_OPTIONS = ["good", "improve", "poor", "unable"] as const;
+export type WebsiteQuality = (typeof WEBSITE_QUALITY_OPTIONS)[number] | "";
+
+export const EMAIL_CONFIDENCE_OPTIONS = ["HIGH", "MEDIUM", "LOW"] as const;
+export type EmailConfidence = (typeof EMAIL_CONFIDENCE_OPTIONS)[number] | "";
+
+export const WEBSITE_QUALITY_LABEL: Record<Exclude<WebsiteQuality, "">, string> = {
+  good: "Good website",
+  improve: "Could improve",
+  poor: "Poor website",
+  unable: "Unable to analyse",
+};
+
 export type Lead = {
   id: string;
   businessName: string;
   trade: string;
   town: string;
   phone: string;
-  /** Public email when a listing provided one. Later: email discovery + outreach. */
+  /** Public email when a listing or website provided one. Never guessed. */
   email: string;
   /** Street address when the source provided one. */
   address: string;
@@ -51,6 +64,16 @@ export type Lead = {
   foundAt: string;
   /** Public listing status when the source provided one (Active, etc). */
   businessStatus: string;
+  /** Phase 2: good / improve / poor / unable after Check Website. */
+  websiteQuality: WebsiteQuality;
+  websiteScore: number | "";
+  websiteAnalysis: string;
+  websiteCheckedAt: string;
+  emailSource: string;
+  emailConfidence: EmailConfidence;
+  emailFoundAt: string;
+  /** Snapshot of computeOpportunity. Display always recomputes. */
+  opportunityScore: number | "";
   /** Where this lead came from: research, spreadsheet import, added by hand. */
   source: string;
   called: CalledStatus;
@@ -59,6 +82,13 @@ export type Lead = {
   notes: string;
   /** Demo site built for this prospect (Netlify/preview URL). Empty until built. */
   demoUrl: string;
+  /**
+   * Phase 3 outreach hooks. Empty on purpose — this app does not send email.
+   * Later: queue / sent / replied. unsubscribed is a suppression flag.
+   */
+  outreachStatus: string;
+  unsubscribed: string;
+  lastEmailedAt: string;
   /** ISO timestamp, client clock. Used to resolve two devices editing one lead. */
   updatedAt: string;
   /** Soft delete: ISO timestamp, or "" when live. Tombstones let deletes sync. */
@@ -125,6 +155,13 @@ export type SortKey =
   | "reviews"
   | "website"
   | "websiteStatus"
+  | "websiteQuality"
+  | "websiteScore"
+  | "websiteAnalysis"
+  | "email"
+  | "emailSource"
+  | "emailConfidence"
+  | "opportunityScore"
   | "priority"
   | "called"
   | "callResult"
@@ -347,6 +384,62 @@ export function computePriority(
   return "COLD";
 }
 
+/**
+ * Rules-based website opportunity, 0–100. Not an AI prediction.
+ * No website / poor site / public email push it up; a good existing site pulls it down.
+ */
+export function computeOpportunity(
+  lead: Pick<
+    Lead,
+    | "website"
+    | "websiteStatus"
+    | "websiteQuality"
+    | "email"
+    | "phone"
+    | "businessStatus"
+    | "reviews"
+    | "rating"
+    | "called"
+    | "callResult"
+  >,
+): number {
+  let score = 25;
+  const status = resolveWebsiteStatus(lead);
+  const quality = lead.websiteQuality;
+
+  if (status === "No Website Found") score += 38;
+  else if (status === "Social Only") score += 28;
+  else if (status === "Directory Only") score += 24;
+  else if (quality === "poor") score += 30;
+  else if (quality === "improve" || status === "Basic Website") score += 18;
+  else if (quality === "good") score -= 22;
+  else if (status === "Proper Website") score -= 15;
+  else if (status === "Unclear") score += 10;
+
+  if (lead.email.trim()) score += 16;
+  if ((lead.phone ?? "").replace(/\D/g, "").length >= 10) score += 8;
+  if (/active/i.test(lead.businessStatus ?? "")) score += 6;
+
+  const reviews = typeof lead.reviews === "number" ? lead.reviews : 0;
+  const rating = typeof lead.rating === "number" ? lead.rating : 0;
+  if (reviews >= 20 && rating >= 4.5) score += 10;
+  else if (reviews >= 8) score += 4;
+
+  if (lead.callResult === "Not Interested" || lead.called === "Not Interested") {
+    score = Math.min(score, 22);
+  }
+  if (lead.callResult === "Booked") score = Math.min(score, 18);
+  if (lead.callResult === "Wrong Number") score = Math.min(score, 15);
+
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+export function opportunityBand(score: number): "High" | "Medium" | "Low" {
+  if (score >= 70) return "High";
+  if (score >= 45) return "Medium";
+  return "Low";
+}
+
 export function priorityReason(
   lead: Pick<Lead, "website" | "reviews" | "rating" | "websiteStatus" | "phone">,
 ): string {
@@ -492,12 +585,23 @@ export function createLead(partial: Partial<Lead> = {}): Lead {
     placeId: "",
     foundAt: "",
     businessStatus: "",
+    websiteQuality: "",
+    websiteScore: "",
+    websiteAnalysis: "",
+    websiteCheckedAt: "",
+    emailSource: "",
+    emailConfidence: "",
+    emailFoundAt: "",
+    opportunityScore: "",
     source: "",
     called: "Not Called",
     callResult: "",
     followUpDate: "",
     notes: "",
     demoUrl: "",
+    outreachStatus: "",
+    unsubscribed: "",
+    lastEmailedAt: "",
     updatedAt: new Date().toISOString(),
     deletedAt: "",
     ...partial,
@@ -539,16 +643,23 @@ export function leadsToCsv(leads: Lead[]): string {
     "Website",
     "Website Status",
     "Website Signal",
+    "Website Quality",
+    "Website Score",
+    "Website Analysis",
     "Place ID",
     "Date Found",
     "Business Status",
     "Google Maps Link",
     "Priority",
+    "Website Opportunity",
     "Reason",
     "Called?",
     "Call Result",
     "Follow-Up Date",
     "Demo URL",
+    "Email Source",
+    "Email Confidence",
+    "Email Found",
     "Source",
     "Notes",
   ];
@@ -565,16 +676,23 @@ export function leadsToCsv(leads: Lead[]): string {
       lead.website,
       resolveWebsiteStatus(lead),
       WEBSITE_SIGNAL_LABEL[websiteSignal(resolveWebsiteStatus(lead))],
+      lead.websiteQuality ? WEBSITE_QUALITY_LABEL[lead.websiteQuality] : "",
+      lead.websiteScore,
+      lead.websiteAnalysis ?? "",
       lead.placeId ?? "",
       lead.foundAt ?? "",
       lead.businessStatus ?? "",
       lead.mapsLink,
       computePriority(lead),
+      computeOpportunity(lead),
       priorityReason(lead),
       lead.called,
       lead.callResult,
       lead.followUpDate,
       lead.demoUrl,
+      lead.emailSource ?? "",
+      lead.emailConfidence ?? "",
+      lead.emailFoundAt ?? "",
       lead.source,
       lead.notes,
     ]
@@ -631,8 +749,13 @@ function sortValue(lead: Lead, key: SortKey): string | number {
   if (key === "priority") return PRIORITY_RANK[computePriority(lead)];
   if (key === "rating") return typeof lead.rating === "number" ? lead.rating : -1;
   if (key === "reviews") return typeof lead.reviews === "number" ? lead.reviews : -1;
+  if (key === "websiteScore") return typeof lead.websiteScore === "number" ? lead.websiteScore : -1;
+  if (key === "opportunityScore") return computeOpportunity(lead);
   if (key === "website") return hasWebsite(lead.website) ? lead.website.toLowerCase() : "";
   if (key === "websiteStatus") return resolveWebsiteStatus(lead);
+  if (key === "websiteQuality") return lead.websiteQuality || "";
+  if (key === "emailSource") return lead.emailSource || "";
+  if (key === "emailConfidence") return lead.emailConfidence || "";
   return String(lead[key] ?? "").toLowerCase();
 }
 

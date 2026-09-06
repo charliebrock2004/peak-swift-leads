@@ -294,6 +294,10 @@ describe("migrate, csv, summary", () => {
     assert.match(csv, /Website Status/);
     assert.match(csv, /No Website Found/);
     assert.match(csv, /HOT/);
+    assert.match(csv, /Website Quality/);
+    assert.match(csv, /Website Opportunity/);
+    assert.match(csv, /Email Source/);
+    assert.match(csv, /Email Confidence/);
   });
 
   it("counts follow-up due as callbacks", () => {

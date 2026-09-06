@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { Download, FileUp, Plus, Search, SlidersHorizontal } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Download, FileUp, Loader2, Mail, Plus, Search, SlidersHorizontal } from "lucide-react";
 import { toast } from "sonner";
 import { FindLeadsPanel } from "@/components/leads/find-leads";
 import { ImportPanel } from "@/components/leads/import-panel";
@@ -16,9 +16,11 @@ import {
   SAMPLE_LEADS,
   TOWN_SUGGESTIONS,
   TRADE_SUGGESTIONS,
+  WEBSITE_QUALITY_LABEL,
   WEBSITE_SIGNAL_OPTIONS,
   WEBSITE_STATUS_OPTIONS,
   compareLeads,
+  computeOpportunity,
   computePriority,
   downloadCsv,
   findDuplicate,
@@ -34,9 +36,11 @@ import {
   type Priority,
   type SortDir,
   type SortKey,
+  type WebsiteQuality,
   type WebsiteSignal,
   type WebsiteStatus,
 } from "@/lib/leads";
+import { checkLeadWebsite, findLeadEmail } from "@/lib/qualify-server";
 import type { Prospect } from "@/lib/research";
 import { useLeadSync } from "@/lib/use-lead-sync";
 import { cn } from "@/lib/utils";
@@ -82,12 +86,19 @@ export function LeadApp() {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [summaryKey, setSummaryKey] = useState<keyof LeadSummary | null>(null);
   const [hydrated, setHydrated] = useState(true);
+  const [qualityFilter, setQualityFilter] = useState<"ALL" | Exclude<WebsiteQuality, "">>("ALL");
+  const [emailFilter, setEmailFilter] = useState<"ALL" | "found" | "none">("ALL");
+  const [highOpportunity, setHighOpportunity] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [busyById, setBusyById] = useState<Record<string, "site" | "email" | undefined>>({});
+  const [job, setJob] = useState<{ kind: "site" | "email"; done: number; total: number } | null>(null);
   const [findSummary, setFindSummary] = useState<{
     found: number;
     added: number;
     skipped: number;
     trade: string;
   } | null>(null);
+  const cancelJob = useRef(false);
 
   useEffect(() => {
     const persist = useLeadsStore.persist;
@@ -120,9 +131,13 @@ export function LeadApp() {
         if (tradeFilter !== "ALL" && lead.trade.trim() !== tradeFilter) return false;
         if (statusFilter !== "ALL" && resolveWebsiteStatus(lead) !== statusFilter) return false;
         if (siteFilter !== "ALL" && websiteSignal(resolveWebsiteStatus(lead)) !== siteFilter) return false;
+        if (qualityFilter !== "ALL" && lead.websiteQuality !== qualityFilter) return false;
+        if (emailFilter === "found" && !lead.email.trim()) return false;
+        if (emailFilter === "none" && lead.email.trim()) return false;
+        if (highOpportunity && computeOpportunity(lead) < 70) return false;
         if (dueOnly && !isFollowUpDue(lead)) return false;
         if (!needle) return true;
-        return [lead.businessName, lead.trade, lead.town, lead.phone, lead.notes, lead.website]
+        return [lead.businessName, lead.trade, lead.town, lead.phone, lead.notes, lead.website, lead.email]
           .join(" ")
           .toLowerCase()
           .includes(needle);
@@ -138,6 +153,9 @@ export function LeadApp() {
     tradeFilter,
     statusFilter,
     siteFilter,
+    qualityFilter,
+    emailFilter,
+    highOpportunity,
     dueOnly,
     sortKey,
     sortDir,
@@ -151,7 +169,14 @@ export function LeadApp() {
     calledFilter !== "ALL" ||
     resultFilter !== "ALL";
   const filtersOn =
-    query.trim() !== "" || priorityFilter !== "ALL" || siteFilter !== "ALL" || dueOnly || dropdownFiltersOn;
+    query.trim() !== "" ||
+    priorityFilter !== "ALL" ||
+    siteFilter !== "ALL" ||
+    qualityFilter !== "ALL" ||
+    emailFilter !== "ALL" ||
+    highOpportunity ||
+    dueOnly ||
+    dropdownFiltersOn;
 
   function clearFilters() {
     setQuery("");
@@ -162,6 +187,9 @@ export function LeadApp() {
     setTradeFilter("ALL");
     setStatusFilter("ALL");
     setSiteFilter("ALL");
+    setQualityFilter("ALL");
+    setEmailFilter("ALL");
+    setHighOpportunity(false);
     setDueOnly(false);
     setSummaryKey(null);
   }
@@ -172,7 +200,7 @@ export function LeadApp() {
       return;
     }
     setSortKey(key);
-    setSortDir(key === "rating" || key === "reviews" ? "desc" : "asc");
+    setSortDir(key === "rating" || key === "reviews" || key === "websiteScore" || key === "opportunityScore" ? "desc" : "asc");
   }
 
   function openNew() {
@@ -224,6 +252,9 @@ export function LeadApp() {
           source: prospect.source,
           notes: [prospect.reason, prospect.notes, prospect.address].filter(Boolean).join(" "),
           called: "Not Called",
+          emailSource: prospect.email ? "Public listing" : "",
+          emailConfidence: prospect.email ? "MEDIUM" : "",
+          emailFoundAt: prospect.email ? new Date().toISOString() : "",
         })),
       );
     }
@@ -265,6 +296,150 @@ export function LeadApp() {
       merges.length > 0 ? `${merges.length} merged` : null,
     ].filter(Boolean);
     toast(parts.length > 0 ? `Spreadsheet imported — ${parts.join(", ")}` : "Nothing to import");
+  }
+
+  function toggleSelect(id: string) {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSelectAll() {
+    setSelectedIds((current) => {
+      const allVisible = visibleLeads.length > 0 && visibleLeads.every((lead) => current.has(lead.id));
+      if (allVisible) return new Set();
+      return new Set(visibleLeads.map((lead) => lead.id));
+    });
+  }
+
+  function applyWebsiteResult(
+    lead: Lead,
+    result: Awaited<ReturnType<typeof checkLeadWebsite>>,
+    quiet = false,
+  ) {
+    if (!result.ok) {
+      if (!quiet) toast(result.error);
+      return false;
+    }
+    const patch: Partial<Lead> = {
+      websiteQuality: result.check.quality,
+      websiteScore: result.check.score,
+      websiteAnalysis: result.check.analysis,
+      websiteCheckedAt: result.checkedAt,
+    };
+    if (result.check.websiteStatus) patch.websiteStatus = result.check.websiteStatus;
+    patch.opportunityScore = computeOpportunity({ ...lead, ...patch });
+    updateLead(lead.id, patch);
+    if (!quiet) {
+      const quality = result.check.quality;
+      const label = quality ? WEBSITE_QUALITY_LABEL[quality] : "Checked";
+      const score = typeof result.check.score === "number" ? ` · ${result.check.score}` : "";
+      toast(`${label}${score}`);
+    }
+    return true;
+  }
+
+  function applyEmailResult(
+    lead: Lead,
+    result: Awaited<ReturnType<typeof findLeadEmail>>,
+    quiet = false,
+  ) {
+    if (!result.ok) {
+      if (!quiet) toast(result.error);
+      return false;
+    }
+    if (!result.found) {
+      updateLead(lead.id, { emailFoundAt: result.foundAt });
+      if (!quiet) toast("No public email found");
+      return true;
+    }
+    const patch: Partial<Lead> = {
+      email: result.found.email,
+      emailSource: result.found.source,
+      emailConfidence: result.found.confidence,
+      emailFoundAt: result.foundAt,
+    };
+    patch.opportunityScore = computeOpportunity({ ...lead, ...patch });
+    updateLead(lead.id, patch);
+    if (!quiet) toast(`Found ${result.found.email}`);
+    return true;
+  }
+
+  async function checkWebsite(lead: Lead, quiet = false) {
+    setBusyById((current) => ({ ...current, [lead.id]: "site" }));
+    try {
+      const result = await checkLeadWebsite({
+        data: { website: lead.website, businessName: lead.businessName },
+      });
+      applyWebsiteResult(lead, result, quiet);
+    } catch (error) {
+      if (!quiet) toast(error instanceof Error ? error.message : "Website check failed");
+    } finally {
+      setBusyById((current) => {
+        const next = { ...current };
+        delete next[lead.id];
+        return next;
+      });
+    }
+  }
+
+  async function findEmail(lead: Lead, quiet = false) {
+    setBusyById((current) => ({ ...current, [lead.id]: "email" }));
+    try {
+      const result = await findLeadEmail({
+        data: {
+          website: lead.website,
+          existingEmail: lead.email,
+          existingSource: lead.emailSource,
+        },
+      });
+      applyEmailResult(lead, result, quiet);
+    } catch (error) {
+      if (!quiet) toast(error instanceof Error ? error.message : "Email search failed");
+    } finally {
+      setBusyById((current) => {
+        const next = { ...current };
+        delete next[lead.id];
+        return next;
+      });
+    }
+  }
+
+  async function runBulk(kind: "site" | "email") {
+    const chosen = visibleLeads.filter((lead) => selectedIds.has(lead.id));
+    const targets =
+      kind === "site" ? chosen.filter((lead) => lead.website.trim()) : chosen;
+    if (targets.length === 0) {
+      toast(kind === "site" ? "Select leads that have a website" : "Select at least one lead");
+      return;
+    }
+    cancelJob.current = false;
+    setJob({ kind, done: 0, total: targets.length });
+    let nextIndex = 0;
+    let done = 0;
+    const workers = Math.min(2, targets.length);
+
+    async function worker() {
+      while (true) {
+        if (cancelJob.current) return;
+        const index = nextIndex;
+        nextIndex += 1;
+        if (index >= targets.length) return;
+        const lead = targets[index]!;
+        if (kind === "site") await checkWebsite(lead, true);
+        else await findEmail(lead, true);
+        done += 1;
+        setJob({ kind, done, total: targets.length });
+      }
+    }
+
+    await Promise.all(Array.from({ length: workers }, () => worker()));
+    setJob(null);
+    if (cancelJob.current) toast("Stopped");
+    else toast(kind === "site" ? "Website checks finished" : "Email search finished");
   }
 
   function confirmDelete() {
@@ -442,6 +617,73 @@ export function LeadApp() {
                 {filter.label}
               </button>
             ))}
+            {(["poor", "improve", "good"] as const).map((id) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => {
+                  setQualityFilter((current) => (current === id ? "ALL" : id));
+                  setSummaryKey(null);
+                }}
+                className={cn(
+                  "h-10 rounded-full px-3.5 text-sm font-medium transition-colors duration-(--motion-quick)",
+                  qualityFilter === id
+                    ? id === "poor"
+                      ? "bg-hot/20 text-hot"
+                      : id === "improve"
+                        ? "bg-warm-lead/20 text-warm-lead"
+                        : "bg-site/20 text-site"
+                    : "bg-surface text-muted shadow-(--shadow-border) hover:text-fg",
+                )}
+              >
+                {WEBSITE_QUALITY_LABEL[id]}
+              </button>
+            ))}
+            <button
+              type="button"
+              onClick={() => {
+                setEmailFilter((current) => (current === "found" ? "ALL" : "found"));
+                setSummaryKey(null);
+              }}
+              className={cn(
+                "h-10 rounded-full px-3.5 text-sm font-medium transition-colors duration-(--motion-quick)",
+                emailFilter === "found"
+                  ? "bg-site/20 text-site"
+                  : "bg-surface text-muted shadow-(--shadow-border) hover:text-fg",
+              )}
+            >
+              Email found
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setEmailFilter((current) => (current === "none" ? "ALL" : "none"));
+                setSummaryKey(null);
+              }}
+              className={cn(
+                "h-10 rounded-full px-3.5 text-sm font-medium transition-colors duration-(--motion-quick)",
+                emailFilter === "none"
+                  ? "bg-hot/20 text-hot"
+                  : "bg-surface text-muted shadow-(--shadow-border) hover:text-fg",
+              )}
+            >
+              No email
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setHighOpportunity((on) => !on);
+                setSummaryKey(null);
+              }}
+              className={cn(
+                "h-10 rounded-full px-3.5 text-sm font-medium transition-colors duration-(--motion-quick)",
+                highOpportunity
+                  ? "bg-hot/20 text-hot"
+                  : "bg-surface text-muted shadow-(--shadow-border) hover:text-fg",
+              )}
+            >
+              High opportunity
+            </button>
             <button
               type="button"
               onClick={() => {
@@ -468,6 +710,9 @@ export function LeadApp() {
                 setTradeFilter("ALL");
                 setStatusFilter("ALL");
                 setSiteFilter("ALL");
+                setQualityFilter("ALL");
+                setEmailFilter("ALL");
+                setHighOpportunity(false);
                 setDueOnly(false);
                 setSummaryKey("hot");
               }}
@@ -486,6 +731,11 @@ export function LeadApp() {
               </button>
             ) : null}
             <span className="ml-auto text-xs tabular-nums text-subtle">{visibleLeads.length} shown</span>
+            {visibleLeads.length > 0 ? (
+              <button type="button" className="h-9 px-2 text-sm text-muted hover:text-fg" onClick={toggleSelectAll}>
+                {visibleLeads.every((lead) => selectedIds.has(lead.id)) ? "Clear selection" : "Select shown"}
+              </button>
+            ) : null}
           </div>
         </div>
 
@@ -542,6 +792,12 @@ export function LeadApp() {
                 onSort={handleSort}
                 onChange={updateLead}
                 onDelete={setPendingDelete}
+                selectedIds={selectedIds}
+                onToggleSelect={toggleSelect}
+                onToggleSelectAll={toggleSelectAll}
+                onCheckWebsite={(lead) => void checkWebsite(lead)}
+                onFindEmail={(lead) => void findEmail(lead)}
+                busyById={busyById}
               />
             </div>
             <div className="pb-8 md:hidden">
@@ -550,11 +806,55 @@ export function LeadApp() {
                 onChange={updateLead}
                 onEdit={openEdit}
                 onDelete={setPendingDelete}
+                selectedIds={selectedIds}
+                onToggleSelect={toggleSelect}
+                onCheckWebsite={(lead) => void checkWebsite(lead)}
+                onFindEmail={(lead) => void findEmail(lead)}
+                busyById={busyById}
               />
             </div>
           </>
         )}
       </div>
+
+      {selectedIds.size > 0 || job ? (
+        <div className="sticky bottom-0 z-20 border-t border-border bg-surface px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-6">
+          <div className="mx-auto flex w-full max-w-screen-2xl flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-sm text-muted">
+              {job
+                ? `${job.kind === "site" ? "Checking websites" : "Finding emails"} ${job.done}/${job.total}`
+                : `${selectedIds.size} selected`}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {job ? (
+                <Button
+                  variant="secondary"
+                  onClick={() => {
+                    cancelJob.current = true;
+                  }}
+                >
+                  <Loader2 className="animate-spin" />
+                  Stop
+                </Button>
+              ) : (
+                <>
+                  <Button variant="secondary" onClick={() => void runBulk("site")}>
+                    <Search />
+                    Check websites
+                  </Button>
+                  <Button variant="secondary" onClick={() => void runBulk("email")}>
+                    <Mail />
+                    Find emails
+                  </Button>
+                  <Button variant="ghost" onClick={() => setSelectedIds(new Set())}>
+                    Clear
+                  </Button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <LeadFormDialog open={formOpen} onOpenChange={setFormOpen} initial={editing} onSave={saveLead} />
 

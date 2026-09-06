@@ -18,16 +18,16 @@
  */
 import { createServerFn } from "@tanstack/react-start";
 import { authMiddleware } from "@/lib/auth/middleware";
-import { CALLED_OPTIONS, CALL_RESULT_OPTIONS, WEBSITE_STATUS_OPTIONS, type Lead } from "@/lib/leads";
+import { CALLED_OPTIONS, CALL_RESULT_OPTIONS, EMAIL_CONFIDENCE_OPTIONS, WEBSITE_QUALITY_OPTIONS, WEBSITE_STATUS_OPTIONS, type Lead } from "@/lib/leads";
 import { leadFromRow, type LeadRow } from "@/lib/leads-row";
 import type { SyncRequest, SyncResponse } from "@/lib/leads-sync";
 
 /** Never accept an unbounded push — one device should not be able to fill the table. */
 const MAX_CHANGES_PER_SYNC = 600;
-/** Rows per INSERT. 23 params each, so this stays far under Postgres' parameter cap. */
-const UPSERT_BATCH = 100;
+/** Rows per INSERT. 34 params each, so this stays far under Postgres' parameter cap. */
+const UPSERT_BATCH = 80;
 /** Bound columns in one place: the tuple builder and the placeholder count must agree. */
-const UPSERT_COLUMNS = 23;
+const UPSERT_COLUMNS = 34;
 /**
  * The returned cursor is held back by this much so a row committed moments after
  * our read is picked up next time instead of being skipped forever. Re-reading a
@@ -38,6 +38,8 @@ const CURSOR_LAG_SECONDS = 5;
 const CALLED = new Set<string>(CALLED_OPTIONS);
 const RESULTS = new Set<string>(CALL_RESULT_OPTIONS);
 const STATUSES = new Set<string>(WEBSITE_STATUS_OPTIONS);
+const QUALITIES = new Set<string>(WEBSITE_QUALITY_OPTIONS);
+const CONFIDENCES = new Set<string>(EMAIL_CONFIDENCE_OPTIONS);
 
 function text(value: unknown, max: number): string {
   if (value == null) return "";
@@ -66,6 +68,8 @@ function sanitizeLead(raw: unknown): Lead | null {
   const called = text(row.called, 40);
   const callResult = text(row.callResult, 40);
   const websiteStatus = text(row.websiteStatus, 40);
+  const websiteQuality = text(row.websiteQuality, 20);
+  const emailConfidence = text(row.emailConfidence, 10);
   const followUpDate = text(row.followUpDate, 10);
   return {
     id,
@@ -83,12 +87,23 @@ function sanitizeLead(raw: unknown): Lead | null {
     placeId: text(row.placeId, 80),
     foundAt: isoOrEmpty(row.foundAt),
     businessStatus: text(row.businessStatus, 40),
+    websiteQuality: QUALITIES.has(websiteQuality) ? (websiteQuality as Lead["websiteQuality"]) : "",
+    websiteScore: num(row.websiteScore) ?? "",
+    websiteAnalysis: text(row.websiteAnalysis, 400),
+    websiteCheckedAt: isoOrEmpty(row.websiteCheckedAt),
+    emailSource: text(row.emailSource, 80),
+    emailConfidence: CONFIDENCES.has(emailConfidence) ? (emailConfidence as Lead["emailConfidence"]) : "",
+    emailFoundAt: isoOrEmpty(row.emailFoundAt),
+    opportunityScore: num(row.opportunityScore) ?? "",
     source: text(row.source, 500),
     called: CALLED.has(called) ? (called as Lead["called"]) : "Not Called",
     callResult: RESULTS.has(callResult) ? (callResult as Lead["callResult"]) : "",
     followUpDate: /^\d{4}-\d{2}-\d{2}$/.test(followUpDate) ? followUpDate : "",
     notes: text(row.notes, 4000),
     demoUrl: text(row.demoUrl, 500),
+    outreachStatus: text(row.outreachStatus, 40),
+    unsubscribed: text(row.unsubscribed, 8) === "yes" ? "yes" : "",
+    lastEmailedAt: isoOrEmpty(row.lastEmailedAt),
     updatedAt: isoOrEmpty(row.updatedAt) || new Date().toISOString(),
     deletedAt: isoOrEmpty(row.deletedAt),
   };
@@ -150,6 +165,17 @@ export const syncLeads = createServerFn({ method: "POST" })
             lead.callResult,
             lead.followUpDate,
             lead.notes,
+            lead.websiteQuality,
+            lead.websiteScore === "" ? null : lead.websiteScore,
+            lead.websiteAnalysis,
+            lead.websiteCheckedAt,
+            lead.emailSource,
+            lead.emailConfidence,
+            lead.emailFoundAt,
+            lead.opportunityScore === "" ? null : lead.opportunityScore,
+            lead.outreachStatus,
+            lead.unsubscribed,
+            lead.lastEmailedAt,
             lead.deletedAt || null,
           );
           const slots = Array.from({ length: UPSERT_COLUMNS }, (_, n) => `$${base + n + 1}`);
@@ -159,32 +185,46 @@ export const syncLeads = createServerFn({ method: "POST" })
           `insert into leads (
              user_id, id, business_name, trade, town, phone, email, address, rating, reviews,
              website, maps_link, website_status, place_id, found_at, business_status,
-             demo_url, source, called, call_result, follow_up_date, notes, deleted_at,
+             demo_url, source, called, call_result, follow_up_date, notes,
+             website_quality, website_score, website_analysis, website_checked_at,
+             email_source, email_confidence, email_found_at, opportunity_score,
+             outreach_status, unsubscribed, last_emailed_at, deleted_at,
              created_at, updated_at
            ) values ${tuples.join(",")}
            on conflict (user_id, id) do update set
-             business_name    = excluded.business_name,
-             trade            = excluded.trade,
-             town             = excluded.town,
-             phone            = excluded.phone,
-             email            = excluded.email,
-             address          = excluded.address,
-             rating           = excluded.rating,
-             reviews          = excluded.reviews,
-             website          = excluded.website,
-             maps_link        = excluded.maps_link,
-             website_status   = excluded.website_status,
-             place_id         = excluded.place_id,
-             found_at         = excluded.found_at,
-             business_status  = excluded.business_status,
-             demo_url         = excluded.demo_url,
-             source           = excluded.source,
-             called           = excluded.called,
-             call_result      = excluded.call_result,
-             follow_up_date   = excluded.follow_up_date,
-             notes            = excluded.notes,
-             deleted_at       = excluded.deleted_at,
-             updated_at       = now()`,
+             business_name      = excluded.business_name,
+             trade              = excluded.trade,
+             town               = excluded.town,
+             phone              = excluded.phone,
+             email              = excluded.email,
+             address            = excluded.address,
+             rating             = excluded.rating,
+             reviews            = excluded.reviews,
+             website            = excluded.website,
+             maps_link          = excluded.maps_link,
+             website_status     = excluded.website_status,
+             place_id           = excluded.place_id,
+             found_at           = excluded.found_at,
+             business_status    = excluded.business_status,
+             demo_url           = excluded.demo_url,
+             source             = excluded.source,
+             called             = excluded.called,
+             call_result        = excluded.call_result,
+             follow_up_date     = excluded.follow_up_date,
+             notes              = excluded.notes,
+             website_quality    = excluded.website_quality,
+             website_score      = excluded.website_score,
+             website_analysis   = excluded.website_analysis,
+             website_checked_at = excluded.website_checked_at,
+             email_source       = excluded.email_source,
+             email_confidence   = excluded.email_confidence,
+             email_found_at     = excluded.email_found_at,
+             opportunity_score  = excluded.opportunity_score,
+             outreach_status    = excluded.outreach_status,
+             unsubscribed       = excluded.unsubscribed,
+             last_emailed_at    = excluded.last_emailed_at,
+             deleted_at         = excluded.deleted_at,
+             updated_at         = now()`,
           params,
         );
       }
@@ -193,7 +233,10 @@ export const syncLeads = createServerFn({ method: "POST" })
       const rows = await sql.query<LeadRow>(
         `select id, business_name, trade, town, phone, email, address, rating, reviews, website,
                 maps_link, website_status, place_id, found_at, business_status, demo_url, source,
-                called, call_result, follow_up_date, notes, deleted_at, updated_at
+                called, call_result, follow_up_date, notes,
+                website_quality, website_score, website_analysis, website_checked_at,
+                email_source, email_confidence, email_found_at, opportunity_score,
+                outreach_status, unsubscribed, last_emailed_at, deleted_at, updated_at
            from leads
           where user_id = $1
             and ($2::timestamptz is null or updated_at >= $2::timestamptz)
