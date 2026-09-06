@@ -15,22 +15,62 @@ FIND → QUALIFY → CALL → RECORD THE OUTCOME → FOLLOW UP → DEMO → WIN
 Every feature should answer "does this help win a website customer faster?".
 It is deliberately **not** a CRM.
 
-## Find leads (live web research)
+## Phase 1 — lead finder
 
-`src/lib/research.ts` is a **server-only** `createServerFn`. It calls the xAI
-Responses API with `grok-4.5` and `web_search`, then verifies candidate websites
-with a live fetch before scoring HOT / WARM / COLD.
+`src/lib/osm-discover.ts` + `src/lib/research.ts` discover real businesses from
+**public sources with no API key**:
 
-The production copy used to call `grok-4.20-0309-non-reasoning` with a 55s abort
-and treated unverified independent URLs as Proper Website. Both of those made
-Crieff joiners unreliable: searches timed out, and dead domains looked like they
-already had a site. Current rules:
+1. **Companies House** public search JSON/HTML — UK trades (joiners, builders,
+   plumbers, electricians, mechanics, …)
+2. **OpenStreetMap** via Photon, Nominatim and (last resort) Overpass — shops
+   and hospitality that actually appear on the map
+3. **postcodes.io / Open-Meteo / Photon** — geocode the town
 
-- `XAI_API_KEY` is read only on the server. A missing key is an explicit error,
-  not "no leads found".
-- Unconfirmed independent URLs are **Unclear**, never Proper Website.
-- Empty website is **not** "No Website Found".
-- The Vercel function is given `maxDuration: 300` so a real search can finish.
+Google Places and xAI are **not** used. Do not invent businesses, phones,
+ratings or websites. Ratings and review counts are only stored when a source
+provides them (these free sources almost never do).
+
+### Website traffic lights
+
+| Signal | Means | When |
+| --- | --- | --- |
+| GREEN — Has website | Independent site that responded | OSM/listing URL, live fetch |
+| YELLOW — Needs work | Social, directory, or thin/template site | Facebook/Yell/etc, or a live but basic page |
+| RED — No website | Listing was inspected and had no site | OSM tags checked, no website |
+| Unclear | We do not know | Companies House has no website field |
+
+Do **not** mark Companies House-only rows as “No website”. CH never publishes a
+website. If the same company is later found on OSM with no website tag, that
+**is** evidence for red.
+
+`websiteSignal()` maps the detailed `WebsiteStatus` onto those four values.
+Later phases can replace the rules with a quality scorer without changing the
+lead sheet.
+
+### After search
+
+New businesses are added to the existing lead sheet. Duplicates (place id,
+phone, maps URL, name+town) are skipped. The sheet filters for All websites /
+No website / Needs work / Has website.
+
+### Time budget
+
+Vercel Hobby functions die around 10 seconds. Discovery + website inspect must
+stay inside that. Asking for 50–100 results is allowed; the search may return
+fewer if a source is slow.
+
+## Later phases (not built)
+
+The `Lead` record already carries the hooks. Do not add UI for these until
+asked:
+
+1. Website quality analysis — `websiteStatus` / `websiteSignal`
+2. Public email discovery — `email`
+3. AI lead scoring — `computePriority` (HOT / WARM / COLD)
+4. Personalised emails / sending / tracking — `email`, `notes`, `demoUrl`
+5. Follow-up automation — `followUpDate`, call outcomes
+6. Unsubscribe / suppression — add a dedicated field when outreach is built
+7. Outreach analytics — derive from called / result / dates
 
 ## The data layer
 
@@ -57,7 +97,7 @@ to the signed-in owner.
 | Failure translation for the client | `src/lib/leads-sync-client.ts` |
 | Store, dirty tracking, debounced push | `src/store/leads-store.ts` |
 | When to sync (open / focus / online) | `src/lib/use-lead-sync.ts` |
-| Schema | `migrations/0002_leads.sql` |
+| Schema | `migrations/0002_leads.sql`, `migrations/0003_lead_finder.sql` |
 
 Key decisions:
 
@@ -120,9 +160,10 @@ database. Kept here because they are easy to reintroduce:
 
 ## Groundwork, not yet built
 
-`Lead` carries `email` and `demoUrl`, both stored, editable, importable and
-exported. They are the hooks for demo links and email outreach later. Nothing
-else about outreach is built, on purpose.
+`Lead` carries `email`, `demoUrl`, `placeId`, `foundAt` and `businessStatus`,
+all stored, editable, importable and exported. They are the hooks for demo
+links and email outreach later. Nothing else about outreach is built, on
+purpose.
 
 ## Testing
 

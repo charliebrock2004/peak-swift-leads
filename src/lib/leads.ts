@@ -36,7 +36,7 @@ export type Lead = {
   trade: string;
   town: string;
   phone: string;
-  /** Kept for follow-up by email; empty for most Maps-sourced leads. */
+  /** Public email when a listing provided one. Later: email discovery + outreach. */
   email: string;
   /** Street address when the source provided one. */
   address: string;
@@ -296,7 +296,7 @@ export function resolveWebsiteStatus(lead: Pick<Lead, "website" | "websiteStatus
 export type WebsiteSignal = "green" | "yellow" | "red" | "unclear";
 
 export const WEBSITE_SIGNAL_OPTIONS = [
-  { id: "ALL" as const, label: "All" },
+  { id: "ALL" as const, label: "All websites" },
   { id: "red" as const, label: "No website" },
   { id: "yellow" as const, label: "Needs work" },
   { id: "green" as const, label: "Has website" },

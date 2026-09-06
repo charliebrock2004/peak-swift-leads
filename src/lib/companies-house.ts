@@ -52,7 +52,7 @@ const TRADE_SPECS: Array<{ match: RegExp; spec: TradeSpec }> = [
   { match: /landscap|garden/, spec: { queries: ["landscaping", "gardener"], tokens: ["landscaping", "landscaper", "gardener", "gardeners"] } },
   { match: /tree/, spec: { queries: ["arborist"], tokens: ["arborist", "tree surgeon", "treesurgeon"] } },
   { match: /clean/, spec: { queries: ["cleaning"], tokens: ["cleaning", "cleaner", "cleaners"] } },
-  { match: /mechan/, spec: { queries: ["mechanic"], tokens: ["mechanic", "mechanics"] } },
+  { match: /mechan|garage/, spec: { queries: ["motors", "mechanic"], tokens: ["mechanic", "mechanics", "motors", "garage"] } },
   { match: /barber/, spec: { queries: ["barber"], tokens: ["barber", "barbers"] } },
   { match: /hair/, spec: { queries: ["hairdresser"], tokens: ["hairdresser", "hairdressers", "salon"] } },
   { match: /restaurant/, spec: { queries: ["restaurant"], tokens: ["restaurant", "restaurants"] } },

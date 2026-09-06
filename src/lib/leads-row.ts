@@ -14,11 +14,15 @@ export type LeadRow = {
   town: string;
   phone: string;
   email: string;
+  address: string;
   rating: number | string | null;
   reviews: number | string | null;
   website: string;
   maps_link: string;
   website_status: string;
+  place_id: string;
+  found_at: string;
+  business_status: string;
   demo_url: string;
   source: string;
   called: string;
@@ -51,12 +55,15 @@ export function leadFromRow(row: LeadRow): Lead {
     town: row.town ?? "",
     phone: row.phone ?? "",
     email: row.email ?? "",
-    address: "",
+    address: row.address ?? "",
     rating: numeric(row.rating),
     reviews: numeric(row.reviews),
     website: row.website ?? "",
     mapsLink: row.maps_link ?? "",
     websiteStatus: (row.website_status || "") as Lead["websiteStatus"],
+    placeId: row.place_id ?? "",
+    foundAt: row.found_at ?? "",
+    businessStatus: row.business_status ?? "",
     source: row.source ?? "",
     called: (row.called || "Not Called") as Lead["called"],
     callResult: (row.call_result || "") as Lead["callResult"],

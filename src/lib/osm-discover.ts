@@ -6,9 +6,11 @@
  *   2. Nominatim / Photon / BizData — mapped shops (restaurants, hair, garages)
  *   3. Overpass, last resort if maps fail and CH is empty
  *
- * Nothing here talks to Google Places or xAI.
+ * Nothing here talks to Google Places or xAI. Later phases can add a paid
+ * Places adapter behind the same DiscoveredPlace shape.
  */
 
+import { normalizeName } from "./leads.ts";
 import { chSearchTowns } from "./scotland-places.ts";
 import { searchCompaniesHouse, type CompanyHit } from "./companies-house.ts";
 
@@ -27,6 +29,8 @@ export type DiscoveredPlace = {
   notes: string;
   placeId: string;
   businessStatus: string;
+  /** True when we inspected an OSM listing for contact tags. */
+  osmChecked: boolean;
 };
 
 export type DiscoverResult =
@@ -169,7 +173,7 @@ const TRADE_PROFILES: Array<{ match: RegExp; profile: TradeProfile }> = [
     match: /hair/,
     profile: { queries: ["hairdresser", "salon"], nominatim: ["hairdresser"], bizdata: "hairdresser" },
   },
-  { match: /beauty/, profile: { queries: ["beauty salon", "beauty"], nominatim: ["beauty"], bizdata: "beauty" } },
+  { match: /beauty|beautician/, profile: { queries: ["beauty salon", "beauty"], nominatim: ["beauty"], bizdata: "beauty" } },
   { match: /florist|flower/, profile: { queries: ["florist"], nominatim: ["florist"], bizdata: "florist" } },
   {
     match: /restaurant/,
@@ -189,7 +193,6 @@ const TRADE_PROFILES: Array<{ match: RegExp; profile: TradeProfile }> = [
     profile: { queries: ["flooring", "floorer"], nominatim: ["flooring"], bounded: false },
   },
   { match: /\bgym\b|fitness/, profile: { queries: ["gym", "fitness"], nominatim: ["gym", "fitness centre"] } },
-  { match: /beautician/, profile: { queries: ["beautician", "beauty"], nominatim: ["beauty"], bizdata: "beauty" } },
 ];
 
 const DEFAULT_PROFILE: TradeProfile = { queries: [], nominatim: [] };
@@ -492,6 +495,7 @@ function toPlace(
   extraNote = "",
   placeId = "",
   businessStatus = "",
+  osmChecked = false,
 ): DiscoveredPlace {
   return {
     businessName: name.slice(0, 120),
@@ -508,6 +512,7 @@ function toPlace(
     notes: extraNote.slice(0, 400),
     placeId: placeId.slice(0, 80),
     businessStatus: businessStatus.slice(0, 40),
+    osmChecked,
   };
 }
 
@@ -583,6 +588,10 @@ async function searchBizData(
         lat,
         lng,
         "OpenStreetMap via BizData",
+        "",
+        "",
+        "",
+        true,
       ),
     );
   }
@@ -665,6 +674,8 @@ async function searchPhoton(
           ? `OSM ${tag(osm, "craft", "shop", "office", "amenity")}`
           : "",
         `osm:${letter}:${hit.osmId}`,
+        "",
+        true,
       ),
     );
   }
@@ -784,6 +795,8 @@ async function searchNominatim(
           "OpenStreetMap via Nominatim",
           osmValue ? `OSM ${osmKey}:${osmValue}` : "",
           hit.osm_type && hit.osm_id ? `osm:${hit.osm_type}:${hit.osm_id}` : "",
+          "",
+          true,
         ),
       );
     }
@@ -819,6 +832,7 @@ function overpassQuery(profile: TradeProfile, center: GeoPoint, radiusMiles: num
   if (/electric/.test(joined)) clauses.push(`nwr["craft"="electrician"]${around};`);
   if (/hair|barber/.test(joined)) clauses.push(`nwr["shop"="hairdresser"]${around};`);
   if (/restaurant/.test(joined)) clauses.push(`nwr["amenity"="restaurant"]${around};`);
+  if (/mechan|garage/.test(joined)) clauses.push(`nwr["shop"="car_repair"]${around};`);
   if (clauses.length === 0) return "";
   return `[out:json][timeout:12];(${clauses.join("")});out center tags 80;`;
 }
@@ -904,32 +918,78 @@ async function searchOverpass(
         "OpenStreetMap via Overpass",
         "",
         el.id ? `osm:${asText(el.type) || "node"}:${el.id}` : "",
+        "",
+        true,
       ),
     );
   }
   return { places };
 }
 
+function fillMissing(target: DiscoveredPlace, extra: DiscoveredPlace): DiscoveredPlace {
+  return {
+    ...target,
+    phone: target.phone || extra.phone,
+    email: target.email || extra.email,
+    website: target.website || extra.website,
+    address: target.address || extra.address,
+    lat: target.lat === "" ? extra.lat : target.lat,
+    lng: target.lng === "" ? extra.lng : target.lng,
+    mapsLink: target.mapsLink || extra.mapsLink,
+    businessStatus: target.businessStatus || extra.businessStatus,
+    osmChecked: target.osmChecked || extra.osmChecked,
+    notes: [target.notes, extra.notes].filter(Boolean).join(" ").slice(0, 400),
+    source:
+      extra.osmChecked && !target.osmChecked
+        ? extra.source
+        : target.website || extra.website
+          ? target.source || extra.source
+          : target.source,
+  };
+}
+
 export function mergePlaces(existing: DiscoveredPlace[], incoming: DiscoveredPlace[]): DiscoveredPlace[] {
   const next = [...existing];
-  const names = new Set(existing.map((item) => item.businessName.trim().toLowerCase()));
-  const phones = new Set(
-    existing.map((item) => item.phone.replace(/\D/g, "").slice(-10)).filter((item) => item.length >= 10),
-  );
-  const ids = new Set(existing.map((item) => item.placeId.trim()).filter(Boolean));
+
   for (const item of incoming) {
     const name = item.businessName.trim().toLowerCase();
+    const foldedName = normalizeName(item.businessName);
     const phone = item.phone.replace(/\D/g, "").slice(-10);
     const placeId = item.placeId.trim();
-    if (placeId && ids.has(placeId)) continue;
-    if (names.has(name)) continue;
-    if (phone.length >= 10 && phones.has(phone)) continue;
-    names.add(name);
-    if (phone.length >= 10) phones.add(phone);
-    if (placeId) ids.add(placeId);
+
+    const matchIndex = next.findIndex((row) => {
+      const rowId = row.placeId.trim();
+      if (placeId && rowId && placeId === rowId) return true;
+      if (phone.length >= 10) {
+        const rowPhone = row.phone.replace(/\D/g, "").slice(-10);
+        if (rowPhone.length >= 10 && rowPhone === phone) return true;
+      }
+      if (name && row.businessName.trim().toLowerCase() === name) return true;
+      const rowFolded = normalizeName(row.businessName);
+      return foldedName.length >= 4 && rowFolded === foldedName;
+    });
+
+    if (matchIndex >= 0) {
+      next[matchIndex] = fillMissing(next[matchIndex]!, item);
+      continue;
+    }
+
     next.push(item);
   }
   return next;
+}
+
+/**
+ * Companies House has no website field. Empty is not proof they have no site
+ * unless we also found the same business on OSM and inspected its tags.
+ */
+export function listingWebsiteHint(
+  place: Pick<DiscoveredPlace, "website" | "source" | "osmChecked">,
+): "url" | "osm-none" | "unconfirmed" {
+  if (place.website.trim()) return "url";
+  if (place.osmChecked) return "osm-none";
+  if (/companies house/i.test(place.source)) return "unconfirmed";
+  return "osm-none";
 }
 
 function fromCompanyHit(hit: CompanyHit, trade: string, fallbackTown: string): DiscoveredPlace {
@@ -948,7 +1008,75 @@ function fromCompanyHit(hit: CompanyHit, trade: string, fallbackTown: string): D
     hit.notes,
     hit.companyNumber ? `ch:${hit.companyNumber}` : "",
     "Active",
+    false,
   );
+}
+
+async function enrichCompanyContacts(
+  places: DiscoveredPlace[],
+  center: GeoPoint,
+  radiusMiles: number,
+): Promise<DiscoveredPlace[]> {
+  const pending = places
+    .map((place, index) => ({ place, index }))
+    .filter(({ place }) => !place.website && !place.osmChecked && /companies house/i.test(place.source))
+    .slice(0, 6);
+  if (pending.length === 0) return places;
+
+  const lookups = await Promise.all(
+    pending.map(async ({ place, index }) => {
+      const query = `${place.businessName} ${place.town}`.trim();
+      const result = await fetchJson(`https://photon.komoot.io/api/?q=${encodeURIComponent(query)}&limit=5`, {
+        timeoutMs: 2500,
+      });
+      if (!result.ok) return { index, hit: null as PhotonHit | null };
+      const name = normalizeName(place.businessName);
+      const match = parsePhotonHits(result.json).find((hit) => {
+        if (name.length < 4) return false;
+        if (normalizeName(hit.name) !== name) return false;
+        return milesBetween(center, { lat: hit.lat, lng: hit.lng }) <= radiusMiles + 2;
+      });
+      return { index, hit: match ?? null };
+    }),
+  );
+
+  const matched = lookups.filter((row): row is { index: number; hit: PhotonHit } => Boolean(row.hit));
+  if (matched.length === 0) return places;
+
+  let tags = new Map<string, OsmTags>();
+  try {
+    tags = await fetchOsmTags(matched.map((row) => row.hit));
+  } catch {
+    tags = new Map();
+  }
+
+  const next = [...places];
+  for (const row of matched) {
+    const hit = row.hit;
+    const letter = hit.osmType.toUpperCase().startsWith("W")
+      ? "W"
+      : hit.osmType.toUpperCase().startsWith("R")
+        ? "R"
+        : "N";
+    const osm = tags.get(`${letter}:${hit.osmId}`);
+    const website = tag(osm, "website", "contact:website", "contact:facebook");
+    const phone = tag(osm, "phone", "contact:phone", "contact:mobile");
+    const email = tag(osm, "email", "contact:email");
+    const current = next[row.index]!;
+    next[row.index] = {
+      ...current,
+      website: current.website || website,
+      phone: current.phone || phone,
+      email: current.email || email,
+      osmChecked: true,
+      source: website || phone ? "Companies House + OpenStreetMap" : current.source,
+      notes: [current.notes, website ? "" : "Mapped on OpenStreetMap with no website tag."]
+        .filter(Boolean)
+        .join(" ")
+        .slice(0, 400),
+    };
+  }
+  return next;
 }
 
 export async function discoverBusinesses(options: {
@@ -959,7 +1087,7 @@ export async function discoverBusinesses(options: {
 }): Promise<DiscoverResult> {
   const location = options.location.trim();
   const trade = options.businessType.trim();
-  const limit = Math.min(100, Math.max(1, Math.round(options.limit) || 8));
+  const limit = Math.min(100, Math.max(1, Math.round(options.limit) || 25));
   const radiusMiles = Math.min(80, Math.max(5, Math.round(options.radiusMiles) || 25));
   if (location.length < 2) return { ok: false, error: "Enter a location.", warnings: [] };
   if (trade.length < 2) return { ok: false, error: "Enter a business type.", warnings: [] };
@@ -1032,6 +1160,8 @@ export async function discoverBusinesses(options: {
       warnings,
     };
   }
+
+  places = await enrichCompanyContacts(places, center, radiusMiles);
 
   if (places.length < 3 && companies.hits.length === 0) {
     warnings.push(

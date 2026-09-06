@@ -82,6 +82,12 @@ export function LeadApp() {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [summaryKey, setSummaryKey] = useState<keyof LeadSummary | null>(null);
   const [hydrated, setHydrated] = useState(true);
+  const [findSummary, setFindSummary] = useState<{
+    found: number;
+    added: number;
+    skipped: number;
+    trade: string;
+  } | null>(null);
 
   useEffect(() => {
     const persist = useLeadsStore.persist;
@@ -196,30 +202,52 @@ export function LeadApp() {
   }
 
   function importProspects(prospects: Prospect[]) {
+    const skipped = prospects.filter((prospect) => findDuplicate(prospect, leads)).length;
     const fresh = prospects.filter((prospect) => !findDuplicate(prospect, leads));
-    addLeads(
-      fresh.map((prospect) => ({
-        businessName: prospect.businessName,
-        trade: prospect.trade,
-        town: prospect.town,
-        phone: prospect.phone,
-        email: prospect.email,
-        address: prospect.address,
-        rating: prospect.rating,
-        reviews: prospect.reviews,
-        website: prospect.website,
-        mapsLink: prospect.mapsLink,
-        websiteStatus: prospect.websiteStatus,
-        placeId: prospect.placeId,
-        foundAt: prospect.foundAt || new Date().toISOString(),
-        businessStatus: prospect.businessStatus,
-        source: prospect.source,
-        notes: [prospect.reason, prospect.notes, prospect.address].filter(Boolean).join(" "),
-        called: "Not Called",
-      })),
-    );
+    if (fresh.length > 0) {
+      addLeads(
+        fresh.map((prospect) => ({
+          businessName: prospect.businessName,
+          trade: prospect.trade,
+          town: prospect.town,
+          phone: prospect.phone,
+          email: prospect.email,
+          address: prospect.address,
+          rating: prospect.rating,
+          reviews: prospect.reviews,
+          website: prospect.website,
+          mapsLink: prospect.mapsLink,
+          websiteStatus: prospect.websiteStatus,
+          placeId: prospect.placeId,
+          foundAt: prospect.foundAt || new Date().toISOString(),
+          businessStatus: prospect.businessStatus,
+          source: prospect.source,
+          notes: [prospect.reason, prospect.notes, prospect.address].filter(Boolean).join(" "),
+          called: "Not Called",
+        })),
+      );
+    }
+    clearFilters();
     setFinding(false);
-    toast(`Imported ${fresh.length} prospect${fresh.length === 1 ? "" : "s"}`);
+    setFindSummary({
+      found: prospects.length,
+      added: fresh.length,
+      skipped,
+      trade: fresh[0]?.trade || prospects[0]?.trade || "",
+    });
+    if (fresh.length === 0) {
+      toast(
+        skipped
+          ? `Found ${prospects.length} businesses · all already in your sheet`
+          : "No new businesses to add",
+      );
+      return;
+    }
+    toast(
+      `Found ${prospects.length} ${prospects.length === 1 ? "business" : "businesses"} · ${fresh.length} added${
+        skipped ? ` · ${skipped} already in your sheet` : ""
+      }`,
+    );
   }
 
   function applySpreadsheet({
@@ -273,7 +301,7 @@ export function LeadApp() {
             </p>
           </div>
           <div className="flex flex-col gap-2 sm:flex-row">
-            <Button className="h-12 sm:h-10" onClick={() => setFinding(true)}>
+            <Button className="h-12 sm:h-10" onClick={() => { setFindSummary(null); setFinding(true); }}>
               <Search />
               Find new leads
             </Button>
@@ -300,6 +328,23 @@ export function LeadApp() {
         </header>
 
         <SummaryBar summary={summary} onSelect={handleSummary} active={summaryKey} />
+
+        {findSummary ? (
+          <div className="flex flex-col gap-2 rounded-xl bg-surface px-4 py-3 shadow-(--shadow-border) sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-sm">
+              Found {findSummary.found} {findSummary.found === 1 ? "business" : "businesses"}
+              {findSummary.added ? ` · ${findSummary.added} added` : ""}
+              {findSummary.skipped ? ` · ${findSummary.skipped} already in your sheet` : ""}
+            </p>
+            <button
+              type="button"
+              className="h-9 text-sm text-muted hover:text-fg"
+              onClick={() => setFindSummary(null)}
+            >
+              Dismiss
+            </button>
+          </div>
+        ) : null}
 
         <div className="flex shrink-0 flex-col gap-3">
           <div className="flex gap-2 md:items-center">
@@ -373,12 +418,12 @@ export function LeadApp() {
                 {filter.label}
               </button>
             ))}
-            {WEBSITE_SIGNAL_OPTIONS.filter((filter) => filter.id !== "ALL").map((filter) => (
+            {WEBSITE_SIGNAL_OPTIONS.map((filter) => (
               <button
                 key={filter.id}
                 type="button"
                 onClick={() => {
-                  setSiteFilter((current) => (current === filter.id ? "ALL" : filter.id));
+                  setSiteFilter(filter.id);
                   setSummaryKey(null);
                 }}
                 className={cn(
@@ -388,7 +433,9 @@ export function LeadApp() {
                       ? "bg-hot/20 text-hot"
                       : filter.id === "yellow"
                         ? "bg-warm-lead/20 text-warm-lead"
-                        : "bg-site/20 text-site"
+                        : filter.id === "green"
+                          ? "bg-site/20 text-site"
+                          : "bg-accent text-accent-fg"
                     : "bg-surface text-muted shadow-(--shadow-border) hover:text-fg",
                 )}
               >
@@ -463,7 +510,7 @@ export function LeadApp() {
                     <FileUp />
                     Import spreadsheet
                   </Button>
-                  <Button variant="secondary" onClick={() => setFinding(true)}>
+                  <Button variant="secondary" onClick={() => { setFindSummary(null); setFinding(true); }}>
                     <Search />
                     Find new leads
                   </Button>

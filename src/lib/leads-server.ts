@@ -24,10 +24,10 @@ import type { SyncRequest, SyncResponse } from "@/lib/leads-sync";
 
 /** Never accept an unbounded push — one device should not be able to fill the table. */
 const MAX_CHANGES_PER_SYNC = 600;
-/** Rows per INSERT. 19 params each, so this stays far under Postgres' parameter cap. */
+/** Rows per INSERT. 23 params each, so this stays far under Postgres' parameter cap. */
 const UPSERT_BATCH = 100;
 /** Bound columns in one place: the tuple builder and the placeholder count must agree. */
-const UPSERT_COLUMNS = 19;
+const UPSERT_COLUMNS = 23;
 /**
  * The returned cursor is held back by this much so a row committed moments after
  * our read is picked up next time instead of being skipped forever. Re-reading a
@@ -135,11 +135,15 @@ export const syncLeads = createServerFn({ method: "POST" })
             lead.town,
             lead.phone,
             lead.email,
+            lead.address,
             lead.rating === "" ? null : lead.rating,
             lead.reviews === "" ? null : lead.reviews,
             lead.website,
             lead.mapsLink,
             lead.websiteStatus,
+            lead.placeId,
+            lead.foundAt,
+            lead.businessStatus,
             lead.demoUrl,
             lead.source,
             lead.called,
@@ -153,38 +157,43 @@ export const syncLeads = createServerFn({ method: "POST" })
         });
         await sql.query(
           `insert into leads (
-             user_id, id, business_name, trade, town, phone, email, rating, reviews,
-             website, maps_link, website_status, demo_url, source, called,
-             call_result, follow_up_date, notes, deleted_at, created_at, updated_at
+             user_id, id, business_name, trade, town, phone, email, address, rating, reviews,
+             website, maps_link, website_status, place_id, found_at, business_status,
+             demo_url, source, called, call_result, follow_up_date, notes, deleted_at,
+             created_at, updated_at
            ) values ${tuples.join(",")}
            on conflict (user_id, id) do update set
-             business_name  = excluded.business_name,
-             trade          = excluded.trade,
-             town           = excluded.town,
-             phone          = excluded.phone,
-             email          = excluded.email,
-             rating         = excluded.rating,
-             reviews        = excluded.reviews,
-             website        = excluded.website,
-             maps_link      = excluded.maps_link,
-             website_status = excluded.website_status,
-             demo_url       = excluded.demo_url,
-             source         = excluded.source,
-             called         = excluded.called,
-             call_result    = excluded.call_result,
-             follow_up_date = excluded.follow_up_date,
-             notes          = excluded.notes,
-             deleted_at     = excluded.deleted_at,
-             updated_at     = now()`,
+             business_name    = excluded.business_name,
+             trade            = excluded.trade,
+             town             = excluded.town,
+             phone            = excluded.phone,
+             email            = excluded.email,
+             address          = excluded.address,
+             rating           = excluded.rating,
+             reviews          = excluded.reviews,
+             website          = excluded.website,
+             maps_link        = excluded.maps_link,
+             website_status   = excluded.website_status,
+             place_id         = excluded.place_id,
+             found_at         = excluded.found_at,
+             business_status  = excluded.business_status,
+             demo_url         = excluded.demo_url,
+             source           = excluded.source,
+             called           = excluded.called,
+             call_result      = excluded.call_result,
+             follow_up_date   = excluded.follow_up_date,
+             notes            = excluded.notes,
+             deleted_at       = excluded.deleted_at,
+             updated_at       = now()`,
           params,
         );
       }
 
       // `>=` plus the lagged cursor below: a little overlap, never a gap.
       const rows = await sql.query<LeadRow>(
-        `select id, business_name, trade, town, phone, email, rating, reviews, website,
-                maps_link, website_status, demo_url, source, called, call_result,
-                follow_up_date, notes, deleted_at, updated_at
+        `select id, business_name, trade, town, phone, email, address, rating, reviews, website,
+                maps_link, website_status, place_id, found_at, business_status, demo_url, source,
+                called, call_result, follow_up_date, notes, deleted_at, updated_at
            from leads
           where user_id = $1
             and ($2::timestamptz is null or updated_at >= $2::timestamptz)

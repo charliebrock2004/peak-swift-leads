@@ -7,7 +7,7 @@ import {
   type Priority,
   type WebsiteStatus,
 } from "@/lib/leads";
-import { discoverBusinesses, type DiscoveredPlace } from "@/lib/osm-discover";
+import { discoverBusinesses, listingWebsiteHint, type DiscoveredPlace } from "@/lib/osm-discover";
 
 export type Prospect = {
   businessName: string;
@@ -127,8 +127,9 @@ function websiteStatusForPlace(
     }
     return { status: mergeWebsiteEvidence("", place.website, live?.status ?? null), extra: "" };
   }
-  // Companies House never publishes websites. Empty is not proof they have none.
-  if (/companies house/i.test(place.source)) {
+  // Companies House never publishes websites. Empty is not proof they have none
+  // unless the same business was also found on OpenStreetMap.
+  if (listingWebsiteHint(place) === "unconfirmed") {
     return {
       status: "Unclear",
       extra: "Companies House listing has no website field — not confirmed missing.",
@@ -143,7 +144,7 @@ export const researchProspects = createServerFn({ method: "POST" })
     const location = asString((input as { location?: unknown }).location).slice(0, 80);
     const businessType = asString((input as { businessType?: unknown }).businessType).slice(0, 80);
     const rawLimit = Number((input as { limit?: unknown }).limit);
-    const limit = Number.isFinite(rawLimit) ? Math.min(100, Math.max(1, Math.round(rawLimit))) : 8;
+    const limit = Number.isFinite(rawLimit) ? Math.min(100, Math.max(1, Math.round(rawLimit))) : 25;
     const rawRadius = Number((input as { radiusMiles?: unknown }).radiusMiles);
     const radiusMiles = Number.isFinite(rawRadius) ? Math.min(80, Math.max(5, Math.round(rawRadius))) : 25;
     if (location.length < 2) throw new Error("Enter a location");

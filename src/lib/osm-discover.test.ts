@@ -5,6 +5,7 @@ import {
   isMerchantName,
   isNationalChain,
   isRejectedOsm,
+  listingWebsiteHint,
   mergePlaces,
   milesBetween,
   nominatimViewbox,
@@ -27,6 +28,7 @@ function place(partial: Partial<DiscoveredPlace> & { businessName: string }): Di
     notes: "",
     placeId: "",
     businessStatus: "",
+    osmChecked: false,
     ...partial,
   };
 }
@@ -104,5 +106,49 @@ describe("mergePlaces", () => {
       [place({ businessName: "W B Dodds Ltd", town: "Crieff", phone: "+44 1764 652264" })],
     );
     assert.equal(next.length, 1);
+  });
+
+  it("merges Ltd suffix names and keeps a website from either source", () => {
+    const next = mergePlaces(
+      [place({ businessName: "Crieff Construction", website: "", osmChecked: true })],
+      [
+        place({
+          businessName: "Crieff Construction Ltd",
+          website: "https://crieffconstruction.co.uk",
+          source: "Companies House",
+          placeId: "ch:SC612222",
+        }),
+      ],
+    );
+    assert.equal(next.length, 1);
+    assert.equal(next[0]?.website, "https://crieffconstruction.co.uk");
+    assert.equal(next[0]?.osmChecked, true);
+  });
+});
+
+describe("listingWebsiteHint", () => {
+  it("does not treat a Companies House listing as missing a website", () => {
+    assert.equal(
+      listingWebsiteHint({ website: "", source: "Companies House", osmChecked: false }),
+      "unconfirmed",
+    );
+  });
+
+  it("treats an OSM listing with no website tag as no website", () => {
+    assert.equal(
+      listingWebsiteHint({ website: "", source: "OpenStreetMap", osmChecked: true }),
+      "osm-none",
+    );
+  });
+
+  it("treats a URL as a website regardless of source", () => {
+    assert.equal(
+      listingWebsiteHint({
+        website: "https://monziejoinery.co.uk",
+        source: "Companies House",
+        osmChecked: false,
+      }),
+      "url",
+    );
   });
 });
