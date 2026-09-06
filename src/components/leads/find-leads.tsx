@@ -16,10 +16,12 @@ import {
   phoneHref,
   websiteActionLabel,
   websiteHref,
+  websiteSignal,
   type Lead,
   type Priority,
   type RadiusMiles,
   type ResultLimit,
+  type WebsiteSignal,
 } from "@/lib/leads";
 import { researchProspects, type Prospect } from "@/lib/research";
 import {
@@ -89,6 +91,7 @@ export function FindLeadsPanel({
   const [error, setError] = useState("");
   const [warning, setWarning] = useState("");
   const [rows, setRows] = useState<ReviewRow[] | null>(null);
+  const [siteFilter, setSiteFilter] = useState<"ALL" | WebsiteSignal>("ALL");
   const [mounted, setMounted] = useState(false);
   const [stopping, setStopping] = useState(false);
   const cancelled = useRef(false);
@@ -133,7 +136,7 @@ export function FindLeadsPanel({
       return {
         ...prospect,
         duplicate,
-        selected: !duplicate && prospect.priority !== "COLD",
+        selected: !duplicate && websiteSignal(prospect.websiteStatus) !== "green",
       };
     });
   }
@@ -151,6 +154,7 @@ export function FindLeadsPanel({
     setError("");
     setWarning("");
     setRows(null);
+    setSiteFilter("ALL");
     setStopping(false);
     try {
       const result = await researchProspects({
@@ -257,7 +261,7 @@ export function FindLeadsPanel({
           ) : rows ? (
             <div className="flex flex-col gap-3 rounded-xl bg-surface px-4 py-3 shadow-(--shadow-border) sm:flex-row sm:items-center sm:justify-between">
               <p className="text-sm">
-                {preview.label} · {businessType} · {rows.length} found
+                Found {rows.length} {rows.length === 1 ? "business" : "businesses"}
               </p>
               <div className="flex gap-2">
                 <Button variant="secondary" size="sm" onClick={() => setRows(null)}>
@@ -272,8 +276,9 @@ export function FindLeadsPanel({
           ) : (
             <>
               <p className="text-sm text-muted">
-                Search Companies House and OpenStreetMap around a town. Free, no API key, no Google.
-                Businesses without a proper website rank highest.
+                Search Companies House and OpenStreetMap around a town. Free, no API key. Businesses
+                without a proper website rank highest — we only mark “no website” when the listing
+                actually had no site.
               </p>
 
               <div className="mt-5 grid gap-4">
@@ -380,7 +385,7 @@ export function FindLeadsPanel({
 
               <Button className="mt-5 h-12 w-full md:w-auto" onClick={() => void runSearch()}>
                 <Search />
-                Find prospects
+                Find leads
               </Button>
               {error ? (
                 <div className="mt-3">
@@ -397,7 +402,7 @@ export function FindLeadsPanel({
             <>
               {warning ? <p className="mt-3 text-sm text-warm-lead">{warning}</p> : null}
               {error && rows ? <p className="mt-3 text-sm text-hot">{error}</p> : null}
-              <ReviewList rows={rows} onToggle={toggle} />
+              <ReviewList rows={rows} siteFilter={siteFilter} onSiteFilter={setSiteFilter} onToggle={toggle} />
             </>
           ) : null}
         </div>
@@ -471,18 +476,25 @@ function Chip({
 
 function ReviewList({
   rows,
+  siteFilter,
+  onSiteFilter,
   onToggle,
 }: {
   rows: ReviewRow[];
+  siteFilter: "ALL" | WebsiteSignal;
+  onSiteFilter: (value: "ALL" | WebsiteSignal) => void;
   onToggle: (index: number) => void;
 }) {
   const summary = useMemo(() => {
-    const hot = rows.filter((row) => row.priority === "HOT").length;
-    const warm = rows.filter((row) => row.priority === "WARM").length;
-    const cold = rows.filter((row) => row.priority === "COLD").length;
+    const red = rows.filter((row) => websiteSignal(row.websiteStatus) === "red").length;
+    const yellow = rows.filter((row) => websiteSignal(row.websiteStatus) === "yellow").length;
+    const green = rows.filter((row) => websiteSignal(row.websiteStatus) === "green").length;
+    const unclear = rows.filter((row) => websiteSignal(row.websiteStatus) === "unclear").length;
     const dupes = rows.filter((row) => row.duplicate).length;
-    return { hot, warm, cold, dupes };
+    return { red, yellow, green, unclear, dupes };
   }, [rows]);
+
+  const visible = siteFilter === "ALL" ? rows : rows.filter((row) => websiteSignal(row.websiteStatus) === siteFilter);
 
   return (
     <section className="mt-8 pb-8">
@@ -490,13 +502,38 @@ function ReviewList({
         <div>
           <h3 className="font-display text-xl font-medium">Review prospects</h3>
           <p className="mt-1 text-sm text-muted">
-            {rows.length} found · {summary.hot} HOT · {summary.warm} WARM · {summary.cold} COLD
+            Found {rows.length} {rows.length === 1 ? "business" : "businesses"}
+            {summary.red ? ` · ${summary.red} no website` : ""}
+            {summary.yellow ? ` · ${summary.yellow} need work` : ""}
+            {summary.green ? ` · ${summary.green} have a website` : ""}
+            {summary.unclear ? ` · ${summary.unclear} unclear` : ""}
             {summary.dupes ? ` · ${summary.dupes} already in your sheet` : ""}
           </p>
         </div>
       </div>
+      <div className="mt-3 flex flex-wrap gap-2">
+        {([
+          ["ALL", "All"],
+          ["red", "No website"],
+          ["yellow", "Needs work"],
+          ["green", "Has website"],
+        ] as const).map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            onClick={() => onSiteFilter(id)}
+            className={cn(
+              "h-9 rounded-full px-3 text-sm font-medium",
+              siteFilter === id ? "bg-accent text-accent-fg" : "bg-surface text-muted shadow-(--shadow-border)",
+            )}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
       <ul className="mt-4 flex flex-col gap-2">
-        {rows.map((row, index) => {
+        {visible.map((row) => {
+          const index = rows.indexOf(row);
           const tel = phoneHref(row.phone);
           const maps = mapsHref(row);
           const site = websiteHref(row.website);
@@ -527,8 +564,10 @@ function ReviewList({
                         {row.duplicate.via === "phone"
                           ? " (same phone)"
                           : row.duplicate.via === "maps"
-                            ? " (same Maps listing)"
-                            : " (same name)"}
+                            ? " (same listing)"
+                            : row.duplicate.via === "place"
+                              ? " (same place)"
+                              : " (same name)"}
                       </span>
                     ) : null}
                   </div>

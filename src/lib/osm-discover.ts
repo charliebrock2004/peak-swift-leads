@@ -25,6 +25,8 @@ export type DiscoveredPlace = {
   mapsLink: string;
   source: string;
   notes: string;
+  placeId: string;
+  businessStatus: string;
 };
 
 export type DiscoverResult =
@@ -181,6 +183,13 @@ const TRADE_PROFILES: Array<{ match: RegExp; profile: TradeProfile }> = [
   },
   { match: /clean/, profile: { queries: ["cleaner", "cleaning"], nominatim: ["cleaning"] } },
   { match: /dog groom/, profile: { queries: ["dog groomer", "grooming"], nominatim: ["pet grooming"] } },
+  { match: /tile|tiler/, profile: { queries: ["tiler", "tiling"], nominatim: ["tiler", "tiles"], bounded: false } },
+  {
+    match: /floor/,
+    profile: { queries: ["flooring", "floorer"], nominatim: ["flooring"], bounded: false },
+  },
+  { match: /\bgym\b|fitness/, profile: { queries: ["gym", "fitness"], nominatim: ["gym", "fitness centre"] } },
+  { match: /beautician/, profile: { queries: ["beautician", "beauty"], nominatim: ["beauty"], bizdata: "beauty" } },
 ];
 
 const DEFAULT_PROFILE: TradeProfile = { queries: [], nominatim: [] };
@@ -481,6 +490,8 @@ function toPlace(
   lng: number | "",
   source: string,
   extraNote = "",
+  placeId = "",
+  businessStatus = "",
 ): DiscoveredPlace {
   return {
     businessName: name.slice(0, 120),
@@ -495,6 +506,8 @@ function toPlace(
     mapsLink: mapsUrl(lat, lng, name, town),
     source,
     notes: extraNote.slice(0, 400),
+    placeId: placeId.slice(0, 80),
+    businessStatus: businessStatus.slice(0, 40),
   };
 }
 
@@ -651,6 +664,7 @@ async function searchPhoton(
         tag(osm, "craft", "shop", "office", "amenity")
           ? `OSM ${tag(osm, "craft", "shop", "office", "amenity")}`
           : "",
+        `osm:${letter}:${hit.osmId}`,
       ),
     );
   }
@@ -769,6 +783,7 @@ async function searchNominatim(
           lng,
           "OpenStreetMap via Nominatim",
           osmValue ? `OSM ${osmKey}:${osmValue}` : "",
+          hit.osm_type && hit.osm_id ? `osm:${hit.osm_type}:${hit.osm_id}` : "",
         ),
       );
     }
@@ -887,6 +902,8 @@ async function searchOverpass(
         lat,
         lng,
         "OpenStreetMap via Overpass",
+        "",
+        el.id ? `osm:${asText(el.type) || "node"}:${el.id}` : "",
       ),
     );
   }
@@ -899,13 +916,17 @@ export function mergePlaces(existing: DiscoveredPlace[], incoming: DiscoveredPla
   const phones = new Set(
     existing.map((item) => item.phone.replace(/\D/g, "").slice(-10)).filter((item) => item.length >= 10),
   );
+  const ids = new Set(existing.map((item) => item.placeId.trim()).filter(Boolean));
   for (const item of incoming) {
     const name = item.businessName.trim().toLowerCase();
     const phone = item.phone.replace(/\D/g, "").slice(-10);
+    const placeId = item.placeId.trim();
+    if (placeId && ids.has(placeId)) continue;
     if (names.has(name)) continue;
     if (phone.length >= 10 && phones.has(phone)) continue;
     names.add(name);
     if (phone.length >= 10) phones.add(phone);
+    if (placeId) ids.add(placeId);
     next.push(item);
   }
   return next;
@@ -925,6 +946,8 @@ function fromCompanyHit(hit: CompanyHit, trade: string, fallbackTown: string): D
     hit.lng,
     "Companies House",
     hit.notes,
+    hit.companyNumber ? `ch:${hit.companyNumber}` : "",
+    "Active",
   );
 }
 

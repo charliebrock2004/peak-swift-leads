@@ -27,6 +27,9 @@ export type Prospect = {
   reason: string;
   lat: number | "";
   lng: number | "";
+  placeId: string;
+  foundAt: string;
+  businessStatus: string;
 };
 
 export type ResearchResult =
@@ -105,7 +108,33 @@ function scorePlace(place: DiscoveredPlace, websiteStatus: WebsiteStatus, extraN
     reason: priorityReason(scored),
     lat: place.lat,
     lng: place.lng,
+    placeId: place.placeId,
+    foundAt: new Date().toISOString(),
+    businessStatus: place.businessStatus,
   };
+}
+
+function websiteStatusForPlace(
+  place: DiscoveredPlace,
+  live: { status: WebsiteStatus | null; thin: boolean } | null,
+): { status: WebsiteStatus; extra: string } {
+  if (place.website) {
+    if (live?.status === "Social Only" || live?.status === "Directory Only") {
+      return { status: live.status, extra: "" };
+    }
+    if (live?.status === "Proper Website" && live.thin) {
+      return { status: "Basic Website", extra: "Website looks basic or template-built." };
+    }
+    return { status: mergeWebsiteEvidence("", place.website, live?.status ?? null), extra: "" };
+  }
+  // Companies House never publishes websites. Empty is not proof they have none.
+  if (/companies house/i.test(place.source)) {
+    return {
+      status: "Unclear",
+      extra: "Companies House listing has no website field — not confirmed missing.",
+    };
+  }
+  return { status: "No Website Found", extra: "" };
 }
 
 export const researchProspects = createServerFn({ method: "POST" })
@@ -136,19 +165,8 @@ export const researchProspects = createServerFn({ method: "POST" })
     const prospects = found.places
       .map((place) => {
         const live = place.website ? (byUrl.get(place.website) ?? null) : null;
-        let extra = "";
-        let websiteStatus: WebsiteStatus;
-        if (!place.website) {
-          websiteStatus = "No Website Found";
-        } else if (live?.status === "Social Only" || live?.status === "Directory Only") {
-          websiteStatus = live.status;
-        } else if (live?.status === "Proper Website" && live.thin) {
-          websiteStatus = "Basic Website";
-          extra = "Website looks basic or template-built.";
-        } else {
-          websiteStatus = mergeWebsiteEvidence("", place.website, live?.status ?? null);
-        }
-        return scorePlace(place, websiteStatus, extra);
+        const { status, extra } = websiteStatusForPlace(place, live);
+        return scorePlace(place, status, extra);
       })
       .sort((a, b) => {
         if (rank[a.priority] !== rank[b.priority]) return rank[a.priority] - rank[b.priority];

@@ -19,6 +19,7 @@ import {
   callOutcomePatch,
   todayIso,
   websiteActionLabel,
+  websiteSignal,
   type Lead,
 } from "./leads.ts";
 
@@ -169,10 +170,10 @@ describe("priority", () => {
     );
   });
 
-  it("ranks unclear listings with no reviews as COLD", () => {
+  it("ranks unclear listings with no website URL as WARM — unconfirmed, still worth a look", () => {
     assert.equal(
       computePriority(lead({ website: "", reviews: "", rating: "", websiteStatus: "Unclear" })),
-      "COLD",
+      "WARM",
     );
   });
 
@@ -242,12 +243,31 @@ describe("duplicates", () => {
     );
   });
 
+  it("maps website status to green / yellow / red without calling Unclear red", () => {
+    assert.equal(websiteSignal("Proper Website"), "green");
+    assert.equal(websiteSignal("Basic Website"), "yellow");
+    assert.equal(websiteSignal("Social Only"), "yellow");
+    assert.equal(websiteSignal("Directory Only"), "yellow");
+    assert.equal(websiteSignal("No Website Found"), "red");
+    assert.equal(websiteSignal("Unclear"), "unclear");
+    assert.equal(websiteSignal(""), "unclear");
+  });
+
   it("matches a distinctive name even in another town", () => {
     const match = findDuplicate(
       { businessName: "W B Dodds Limited", town: "Perth", phone: "", mapsLink: "" },
       existing,
     );
     assert.equal(match?.via, "name");
+  });
+
+  it("matches on place id before name", () => {
+    const sheet = [lead({ id: "ch", businessName: "Crieff Construction", town: "Crieff", placeId: "ch:SC612222" })];
+    const match = findDuplicate(
+      { businessName: "Other Name", town: "Perth", phone: "", mapsLink: "", placeId: "ch:SC612222" },
+      sheet,
+    );
+    assert.equal(match?.via, "place");
   });
 });
 

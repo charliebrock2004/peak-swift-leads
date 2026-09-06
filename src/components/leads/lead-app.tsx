@@ -16,6 +16,7 @@ import {
   SAMPLE_LEADS,
   TOWN_SUGGESTIONS,
   TRADE_SUGGESTIONS,
+  WEBSITE_SIGNAL_OPTIONS,
   WEBSITE_STATUS_OPTIONS,
   compareLeads,
   computePriority,
@@ -25,6 +26,7 @@ import {
   liveLeads,
   resolveWebsiteStatus,
   summarise,
+  websiteSignal,
   type CallResult,
   type CalledStatus,
   type Lead,
@@ -32,6 +34,7 @@ import {
   type Priority,
   type SortDir,
   type SortKey,
+  type WebsiteSignal,
   type WebsiteStatus,
 } from "@/lib/leads";
 import type { Prospect } from "@/lib/research";
@@ -67,6 +70,7 @@ export function LeadApp() {
   const [townFilter, setTownFilter] = useState("ALL");
   const [tradeFilter, setTradeFilter] = useState("ALL");
   const [statusFilter, setStatusFilter] = useState<"ALL" | WebsiteStatus>("ALL");
+  const [siteFilter, setSiteFilter] = useState<"ALL" | WebsiteSignal>("ALL");
   const [dueOnly, setDueOnly] = useState(false);
   const [sortKey, setSortKey] = useState<SortKey>("priority");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
@@ -109,6 +113,7 @@ export function LeadApp() {
         if (townFilter !== "ALL" && lead.town.trim() !== townFilter) return false;
         if (tradeFilter !== "ALL" && lead.trade.trim() !== tradeFilter) return false;
         if (statusFilter !== "ALL" && resolveWebsiteStatus(lead) !== statusFilter) return false;
+        if (siteFilter !== "ALL" && websiteSignal(resolveWebsiteStatus(lead)) !== siteFilter) return false;
         if (dueOnly && !isFollowUpDue(lead)) return false;
         if (!needle) return true;
         return [lead.businessName, lead.trade, lead.town, lead.phone, lead.notes, lead.website]
@@ -126,6 +131,7 @@ export function LeadApp() {
     townFilter,
     tradeFilter,
     statusFilter,
+    siteFilter,
     dueOnly,
     sortKey,
     sortDir,
@@ -138,7 +144,8 @@ export function LeadApp() {
     statusFilter !== "ALL" ||
     calledFilter !== "ALL" ||
     resultFilter !== "ALL";
-  const filtersOn = query.trim() !== "" || priorityFilter !== "ALL" || dueOnly || dropdownFiltersOn;
+  const filtersOn =
+    query.trim() !== "" || priorityFilter !== "ALL" || siteFilter !== "ALL" || dueOnly || dropdownFiltersOn;
 
   function clearFilters() {
     setQuery("");
@@ -148,6 +155,7 @@ export function LeadApp() {
     setTownFilter("ALL");
     setTradeFilter("ALL");
     setStatusFilter("ALL");
+    setSiteFilter("ALL");
     setDueOnly(false);
     setSummaryKey(null);
   }
@@ -202,6 +210,9 @@ export function LeadApp() {
         website: prospect.website,
         mapsLink: prospect.mapsLink,
         websiteStatus: prospect.websiteStatus,
+        placeId: prospect.placeId,
+        foundAt: prospect.foundAt || new Date().toISOString(),
+        businessStatus: prospect.businessStatus,
         source: prospect.source,
         notes: [prospect.reason, prospect.notes, prospect.address].filter(Boolean).join(" "),
         called: "Not Called",
@@ -362,6 +373,28 @@ export function LeadApp() {
                 {filter.label}
               </button>
             ))}
+            {WEBSITE_SIGNAL_OPTIONS.filter((filter) => filter.id !== "ALL").map((filter) => (
+              <button
+                key={filter.id}
+                type="button"
+                onClick={() => {
+                  setSiteFilter((current) => (current === filter.id ? "ALL" : filter.id));
+                  setSummaryKey(null);
+                }}
+                className={cn(
+                  "h-10 rounded-full px-3.5 text-sm font-medium transition-colors duration-(--motion-quick)",
+                  siteFilter === filter.id
+                    ? filter.id === "red"
+                      ? "bg-hot/20 text-hot"
+                      : filter.id === "yellow"
+                        ? "bg-warm-lead/20 text-warm-lead"
+                        : "bg-site/20 text-site"
+                    : "bg-surface text-muted shadow-(--shadow-border) hover:text-fg",
+                )}
+              >
+                {filter.label}
+              </button>
+            ))}
             <button
               type="button"
               onClick={() => {
@@ -387,6 +420,7 @@ export function LeadApp() {
                 setTownFilter("ALL");
                 setTradeFilter("ALL");
                 setStatusFilter("ALL");
+                setSiteFilter("ALL");
                 setDueOnly(false);
                 setSummaryKey("hot");
               }}

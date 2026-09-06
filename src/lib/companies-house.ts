@@ -57,6 +57,10 @@ const TRADE_SPECS: Array<{ match: RegExp; spec: TradeSpec }> = [
   { match: /hair/, spec: { queries: ["hairdresser"], tokens: ["hairdresser", "hairdressers", "salon"] } },
   { match: /restaurant/, spec: { queries: ["restaurant"], tokens: ["restaurant", "restaurants"] } },
   { match: /cafe|café/, spec: { queries: ["cafe"], tokens: ["cafe", "café"] } },
+  { match: /tile|tiler/, spec: { queries: ["tiling"], tokens: ["tiling", "tiler", "tilers"] } },
+  { match: /floor/, spec: { queries: ["flooring"], tokens: ["flooring", "floorer"] } },
+  { match: /\bgym\b|fitness/, spec: { queries: ["fitness"], tokens: ["fitness", "gym"] } },
+  { match: /beaut/, spec: { queries: ["beauty"], tokens: ["beauty", "beautician"] } },
 ];
 
 export function foldTrade(value: string): string {

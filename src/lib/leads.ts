@@ -45,6 +45,12 @@ export type Lead = {
   website: string;
   mapsLink: string;
   websiteStatus: WebsiteStatus | "";
+  /** Stable source id, e.g. ch:SC612222 or osm:node:123. Used for duplicates. */
+  placeId: string;
+  /** ISO timestamp when Find leads added this row. Empty for hand-added / old rows. */
+  foundAt: string;
+  /** Public listing status when the source provided one (Active, etc). */
+  businessStatus: string;
   /** Where this lead came from: research, spreadsheet import, added by hand. */
   source: string;
   called: CalledStatus;
@@ -61,15 +67,18 @@ export type Lead = {
 
 export const TRADE_SUGGESTIONS = [
   "Barber",
+  "Beautician",
   "Beauty salon",
   "Builder",
   "Cafe",
   "Cleaning company",
   "Dog groomer",
   "Electrician",
+  "Flooring",
   "Florist",
   "Garage",
   "Gardener",
+  "Gym",
   "Hairdresser",
   "Joiner",
   "Landscaper",
@@ -80,6 +89,7 @@ export const TRADE_SUGGESTIONS = [
   "Restaurant",
   "Roofer",
   "Takeaway",
+  "Tiler",
   "Tree surgeon",
   "Tradesperson",
 ] as const;
@@ -283,6 +293,30 @@ export function resolveWebsiteStatus(lead: Pick<Lead, "website" | "websiteStatus
   return classifyWebsiteUrl(lead.website);
 }
 
+export type WebsiteSignal = "green" | "yellow" | "red" | "unclear";
+
+export const WEBSITE_SIGNAL_OPTIONS = [
+  { id: "ALL" as const, label: "All" },
+  { id: "red" as const, label: "No website" },
+  { id: "yellow" as const, label: "Needs work" },
+  { id: "green" as const, label: "Has website" },
+];
+
+export const WEBSITE_SIGNAL_LABEL: Record<WebsiteSignal, string> = {
+  green: "Has website",
+  yellow: "Needs work",
+  red: "No website",
+  unclear: "Unclear",
+};
+
+/** Phase 1 traffic-light: green = proper site, yellow = weak/social/directory, red = listing had no site. Unclear is not red. */
+export function websiteSignal(status: WebsiteStatus | ""): WebsiteSignal {
+  if (status === "Proper Website") return "green";
+  if (status === "Basic Website" || status === "Social Only" || status === "Directory Only") return "yellow";
+  if (status === "No Website Found") return "red";
+  return "unclear";
+}
+
 export function lacksProperWebsite(lead: Pick<Lead, "website" | "websiteStatus">): boolean {
   const status = resolveWebsiteStatus(lead);
   return (
@@ -309,6 +343,7 @@ export function computePriority(
   if (status === "Basic Website") return "WARM";
   if (prospect && reviews > 0) return "WARM";
   if (prospect && (status === "Social Only" || status === "Directory Only")) return "WARM";
+  if (status === "Unclear" && !hasWebsite(lead.website)) return "WARM";
   return "COLD";
 }
 
@@ -454,6 +489,9 @@ export function createLead(partial: Partial<Lead> = {}): Lead {
     website: "",
     mapsLink: "",
     websiteStatus: "",
+    placeId: "",
+    foundAt: "",
+    businessStatus: "",
     source: "",
     called: "Not Called",
     callResult: "",
@@ -500,6 +538,10 @@ export function leadsToCsv(leads: Lead[]): string {
     "Number of Reviews",
     "Website",
     "Website Status",
+    "Website Signal",
+    "Place ID",
+    "Date Found",
+    "Business Status",
     "Google Maps Link",
     "Priority",
     "Reason",
@@ -522,6 +564,10 @@ export function leadsToCsv(leads: Lead[]): string {
       lead.reviews,
       lead.website,
       resolveWebsiteStatus(lead),
+      WEBSITE_SIGNAL_LABEL[websiteSignal(resolveWebsiteStatus(lead))],
+      lead.placeId ?? "",
+      lead.foundAt ?? "",
+      lead.businessStatus ?? "",
       lead.mapsLink,
       computePriority(lead),
       priorityReason(lead),
@@ -635,23 +681,28 @@ export function normalizeMaps(value: string): string {
   return href.replace(/\/+$/, "");
 }
 
-export type LeadIdentity = Pick<Lead, "businessName" | "town" | "phone" | "mapsLink">;
+export type LeadIdentity = Pick<Lead, "businessName" | "town" | "phone" | "mapsLink"> & {
+  placeId?: string;
+};
 
 export type DuplicateMatch<T extends LeadIdentity = Lead> = {
   lead: T;
-  via: "phone" | "maps" | "name" | "name+town";
+  via: "place" | "phone" | "maps" | "name" | "name+town";
 };
 
 export function findDuplicate<T extends LeadIdentity>(
   candidate: LeadIdentity,
   leads: readonly T[],
 ): DuplicateMatch<T> | null {
+  const placeId = candidate.placeId?.trim() ?? "";
   const phone = normalizePhone(candidate.phone);
   const maps = candidate.mapsLink.trim() ? normalizeMaps(candidate.mapsLink) : "";
   const name = normalizeName(candidate.businessName);
   const town = candidate.town.trim().toLowerCase();
 
   for (const lead of leads) {
+    const leadPlace = lead.placeId?.trim() ?? "";
+    if (placeId && leadPlace && placeId === leadPlace) return { lead, via: "place" };
     const leadPhone = normalizePhone(lead.phone);
     if (phone.length >= 10 && leadPhone.length >= 10 && phone === leadPhone) {
       return { lead, via: "phone" };

@@ -20,6 +20,9 @@ function prospect(partial: Partial<Prospect> & { businessName: string; town: str
     reason: "test",
     lat: "",
     lng: "",
+    placeId: "",
+    foundAt: "",
+    businessStatus: "",
     ...partial,
   };
 }

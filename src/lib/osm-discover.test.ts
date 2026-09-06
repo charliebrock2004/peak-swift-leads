@@ -25,6 +25,8 @@ function place(partial: Partial<DiscoveredPlace> & { businessName: string }): Di
     mapsLink: "",
     source: "test",
     notes: "",
+    placeId: "",
+    businessStatus: "",
     ...partial,
   };
 }
@@ -44,6 +46,12 @@ describe("profileFor", () => {
   it("maps garages to car_repair", () => {
     assert.equal(profileFor("Mechanic").bizdata, "car_repair");
     assert.equal(profileFor("Garage").bizdata, "car_repair");
+  });
+
+  it("maps tilers, flooring and gyms", () => {
+    assert.deepEqual(profileFor("Tiler").queries, ["tiler", "tiling"]);
+    assert.deepEqual(profileFor("Flooring").queries, ["flooring", "floorer"]);
+    assert.ok(profileFor("Gym").queries.includes("gym"));
   });
 });
 

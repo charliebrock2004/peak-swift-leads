@@ -88,6 +88,8 @@ describe("specForTrade", () => {
     assert.deepEqual(specForTrade("Plumber").queries, ["plumbing"]);
     assert.deepEqual(specForTrade("Electrician").queries, ["electrical"]);
     assert.deepEqual(specForTrade("Builder").queries, ["construction", "builders"]);
+    assert.deepEqual(specForTrade("Tiler").queries, ["tiling"]);
+    assert.deepEqual(specForTrade("Gym").queries, ["fitness"]);
   });
 });
 

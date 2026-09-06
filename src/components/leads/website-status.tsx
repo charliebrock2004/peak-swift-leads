@@ -1,13 +1,15 @@
 import { cn } from "@/lib/utils";
-import type { WebsiteStatus } from "@/lib/leads";
+import {
+  WEBSITE_SIGNAL_LABEL,
+  websiteSignal,
+  type WebsiteStatus,
+} from "@/lib/leads";
 
-const STYLES: Record<WebsiteStatus, string> = {
-  "Proper Website": "bg-surface-2 text-muted",
-  "Basic Website": "bg-warm-lead/15 text-warm-lead",
-  "Social Only": "bg-warm-lead/15 text-warm-lead",
-  "Directory Only": "bg-surface-2 text-cold-lead",
-  "No Website Found": "bg-hot/15 text-hot",
-  Unclear: "bg-surface-2 text-subtle",
+const STYLES: Record<ReturnType<typeof websiteSignal>, string> = {
+  green: "bg-site/15 text-site",
+  yellow: "bg-warm-lead/15 text-warm-lead",
+  red: "bg-hot/15 text-hot",
+  unclear: "bg-surface-2 text-subtle",
 };
 
 export function WebsiteStatusBadge({
@@ -17,15 +19,17 @@ export function WebsiteStatusBadge({
   status: WebsiteStatus;
   className?: string;
 }) {
+  const signal = websiteSignal(status);
   return (
     <span
+      title={status}
       className={cn(
         "inline-flex h-6 items-center rounded-full px-2 text-xs font-medium whitespace-nowrap",
-        STYLES[status],
+        STYLES[signal],
         className,
       )}
     >
-      {status}
+      {WEBSITE_SIGNAL_LABEL[signal]}
     </span>
   );
 }
