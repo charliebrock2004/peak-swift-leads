@@ -37,6 +37,7 @@ const OUTCOME_LABELS: Record<Exclude<CallResult, "">, string> = {
   "No Answer": "No answer",
   Callback: "Callback",
   Interested: "Interested",
+  Won: "Won",
   "Not Interested": "Not now",
   "Wrong Number": "Wrong no.",
   Booked: "Booked",

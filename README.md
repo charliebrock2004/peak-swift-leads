@@ -67,12 +67,91 @@ Empty website fields are **not** treated as "no website". Research classifies:
 **WARM** = no proper website with some reviews, or social/directory only.
 **COLD** = already has a proper site, or not enough evidence.
 
+## Outreach
+
+**Outreach** (button in the header) turns qualified leads into emails sent from
+your own Gmail. Five tabs: Overview, Prospects, Review, Replies, Settings.
+
+The path is: pick prospects → write → **read every one** → approve → queue →
+send → replies stop follow-ups.
+
+### Nothing sends by accident
+
+- A lead is only offered when it has a **public email found on its own site**
+  (HIGH or MEDIUM confidence — never a guess), a real website opportunity, and
+  has not been contacted, unsubscribed, marked Not Interested, booked or won.
+- Every email is checked **twice**: when you approve it, and again in the second
+  before it is handed to Gmail. Leads change; approval can be days old.
+- A draft that still contains `{{business_name}}`, never names the business,
+  never says who it is from, has no opt-out, or insults them, **cannot be sent**.
+- One live email per address per kind, enforced by a database constraint as
+  well as in code. The same business can never get two first emails.
+- LOW-opportunity leads are hidden unless you explicitly turn them on.
+
+### Manual review
+
+UK marketing rules treat a sole trader like an individual. Leads whose email is
+a personal mailbox (`gmail.com`, `btinternet.com`, …) or whose name looks like a
+person's are **held** — shown, counted, but not selectable — for you to look at
+and send by hand if you are happy to.
+
+### Sending controls
+
+Daily limit (30), emails per batch (5), delay, follow-ups (off by default, max
+2), automatic sending (off). The daily count is derived from what actually went
+out, so it cannot drift. `12 / 30` is on every screen.
+
+### Replies
+
+The app reads threads it created to notice a reply. It **never answers** — that
+is yours. A reply stops follow-ups and moves the lead to Replied. A reply asking
+to stop suppresses that address permanently; suppression outlives the lead, so
+re-importing the business cannot resurrect it.
+
+### Connecting Gmail (one-time, and it needs you)
+
+The app needs its own Google OAuth client. This part cannot be automated:
+
+1. Go to [console.cloud.google.com](https://console.cloud.google.com) and create
+   a project (e.g. "PeakSwift Leads").
+2. **APIs & Services → Library** → enable **Gmail API**.
+3. **APIs & Services → OAuth consent screen** → External → fill in the app name
+   and your email → add yourself under **Test users**. (Staying in "Testing" is
+   fine for one account; tokens then expire every 7 days, so publish the app
+   when you are happy with it.)
+4. Add these scopes: `gmail.send`, `gmail.readonly`, `userinfo.email`.
+5. **Credentials → Create credentials → OAuth client ID → Web application**.
+   Under **Authorised redirect URIs** add, exactly:
+   - `https://<your-deployed-domain>/oauth/gmail`
+   - `http://localhost:8080/oauth/gmail` (only if you want it locally)
+6. Copy the client ID and secret into the deployment's environment as
+   `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`, then redeploy.
+7. In the app: **Outreach → Settings → Connect Gmail**, approve, and use
+   **Send test email** before contacting anyone.
+
 ## Requirements
 
 - Node.js 22+
 - npm 10+
-- For **Find leads**: `XAI_API_KEY` on the server (injected automatically in Grok Build). Never expose it to the browser.
-- For **syncing across devices**: `DATABASE_URL` (provisioned automatically on deploy — `.grok/app-env.json` sets `deploy.database: true`).
+- For **syncing across devices and all of Outreach**: `DATABASE_URL` (provisioned
+  automatically on deploy — `.grok/app-env.json` sets `deploy.database: true`).
+
+### Environment variables
+
+Server-only. None of these is ever sent to the browser, and none belongs in git.
+
+| Variable | Needed for | Notes |
+| --- | --- | --- |
+| `DATABASE_URL` | Sync, and everything in Outreach | Provisioned on deploy |
+| `GOOGLE_CLIENT_ID` | Connecting Gmail | From your Google Cloud OAuth client |
+| `GOOGLE_CLIENT_SECRET` | Connecting Gmail | Same. **Never** prefix with `VITE_` |
+| `GMAIL_SENDER` | Optional | Pins the account, e.g. `PeakSwiftStudio@gmail.com`. Connecting any other account is then refused |
+| `GOOGLE_REDIRECT_URI` | Optional | Defaults to `<origin>/oauth/gmail`, which is right for most deploys |
+| `XAI_API_KEY` | Optional — AI-written emails | Without it, outreach uses the templates and says so |
+
+Two more exist **only** so the end-to-end test can point at a local stand-in for
+Google, and must never be set in production: `GOOGLE_OAUTH_BASE` and
+`GMAIL_API_BASE_URL`.
 
 ## Install and run
 

@@ -72,7 +72,15 @@ export function LeadFormDialog({
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
     if (!draft.businessName.trim()) return;
-    onSave({ ...draft, businessName: draft.businessName.trim() });
+    const next = { ...draft, businessName: draft.businessName.trim() };
+    // An address you typed in yourself is the most reliable one there is.
+    // Without recording that, outreach would refuse it forever as "confidence
+    // too low", which is only meant to catch weak automatic finds.
+    if (next.email.trim() && !next.emailConfidence) {
+      next.emailConfidence = "HIGH";
+      next.emailSource = next.emailSource || "Added by hand";
+    }
+    onSave(next);
     onOpenChange(false);
   }
 
