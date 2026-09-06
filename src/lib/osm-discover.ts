@@ -1,14 +1,16 @@
 /**
  * Free local-business discovery.
  *
- * Sources, in order, all without an API key:
- *   1. Nominatim (OpenStreetMap) — best for tagged UK shops and trades
- *   2. Photon — name search (joinery, builders) inside a radius
- *   3. BizData (OSM wrapper) for the 37 categories it actually supports
- *   4. Overpass, if Nominatim/Photon fail and a public instance answers
+ * Sources, all without an API key:
+ *   1. Companies House — UK trades (joiners, plumbers, builders, electricians)
+ *   2. Nominatim / Photon / BizData — mapped shops (restaurants, hair, garages)
+ *   3. Overpass, last resort if maps fail and CH is empty
  *
  * Nothing here talks to Google Places or xAI.
  */
+
+import { chSearchTowns } from "./scotland-places.ts";
+import { searchCompaniesHouse, type CompanyHit } from "./companies-house.ts";
 
 export type DiscoveredPlace = {
   businessName: string;
@@ -909,6 +911,23 @@ export function mergePlaces(existing: DiscoveredPlace[], incoming: DiscoveredPla
   return next;
 }
 
+function fromCompanyHit(hit: CompanyHit, trade: string, fallbackTown: string): DiscoveredPlace {
+  const town = hit.town || fallbackTown;
+  return toPlace(
+    hit.businessName,
+    trade,
+    town,
+    hit.address,
+    "",
+    "",
+    "",
+    hit.lat,
+    hit.lng,
+    "Companies House",
+    hit.notes,
+  );
+}
+
 export async function discoverBusinesses(options: {
   location: string;
   businessType: string;
@@ -933,31 +952,50 @@ export async function discoverBusinesses(options: {
 
   const profile = profileFor(trade);
   const warnings: string[] = [];
+  const towns = chSearchTowns(location, radiusMiles >= 40 ? 4 : 3);
 
-  const [nominatim, photon, biz] = await Promise.all([
+  const [nominatim, photon, biz, companies] = await Promise.all([
     searchNominatim(trade, profile, center, radiusMiles, limit, center.label),
     searchPhoton(trade, profile, center, radiusMiles, limit, center.label),
     profile.bizdata
       ? searchBizData(location, profile.bizdata, radiusMiles, limit, trade, center)
       : Promise.resolve({ places: [] as DiscoveredPlace[], error: undefined as string | undefined }),
+    searchCompaniesHouse({
+      trade,
+      location,
+      towns,
+      center,
+      radiusMiles,
+      limit,
+    }),
   ]);
-  if (nominatim.error && nominatim.places.length === 0) warnings.push(nominatim.error);
-  if (photon.error && photon.places.length === 0) warnings.push(`OpenStreetMap search: ${photon.error}`);
-  if (biz.error && biz.places.length === 0 && nominatim.places.length + photon.places.length === 0) {
-    warnings.push(biz.error);
-  }
+  const sourceErrors: string[] = [];
+  if (nominatim.error && nominatim.places.length === 0) sourceErrors.push(nominatim.error);
+  if (photon.error && photon.places.length === 0) sourceErrors.push(`OpenStreetMap search: ${photon.error}`);
+  if (biz.error && biz.places.length === 0) sourceErrors.push(biz.error);
+  if (companies.error && companies.hits.length === 0) sourceErrors.push(companies.error);
 
   let places = mergePlaces(nominatim.places, photon.places);
   places = mergePlaces(places, biz.places);
+  places = mergePlaces(
+    places,
+    companies.hits.map((hit) => fromCompanyHit(hit, trade, center.label)),
+  );
 
-  if (places.length === 0 && (nominatim.error || photon.error) && !/rate limited/i.test(nominatim.error || "")) {
+  if (
+    places.length === 0 &&
+    (nominatim.error || photon.error) &&
+    !/rate limited/i.test(nominatim.error || "")
+  ) {
     const extra = await searchOverpass(trade, profile, center, radiusMiles, center.label);
-    if (extra.error) warnings.push(`Overpass: ${extra.error}`);
+    if (extra.error) sourceErrors.push(`Overpass: ${extra.error}`);
     places = mergePlaces(places, extra.places);
   }
 
   if (places.length === 0) {
-    const sourceDown = warnings.length > 0 && warnings.every((item) => /timed out|http|unavailable|failed|rate limited/i.test(item));
+    warnings.push(...sourceErrors);
+    const sourceDown =
+      warnings.length > 0 && warnings.every((item) => /timed out|http|unavailable|failed|rate limited/i.test(item));
     if (sourceDown) {
       return {
         ok: false,
@@ -967,14 +1005,14 @@ export async function discoverBusinesses(options: {
     }
     return {
       ok: false,
-      error: `No OpenStreetMap businesses found for ${trade.toLowerCase()}s within ${radiusMiles} miles of ${center.label}. Coverage is patchy for some UK trades — try 50 miles, or a nearby city.`,
+      error: `No ${trade.toLowerCase()} businesses found within ${radiusMiles} miles of ${center.label}. Try 50 miles, or a nearby town.`,
       warnings,
     };
   }
 
-  if (places.length < 3) {
+  if (places.length < 3 && companies.hits.length === 0) {
     warnings.push(
-      `OpenStreetMap only lists ${places.length} mapped ${trade.toLowerCase()}${places.length === 1 ? "" : "s"} in this area. A larger radius may find more.`,
+      `Only ${places.length} mapped ${trade.toLowerCase()}${places.length === 1 ? "" : "s"} in this area. A larger radius may find more.`,
     );
   }
 

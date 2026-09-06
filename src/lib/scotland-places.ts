@@ -332,3 +332,19 @@ export function planSearch(location: string, limit: number): ResearchPlan {
 export function locationKindFor(location: string): PlaceKind {
   return detectPlace(location).kind;
 }
+
+/**
+ * Towns to query when looking up companies around a typed location.
+ * Small towns pick their nearest neighbours (Crieff → Perth, Auchterarder).
+ */
+export function chSearchTowns(location: string, max = 3): string[] {
+  const place = detectPlace(location);
+  if (place.kind === "nation") {
+    return ["Glasgow", "Edinburgh", "Perth", "Dundee"].slice(0, Math.max(1, max));
+  }
+  if (place.kind === "region") {
+    return uniqueNames(place.towns).slice(0, Math.max(1, max));
+  }
+  const towns = uniqueNames([place.label, ...place.towns]);
+  return towns.slice(0, Math.max(1, max));
+}

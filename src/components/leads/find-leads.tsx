@@ -245,13 +245,13 @@ export function FindLeadsPanel({
               <p className="mt-4 font-medium" aria-live="polite">
                 {stopping
                   ? "Stopping…"
-                  : `Searching OpenStreetMap${elapsed ? `… ${elapsed}s` : "…"}`}
+                  : `Searching public records${elapsed ? `… ${elapsed}s` : "…"}`}
               </p>
               <p className="mt-2 text-sm text-muted">
                 {businessType} within {radiusMiles} miles of {location}
               </p>
               <p className="mt-2 text-sm text-subtle">
-                Free public map data — no Google API. Checking websites next.
+                Free public records — no Google API. Checking websites next.
               </p>
             </div>
           ) : rows ? (
@@ -272,8 +272,8 @@ export function FindLeadsPanel({
           ) : (
             <>
               <p className="text-sm text-muted">
-                Search OpenStreetMap around a town. Free, no API key, no Google. Businesses without a
-                proper website rank highest.
+                Search Companies House and OpenStreetMap around a town. Free, no API key, no Google.
+                Businesses without a proper website rank highest.
               </p>
 
               <div className="mt-5 grid gap-4">

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { detectPlace, locationKindFor, planSearch, RESEARCH_BATCH_MAX } from "./scotland-places.ts";
+import { detectPlace, locationKindFor, planSearch, RESEARCH_BATCH_MAX, chSearchTowns } from "./scotland-places.ts";
 
 describe("detectPlace", () => {
   it("treats Perthshire aliases as a region of real towns", () => {
@@ -32,6 +32,21 @@ describe("detectPlace", () => {
     assert.equal(place.label, "Crieff");
     assert.equal(place.towns[0], "Crieff");
     assert.ok(place.towns.includes("Comrie"));
+  });
+});
+
+describe("chSearchTowns", () => {
+  it("adds Perth next to Crieff so nearby trades are queried", () => {
+    const towns = chSearchTowns("Crieff", 3);
+    assert.equal(towns[0], "Crieff");
+    assert.ok(towns.includes("Perth"));
+  });
+
+  it("uses real towns for a region, not the region name", () => {
+    const towns = chSearchTowns("Perthshire", 3);
+    assert.ok(towns.includes("Perth"));
+    assert.ok(towns.includes("Crieff"));
+    assert.ok(!towns.includes("Perthshire"));
   });
 });
 
