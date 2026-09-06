@@ -195,6 +195,7 @@ export function guessColumnMap(headers: string[]): (ImportField | null)[] {
 
 const STATUS_HINTS: [RegExp, WebsiteStatus][] = [
   [/^(proper|real|own|independent|full)|has\s*(a\s*)?(website|site)|^yes\b/i, "Proper Website"],
+  [/\bbasic\b|template|wix|squarespace/i, "Basic Website"],
   [/facebook|instagram|social|fb\b/i, "Social Only"],
   [/yell|checkatrade|directory|listing|mybuilder|ratedpeople|thomson/i, "Directory Only"],
   [/^(no|none|nil|n\/a)\b|no\s*(website|site|web)|missing|not\s*found/i, "No Website Found"],

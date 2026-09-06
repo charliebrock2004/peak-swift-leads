@@ -18,6 +18,7 @@ export const CALL_RESULT_OPTIONS = [
 
 export const WEBSITE_STATUS_OPTIONS = [
   "Proper Website",
+  "Basic Website",
   "Social Only",
   "Directory Only",
   "No Website Found",
@@ -37,6 +38,8 @@ export type Lead = {
   phone: string;
   /** Kept for follow-up by email; empty for most Maps-sourced leads. */
   email: string;
+  /** Street address when the source provided one. */
+  address: string;
   rating: number | "";
   reviews: number | "";
   website: string;
@@ -99,6 +102,9 @@ export const TOWN_SUGGESTIONS = [
 
 export const RESULT_LIMITS = [6, 8, 12, 25, 50, 100] as const;
 export type ResultLimit = (typeof RESULT_LIMITS)[number];
+
+export const RADIUS_MILES = [10, 25, 50] as const;
+export type RadiusMiles = (typeof RADIUS_MILES)[number];
 
 export type SortKey =
   | "businessName"
@@ -183,6 +189,8 @@ const DIRECTORY_HOSTS = [
 const HINT_TO_STATUS: Record<string, WebsiteStatus> = {
   proper: "Proper Website",
   "proper website": "Proper Website",
+  basic: "Basic Website",
+  "basic website": "Basic Website",
   social: "Social Only",
   "social only": "Social Only",
   directory: "Directory Only",
@@ -277,18 +285,28 @@ export function resolveWebsiteStatus(lead: Pick<Lead, "website" | "websiteStatus
 
 export function lacksProperWebsite(lead: Pick<Lead, "website" | "websiteStatus">): boolean {
   const status = resolveWebsiteStatus(lead);
-  return status === "Social Only" || status === "Directory Only" || status === "No Website Found";
+  return (
+    status === "Social Only" ||
+    status === "Directory Only" ||
+    status === "No Website Found" ||
+    status === "Basic Website"
+  );
 }
 
 export function computePriority(
-  lead: Pick<Lead, "website" | "reviews" | "rating" | "websiteStatus">,
+  lead: Pick<Lead, "website" | "reviews" | "rating" | "websiteStatus" | "phone">,
 ): Priority {
   const reviews = typeof lead.reviews === "number" ? lead.reviews : 0;
   const rating = typeof lead.rating === "number" ? lead.rating : 0;
   const status = resolveWebsiteStatus(lead);
   const prospect = lacksProperWebsite(lead);
+  const phoneDigits = (lead.phone ?? "").replace(/\D/g, "");
+  const hasPhone = phoneDigits.length >= 10;
 
   if (prospect && reviews >= 20 && rating >= 4.5) return "HOT";
+  if (status === "No Website Found" && hasPhone) return "HOT";
+  if (status === "No Website Found") return "WARM";
+  if (status === "Basic Website") return "WARM";
   if (prospect && reviews > 0) return "WARM";
   if (prospect && (status === "Social Only" || status === "Directory Only")) return "WARM";
   return "COLD";
@@ -305,6 +323,7 @@ export function priorityReason(
   if (status === "No Website Found") bits.push("no proper website found");
   else if (status === "Social Only") bits.push("social profile only");
   else if (status === "Directory Only") bits.push("directory listing only");
+  else if (status === "Basic Website") bits.push("website looks basic");
   else if (status === "Proper Website") bits.push("already has a proper website");
   else bits.push("website presence unclear");
   if (!lead.phone?.trim() && priority !== "COLD") bits.push("no phone listed");
@@ -429,6 +448,7 @@ export function createLead(partial: Partial<Lead> = {}): Lead {
     town: "",
     phone: "",
     email: "",
+    address: "",
     rating: "",
     reviews: "",
     website: "",
@@ -473,6 +493,7 @@ export function leadsToCsv(leads: Lead[]): string {
     "Business Name",
     "Trade",
     "Town",
+    "Address",
     "Phone Number",
     "Email",
     "Google Rating",
@@ -494,6 +515,7 @@ export function leadsToCsv(leads: Lead[]): string {
       lead.businessName,
       lead.trade,
       lead.town,
+      lead.address ?? "",
       lead.phone,
       lead.email,
       lead.rating,

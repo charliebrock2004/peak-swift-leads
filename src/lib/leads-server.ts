@@ -74,6 +74,7 @@ function sanitizeLead(raw: unknown): Lead | null {
     town: text(row.town, 80),
     phone: text(row.phone, 40),
     email: text(row.email, 160),
+    address: text(row.address, 200),
     rating: num(row.rating) ?? "",
     reviews: num(row.reviews) ?? "",
     website: text(row.website, 500),

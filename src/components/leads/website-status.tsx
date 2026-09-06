@@ -3,6 +3,7 @@ import type { WebsiteStatus } from "@/lib/leads";
 
 const STYLES: Record<WebsiteStatus, string> = {
   "Proper Website": "bg-surface-2 text-muted",
+  "Basic Website": "bg-warm-lead/15 text-warm-lead",
   "Social Only": "bg-warm-lead/15 text-warm-lead",
   "Directory Only": "bg-surface-2 text-cold-lead",
   "No Website Found": "bg-hot/15 text-hot",

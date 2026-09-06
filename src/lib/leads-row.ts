@@ -51,6 +51,7 @@ export function leadFromRow(row: LeadRow): Lead {
     town: row.town ?? "",
     phone: row.phone ?? "",
     email: row.email ?? "",
+    address: "",
     rating: numeric(row.rating),
     reviews: numeric(row.reviews),
     website: row.website ?? "",

@@ -7,6 +7,7 @@ import { WebsiteStatusBadge } from "@/components/leads/website-status";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
+  RADIUS_MILES,
   RESULT_LIMITS,
   TOWN_SUGGESTIONS,
   TRADE_SUGGESTIONS,
@@ -17,10 +18,10 @@ import {
   websiteHref,
   type Lead,
   type Priority,
+  type RadiusMiles,
   type ResultLimit,
 } from "@/lib/leads";
 import { researchProspects, type Prospect } from "@/lib/research";
-import { runPlannedSearch, type SearchProgress } from "@/lib/run-search";
 import {
   CITY_SUGGESTIONS,
   REGION_SUGGESTIONS,
@@ -56,7 +57,7 @@ function chipsFor(kind: PlaceKind): readonly string[] {
 function searchFailure(err: unknown): string {
   const message = err instanceof Error ? err.message : String(err ?? "");
   if (/504|503|502|timeout|timed out|abort/i.test(message)) {
-    return "That search took too long on the server. Try a smaller area, or fewer results. Vercel Hobby caps functions at about 10s — Find leads needs Pro (up to 5 minutes).";
+    return "That search took too long. Try a smaller radius, or fewer results, then search again.";
   }
   if (/failed to fetch|networkerror|load failed/i.test(message)) {
     return "Could not reach the lead search server. Check your connection and try again.";
@@ -82,12 +83,12 @@ export function FindLeadsPanel({
   const [location, setLocation] = useState("Crieff");
   const [businessType, setBusinessType] = useState("Joiner");
   const [limit, setLimit] = useState<ResultLimit>(8);
+  const [radiusMiles, setRadiusMiles] = useState<RadiusMiles>(25);
   const [busy, setBusy] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [error, setError] = useState("");
   const [warning, setWarning] = useState("");
   const [rows, setRows] = useState<ReviewRow[] | null>(null);
-  const [progress, setProgress] = useState<SearchProgress | null>(null);
   const [mounted, setMounted] = useState(false);
   const [stopping, setStopping] = useState(false);
   const cancelled = useRef(false);
@@ -150,52 +151,27 @@ export function FindLeadsPanel({
     setError("");
     setWarning("");
     setRows(null);
-    setProgress(null);
     setStopping(false);
     try {
-      const result = await runPlannedSearch({
-        location: place,
-        businessType: trade,
-        limit,
-        concurrency: preview.areas.length > 1 ? 2 : 1,
-        shouldCancel: () => cancelled.current || runId.current !== id,
-        onProgress: (next) => {
-          if (runId.current === id) setProgress(next);
-        },
-        research: (input) => researchProspects({ data: input }),
+      const result = await researchProspects({
+        data: { location: place, businessType: trade, limit, radiusMiles },
       });
       if (runId.current !== id) return;
-      if (result.cancelled && result.prospects.length === 0) {
-        setError("Search cancelled.");
+      if (!result.ok) {
+        setError(result.error);
         return;
       }
       if (result.prospects.length === 0) {
-        setError(
-          result.errors[0] ||
-            `No verified ${trade.toLowerCase()} businesses found in ${preview.label}. Try a nearby town.`,
-        );
+        setError(`No ${trade.toLowerCase()} businesses found within ${radiusMiles} miles of ${place}.`);
         return;
       }
       setRows(toRows(result.prospects));
-      const bits: string[] = [];
-      if (result.cancelled) bits.push("Search stopped early. Showing what was found.");
-      if (result.errors.length > 0) {
-        const failed = result.errors.length;
-        const okTowns = result.plan.areas.length - failed;
-        bits.push(
-          `${okTowns} of ${result.plan.areas.length} towns finished. ${failed} failed. Showing ${result.prospects.length} genuine result${result.prospects.length === 1 ? "" : "s"}.`,
-        );
-        bits.push(result.errors[0] ?? "");
-      }
-      setWarning(bits.filter(Boolean).join(" "));
+      if (result.warnings?.length) setWarning(result.warnings[0] ?? "");
     } catch (err) {
       if (runId.current !== id) return;
       setError(err instanceof Error ? searchFailure(err) : "Search failed. Try again.");
     } finally {
-      if (runId.current === id) {
-        setBusy(false);
-        setProgress(null);
-      }
+      if (runId.current === id) setBusy(false);
     }
   }
 
@@ -243,9 +219,6 @@ export function FindLeadsPanel({
   }
 
   const locationChips = chipsFor(kind);
-  const searchingLabel = progress?.active.length
-    ? progress.active.join(" · ")
-    : progress?.area || location;
 
   const panel = (
     <div className="find-overlay flex flex-col bg-bg text-fg">
@@ -271,33 +244,15 @@ export function FindLeadsPanel({
               <Loader2 className="mx-auto size-6 animate-spin text-muted" />
               <p className="mt-4 font-medium" aria-live="polite">
                 {stopping
-                  ? "Stopping after this town…"
-                  : `Researching local businesses${elapsed ? `… ${elapsed}s` : "…"}`}
+                  ? "Stopping…"
+                  : `Searching OpenStreetMap${elapsed ? `… ${elapsed}s` : "…"}`}
               </p>
               <p className="mt-2 text-sm text-muted">
-                {searchingLabel}
-                {progress && progress.total > 1
-                  ? ` · ${Math.min(progress.index, progress.total)} of ${progress.total}`
-                  : ""}
+                {businessType} within {radiusMiles} miles of {location}
               </p>
               <p className="mt-2 text-sm text-subtle">
-                {progress
-                  ? `${progress.found} genuine so far · stops at ${progress.target}`
-                  : `${location} · ${businessType}`}
+                Free public map data — no Google API. Checking websites next.
               </p>
-              {preview.areas.length > 1 ? (
-                <p className="mt-2 text-sm text-subtle">
-                  Searching {preview.areas.length} towns across {preview.label}. Already-found names
-                  are skipped.
-                </p>
-              ) : (
-                <p className="mt-2 text-sm text-subtle">
-                  Checking directories, Maps listings and websites. This can take a minute or two.
-                </p>
-              )}
-              {progress?.errors.length ? (
-                <p className="mt-3 text-sm text-warm-lead">{progress.errors[progress.errors.length - 1]}</p>
-              ) : null}
             </div>
           ) : rows ? (
             <div className="flex flex-col gap-3 rounded-xl bg-surface px-4 py-3 shadow-(--shadow-border) sm:flex-row sm:items-center sm:justify-between">
@@ -317,8 +272,8 @@ export function FindLeadsPanel({
           ) : (
             <>
               <p className="text-sm text-muted">
-                Choose where and what to search. Grok researches the public web, checks for a proper
-                website, then you pick who to import.
+                Search OpenStreetMap around a town. Free, no API key, no Google. Businesses without a
+                proper website rank highest.
               </p>
 
               <div className="mt-5 grid gap-4">
@@ -392,6 +347,20 @@ export function FindLeadsPanel({
                 </fieldset>
 
                 <fieldset>
+                  <legend className="text-xs font-medium text-muted">Radius</legend>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {RADIUS_MILES.map((miles) => (
+                      <Chip
+                        key={miles}
+                        label={`${miles} miles`}
+                        active={radiusMiles === miles}
+                        onClick={() => setRadiusMiles(miles)}
+                      />
+                    ))}
+                  </div>
+                </fieldset>
+
+                <fieldset>
                   <legend className="text-xs font-medium text-muted">How many</legend>
                   <div className="mt-2 flex flex-wrap gap-2">
                     {RESULT_LIMITS.map((count) => (
@@ -404,13 +373,7 @@ export function FindLeadsPanel({
                     ))}
                   </div>
                   <p className="mt-3 text-sm text-subtle">
-                    {preview.areas.length > 1
-                      ? `Searches ${preview.areas.length} towns across ${preview.label}: ${preview.areas
-                          .slice(0, 4)
-                          .map((area) => area.name)
-                          .join(", ")}${preview.areas.length > 4 ? "…" : ""}. Stops at ${limit} genuine businesses.`
-                      : `One search in ${preview.label}.`}
-                    {limit >= 50 ? " Large searches take several minutes." : ""}
+                    {businessType} within {radiusMiles} miles of {preview.label}. Stops at {limit}.
                   </p>
                 </fieldset>
               </div>
@@ -573,13 +536,11 @@ function ReviewList({
                   <p className="text-sm text-muted">
                     {[row.trade, row.town].filter(Boolean).join(" · ")}
                   </p>
+                  {row.address ? <p className="text-sm text-muted">{row.address}</p> : null}
                   <p className="mt-1 text-sm text-muted">{row.reason}</p>
                   <p className="mt-1 text-sm tabular-nums text-muted">
                     {row.phone || "No phone"}
-                    {" · "}
-                    {row.rating !== "" ? `${row.rating} rating` : "No rating"}
-                    {" · "}
-                    {row.reviews !== "" ? `${row.reviews} reviews` : "No reviews"}
+                    {row.email ? ` · ${row.email}` : ""}
                   </p>
                   {row.website ? (
                     <p className="mt-1 truncate text-sm text-subtle">{row.website}</p>

@@ -109,6 +109,7 @@ export function LeadCards({
               {lead.businessName || "Untitled lead"}
             </h2>
             <p className="mt-0.5 text-sm text-muted">{meta || "No trade or town"}</p>
+            {lead.address ? <p className="text-sm text-muted">{lead.address}</p> : null}
 
             <div className="mt-3 flex gap-2">
               {tel ? (

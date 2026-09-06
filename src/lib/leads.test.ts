@@ -141,6 +141,34 @@ describe("priority", () => {
     );
   });
 
+  it("ranks no-site with a phone as HOT — those are the ones to call", () => {
+    assert.equal(
+      computePriority(
+        lead({
+          website: "",
+          reviews: "",
+          rating: "",
+          websiteStatus: "No Website Found",
+          phone: "01764 650000",
+        }),
+      ),
+      "HOT",
+    );
+  });
+
+  it("ranks a basic website as WARM", () => {
+    assert.equal(
+      computePriority(
+        lead({
+          website: "https://example.wixsite.com/mysite",
+          websiteStatus: "Basic Website",
+          phone: "01738 123456",
+        }),
+      ),
+      "WARM",
+    );
+  });
+
   it("ranks unclear listings with no reviews as COLD", () => {
     assert.equal(
       computePriority(lead({ website: "", reviews: "", rating: "", websiteStatus: "Unclear" })),

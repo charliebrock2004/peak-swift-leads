@@ -7,6 +7,8 @@ function prospect(partial: Partial<Prospect> & { businessName: string; town: str
   return {
     trade: "Joiner",
     phone: "",
+    email: "",
+    address: "",
     rating: "",
     reviews: "",
     website: "",
@@ -16,6 +18,8 @@ function prospect(partial: Partial<Prospect> & { businessName: string; town: str
     source: "test",
     priority: "WARM",
     reason: "test",
+    lat: "",
+    lng: "",
     ...partial,
   };
 }
