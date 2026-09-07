@@ -143,7 +143,7 @@ export async function loadSettings(sql: Sql, userId: string): Promise<OutreachSe
     followUp1Days: Number(row.follow_up_1_days ?? DEFAULT_SETTINGS.followUp1Days),
     followUp2Days: Number(row.follow_up_2_days ?? DEFAULT_SETTINGS.followUp2Days),
     maxFollowUps: Number(row.max_follow_ups ?? DEFAULT_SETTINGS.maxFollowUps),
-    autoSend: Boolean(row.auto_send),
+    autoSend: false,
     includeLow: Boolean(row.include_low),
     defaultMode: text(row.default_mode) || DEFAULT_SETTINGS.defaultMode,
   };

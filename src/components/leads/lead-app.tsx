@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "@tanstack/react-router";
 import { Download, FileUp, Loader2, Mail, Plus, Search, Send, SlidersHorizontal } from "lucide-react";
 import { toast } from "sonner";
 import { FindLeadsPanel } from "@/components/leads/find-leads";
@@ -11,6 +12,8 @@ import { SummaryBar } from "@/components/leads/summary-bar";
 import { SyncBadge } from "@/components/leads/sync-badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { authEnabled } from "@/lib/auth/client";
+import { SignedIn, SignedOut, UserButton } from "@/lib/auth/gates";
 import {
   CALLED_OPTIONS,
   CALL_RESULT_OPTIONS,
@@ -466,9 +469,10 @@ export function LeadApp() {
       <div className="mx-auto flex w-full max-w-screen-2xl flex-1 flex-col gap-4 px-4 pt-[max(1rem,env(safe-area-inset-top))] pb-6 md:min-h-0 md:gap-5 md:px-6 md:py-8">
         <header className="flex shrink-0 flex-col gap-4 md:flex-row md:items-end md:justify-between">
           <div className="min-w-0">
-            <div className="flex items-center gap-2">
+            <div className="flex w-full items-center gap-2">
               <p className="text-xs font-medium tracking-widest text-muted uppercase">Peak Swift</p>
               <SyncBadge />
+              <AccountChip />
             </div>
             <h1 className="mt-1 font-display text-3xl leading-tight font-medium tracking-tight md:text-4xl">
               Leads
@@ -913,6 +917,27 @@ export function LeadApp() {
           <option key={item} value={item} />
         ))}
       </datalist>
+    </div>
+  );
+}
+
+/**
+ * Compact account control. Hidden while auth is off (sandbox / local), because
+ * there the visitor already is the shared dev user. On a public deployment it
+ * is the way into Outreach without hiding the lead sheet.
+ */
+function AccountChip() {
+  if (!authEnabled) return null;
+  return (
+    <div className="ml-auto min-w-0">
+      <SignedOut>
+        <Link to="/login" className="text-xs font-medium text-muted hover:text-fg">
+          Sign in
+        </Link>
+      </SignedOut>
+      <SignedIn>
+        <UserButton />
+      </SignedIn>
     </div>
   );
 }

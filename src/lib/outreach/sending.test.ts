@@ -196,13 +196,19 @@ describe("the daily limit", () => {
 
   it("clamps settings a person typed", () => {
     const next = sanitizeSettings(
-      { dailyLimit: 100000, batchSize: 0, delaySeconds: 1, maxFollowUps: 9 },
+      { dailyLimit: 100000, batchSize: 0, delaySeconds: 1, maxFollowUps: 9, autoSend: true },
       DEFAULT_SETTINGS,
     );
-    assert.equal(next.dailyLimit, 200);
+    assert.equal(next.dailyLimit, 30);
     assert.equal(next.batchSize, 1);
     assert.equal(next.delaySeconds, 5);
     assert.equal(next.maxFollowUps, 2);
+    assert.equal(next.autoSend, false);
+  });
+
+  it("refuses to turn automatic sending on", () => {
+    const next = sanitizeSettings({ autoSend: true }, { ...DEFAULT_SETTINGS, autoSend: true });
+    assert.equal(next.autoSend, false);
   });
 
   it("keeps the current value when given nonsense", () => {

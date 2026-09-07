@@ -146,14 +146,14 @@ export function OutreachSettingsTab({
             label="Daily limit"
             value={settings.dailyLimit}
             min={0}
-            max={200}
+            max={30}
             onChange={(value) => patch({ dailyLimit: value })}
           />
           <NumberField
             label="Emails per batch"
             value={settings.batchSize}
             min={1}
-            max={25}
+            max={5}
             onChange={(value) => patch({ batchSize: value })}
           />
           <NumberField
@@ -195,9 +195,10 @@ export function OutreachSettingsTab({
           />
           <Toggle
             label="Automatic sending"
-            hint="Send approved batches without pressing Send. Everything still passes every check."
-            checked={settings.autoSend}
-            onChange={(value) => patch({ autoSend: value })}
+            hint="Not available. Emails only go out when you press Send on the Review tab. Nothing is scheduled."
+            checked={false}
+            disabled
+            onChange={() => undefined}
           />
           <Toggle
             label="Include low-opportunity leads"
@@ -280,18 +281,21 @@ function Toggle({
   hint,
   checked,
   onChange,
+  disabled = false,
 }: {
   label: string;
   hint: string;
   checked: boolean;
   onChange: (value: boolean) => void;
+  disabled?: boolean;
 }) {
   return (
-    <label className="flex items-start gap-3">
+    <label className={cn("flex items-start gap-3", disabled && "opacity-60")}>
       <input
         type="checkbox"
         className="mt-0.5 size-5 shrink-0 accent-[var(--color-accent)]"
         checked={checked}
+        disabled={disabled}
         onChange={(event) => onChange(event.target.checked)}
       />
       <span className="min-w-0">

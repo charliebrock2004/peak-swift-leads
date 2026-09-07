@@ -135,13 +135,21 @@ Key decisions:
 
 Auth stays "off" in `.grok/app-env.json`, which is what the workspace and the
 Grok preview use: server-side that resolves the shared dev owner, so sync is
-testable locally against the embedded database.
+testable locally against the embedded database. The lead sheet is **not** gated
+behind a sign-in screen anywhere — signed-out visitors get local-only mode.
 
-Deployed, the platform sets `VITE_AUTH_ENABLED=true` itself and the Grok gate
-injects a verified identity header, which `better-auth` turns into a real
-session inside `auth.api.getSession` — **no sign-in screen is needed, and none is
-built**. If the app is ever deployed somewhere without that gate, signed-out
-visitors simply get the local-only mode described above rather than an error.
+On `grok.me` the platform sets `VITE_AUTH_ENABLED=true` and injects a verified
+identity header, which `better-auth` turns into a session inside
+`auth.api.getSession`. No sign-in screen is needed there.
+
+On a **plain Vercel domain** (`peak-swift-leads.vercel.app`) there is no Grok
+gate and the broker preview secret is `""`, so `authConfigured` is false.
+Identity there is Better Auth **email/password** (`src/lib/auth/email-password.ts`),
+mounted at `/api/auth/*`, with `APP_OWNER_EMAIL` as the allowlist. Set
+`VITE_AUTH_ENABLED=true` (this is baked at **build** time for the client),
+`BETTER_AUTH_SECRET`, `BETTER_AUTH_URL` and `APP_OWNER_EMAIL`, then create the
+owner account at `/login`. Outreach and cross-device sync require that session;
+the sheet on this device does not.
 
 ### Two production bugs found by building, not by reading
 
@@ -235,12 +243,15 @@ and Connect is disabled — rather than failing at the moment you try to send.
   push them straight into the real account. Examples are now one explicit tap in
   the empty state.
 
-## Groundwork, not yet built
+## Outreach, as shipped
 
-`Lead` carries `email`, `demoUrl`, `placeId`, `foundAt` and `businessStatus`,
-all stored, editable, importable and exported. They are the hooks for demo
-links and email outreach later. Nothing else about outreach is built, on
-purpose.
+Phase 3 is built. Sending is **user-triggered only**: `sendQueued` runs from the
+Review tab's Send button, automatic sending is forced off, follow-ups default
+off, and the product ceiling is 30 emails/day and 5 per batch. Tokens never
+leave the server. Do not add a scheduler.
+
+The lead fields `email`, `demoUrl`, `placeId`, `foundAt` and `businessStatus`
+are stored, editable, importable and exported, and are what outreach reads.
 
 ## Testing
 

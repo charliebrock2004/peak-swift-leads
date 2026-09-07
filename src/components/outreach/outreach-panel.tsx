@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { ArrowLeft, Loader2 } from "lucide-react";
+import { useNavigate } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
 import { useOutreach } from "@/components/outreach/use-outreach";
 import { OutreachDashboard } from "@/components/outreach/outreach-dashboard";
@@ -165,14 +166,25 @@ export type OutreachActions = ReturnType<typeof useOutreach>["actions"];
  */
 function OutreachSetupState({ reason, onClose }: { reason: SetupReason; onClose: () => void }) {
   const copy = SETUP_COPY[reason];
+  const navigate = useNavigate();
+  const needsSignIn = reason === "signed-out" || reason === "not-owner";
   return (
     <div className="rounded-xl bg-surface px-5 py-14 text-center shadow-(--shadow-border)">
       <p className="font-medium">{copy.title}</p>
       <p className="mx-auto mt-2 max-w-sm text-sm text-muted">{copy.detail}</p>
       {copy.fix ? <p className="mx-auto mt-3 max-w-sm text-sm text-subtle">{copy.fix}</p> : null}
-      <Button className="mt-5" onClick={onClose}>
-        Back to leads
-      </Button>
+      {needsSignIn ? (
+        <div className="mt-5 flex flex-col items-center gap-3">
+          <Button onClick={() => void navigate({ to: "/login" })}>Sign in</Button>
+          <button type="button" className="text-sm text-muted hover:text-fg" onClick={onClose}>
+            Back to leads
+          </button>
+        </div>
+      ) : (
+        <Button className="mt-5" onClick={onClose}>
+          Back to leads
+        </Button>
+      )}
     </div>
   );
 }

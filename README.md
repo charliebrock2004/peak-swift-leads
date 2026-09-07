@@ -97,9 +97,10 @@ and send by hand if you are happy to.
 
 ### Sending controls
 
-Daily limit (30), emails per batch (5), delay, follow-ups (off by default, max
-2), automatic sending (off). The daily count is derived from what actually went
-out, so it cannot drift. `12 / 30` is on every screen.
+Daily limit (30 maximum), emails per batch (5 maximum), delay, follow-ups (off
+by default, max 2). Automatic sending is **forced off** — emails only go out
+when you press Send on the Review tab. The daily count is derived from what
+actually went out, so it cannot drift. `12 / 30` is on every screen.
 
 ### Replies
 
@@ -138,9 +139,29 @@ Vercel domain: `preview.ts` defaults the broker secret to `""`, so
 
 So this app also carries Better Auth's own **email and password** sign-in
 (`src/lib/auth/email-password.ts`), served at `/api/auth/*`, which needs no
-external identity provider and works on any origin. Set the four variables
-above, deploy, then open `/login` and choose **Create the owner account** using
-the address you put in `APP_OWNER_EMAIL`.
+external identity provider and works on any origin. The **lead sheet stays
+available signed out**. Outreach, sync and sending need a session.
+
+On [peak-swift-leads.vercel.app](https://peak-swift-leads.vercel.app):
+
+1. **Vercel → the project → Storage → Create Database → Neon Postgres.**
+   Accept the defaults. This injects `DATABASE_URL` for Production (and
+   Preview). Do not paste the connection string into the app.
+2. **Settings → Environment Variables.** Set or change:
+   - `VITE_AUTH_ENABLED` = `true` (this is baked into the client at **build**
+     time — changing it without a redeploy does nothing in the browser)
+   - `BETTER_AUTH_SECRET` = a long random hex string, generated once and left
+     alone (`node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`)
+   - `BETTER_AUTH_URL` = `https://peak-swift-leads.vercel.app` (no trailing slash)
+   - `APP_OWNER_EMAIL` = the address you will sign in with
+3. **Deployments → ⋯ → Redeploy** the Production deployment (or push to `main`).
+4. Hard-refresh the site, open `/login`, **Create the owner account** using
+   `APP_OWNER_EMAIL`, then open **Outreach**.
+5. **Settings → Connect Gmail**, then **Send test email** to yourself before
+   contacting anyone.
+
+`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and `XAI_API_KEY` are already on the
+production project. Do not rotate them unless you have to.
 
 Two separate questions, deliberately: Better Auth decides *who you are*,
 `APP_OWNER_EMAIL` decides *whether you may be here* (`src/lib/auth/owner.ts`).
@@ -161,10 +182,10 @@ Server-only. None of these is ever sent to the browser, and none belongs in git.
 
 | Variable | Needed for | Notes |
 | --- | --- | --- |
-| `DATABASE_URL` | Sync, and everything in Outreach | Provisioned on deploy by the Grok platform; set it by hand on a plain Vercel project |
-| `VITE_AUTH_ENABLED` | Sign-in on a public deployment | `"true"`. Left at `"false"` there is no way to tell visitors apart, and adding `DATABASE_URL` makes every request fail closed |
+| `DATABASE_URL` | Sync, and everything in Outreach | Injected by Vercel when you attach Neon under Storage. Do not put it in git |
+| `VITE_AUTH_ENABLED` | Sign-in on a public deployment | `"true"`. Baked into the client at build time, so change + redeploy together. Left at `"false"` there is no way to tell visitors apart, and adding `DATABASE_URL` makes every request fail closed |
 | `BETTER_AUTH_SECRET` | Same | Long random string, and **stable** — without it each serverless instance signs cookies differently and sessions break at random |
-| `BETTER_AUTH_URL` | Same | The app's public origin, no trailing slash. Doubles as the trusted origin, so a wrong value reads as "Invalid origin" |
+| `BETTER_AUTH_URL` | Same | The app's public origin, no trailing slash: `https://peak-swift-leads.vercel.app` |
 | `APP_OWNER_EMAIL` | Same | The only address allowed to use the app. Sign-up is open, so without this anyone who finds the URL can create an account |
 | `GOOGLE_CLIENT_ID` | Connecting Gmail | From your Google Cloud OAuth client |
 | `GOOGLE_CLIENT_SECRET` | Connecting Gmail | Same. **Never** prefix with `VITE_` |

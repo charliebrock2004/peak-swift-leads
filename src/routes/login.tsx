@@ -80,7 +80,7 @@ function Login() {
         </h1>
         <p className="mt-2 text-sm text-muted">
           {mode === "sign-in"
-            ? "Your leads and outreach live behind this."
+            ? "Outreach and the account copy of your sheet live behind this. The lead sheet on this phone still works signed out."
             : "Use the address set as APP_OWNER_EMAIL — any other account is refused."}
         </p>
 

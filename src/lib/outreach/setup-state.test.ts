@@ -42,18 +42,14 @@ test("the real no-database error from db.ts is classified", () => {
   assert.equal(classifySetupError(actual), "no-database");
 });
 
-test("the real fail-closed auth error names the database, but is not a database fault", () => {
+test("the real fail-closed auth error is auth-off, not a missing database", () => {
   // verify.server.ts throws this when auth is off and DATABASE_URL is set. It
-  // mentions DATABASE_URL, so it must not be mistaken for a missing database —
-  // but it is a genuine misconfiguration, so "no-database" copy (which tells
-  // you to set DATABASE_URL and redeploy) is the wrong advice either way.
+  // mentions DATABASE_URL, so it used to be mistaken for a missing database —
+  // which told the owner to add a variable they already had.
   const actual =
     "Auth is disabled (VITE_AUTH_ENABLED=false) but DATABASE_URL is set — " +
     "refusing to fall back to the shared dev user against a real database.";
-  // Documents current behaviour: this lands on no-database via the DATABASE_URL
-  // mention. Recorded deliberately so a future change to the copy is a visible
-  // decision rather than an accident.
-  assert.equal(classifySetupError(actual), "no-database");
+  assert.equal(classifySetupError(actual), "auth-off");
 });
 
 test("the auth middleware's Unauthorized is a signed-out state, not a database one", () => {
@@ -89,5 +85,12 @@ test("owner refusal wins over the word unauthorized appearing too", () => {
   assert.equal(
     classifySetupError("Unauthorized: that account is not the owner of this app"),
     "not-owner",
+  );
+});
+
+test("auth-off wins over the word DATABASE_URL appearing in the same message", () => {
+  assert.equal(
+    classifySetupError("VITE_AUTH_ENABLED=false but DATABASE_URL is set"),
+    "auth-off",
   );
 });

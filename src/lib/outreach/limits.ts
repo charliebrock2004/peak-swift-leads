@@ -83,16 +83,18 @@ export function sanitizeSettings(input: Partial<OutreachSettings>, current: Outr
     return Math.min(max, Math.max(min, Math.round(next)));
   };
   return {
-    // 200/day is already far beyond what a single Gmail account should send
-    // cold; the cap is there so a typo cannot turn into a thousand emails.
-    dailyLimit: int(input.dailyLimit, current.dailyLimit, 0, 200),
-    batchSize: int(input.batchSize, current.batchSize, 1, 25),
+    // 30/day and 5/batch are the product ceiling, not just the default. A
+    // typo in the settings form must not become a hundred cold emails.
+    dailyLimit: int(input.dailyLimit, current.dailyLimit, 0, 30),
+    batchSize: int(input.batchSize, current.batchSize, 1, 5),
     delaySeconds: int(input.delaySeconds, current.delaySeconds, 5, 600),
     followUpsOn: typeof input.followUpsOn === "boolean" ? input.followUpsOn : current.followUpsOn,
     followUp1Days: int(input.followUp1Days, current.followUp1Days, 1, 60),
     followUp2Days: int(input.followUp2Days, current.followUp2Days, 1, 90),
     maxFollowUps: int(input.maxFollowUps, current.maxFollowUps, 0, 2),
-    autoSend: typeof input.autoSend === "boolean" ? input.autoSend : current.autoSend,
+    // Nothing in the app actually auto-sends. Forcing this off means a stored
+    // true, or a client that posts true, cannot become a scheduler later.
+    autoSend: false,
     includeLow: typeof input.includeLow === "boolean" ? input.includeLow : current.includeLow,
     defaultMode: typeof input.defaultMode === "string" && input.defaultMode.trim() ? input.defaultMode.trim().slice(0, 60) : current.defaultMode,
   };
