@@ -147,27 +147,36 @@ On [peak-swift-leads.vercel.app](https://peak-swift-leads.vercel.app):
 1. **Vercel → the project → Storage → Create Database → Neon Postgres.**
    Accept the defaults. This injects `DATABASE_URL` for Production (and
    Preview). Do not paste the connection string into the app.
-2. **Settings → Environment Variables.** Set or change:
-   - `VITE_AUTH_ENABLED` = `true` (this is baked into the client at **build**
-     time — changing it without a redeploy does nothing in the browser)
-   - `BETTER_AUTH_SECRET` = a long random hex string, generated once and left
-     alone (`node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`)
-   - `BETTER_AUTH_URL` = `https://peak-swift-leads.vercel.app` (no trailing slash)
-   - `APP_OWNER_EMAIL` = the address you will sign in with
-3. **Deployments → ⋯ → Redeploy** the Production deployment (or push to `main`).
-4. Hard-refresh the site, open `/login`, **Create the owner account** using
-   `APP_OWNER_EMAIL`, then open **Outreach**.
-5. **Settings → Connect Gmail**, then **Send test email** to yourself before
-   contacting anyone.
+2. **Deployments → ⋯ → Redeploy** the Production deployment (or push to `main`).
+3. Hard-refresh the site, open `/login`, **Create the owner account** — do this
+   promptly, because the first account created claims the app.
+4. Open **Outreach**, then **Settings → Connect Gmail**, and **Send test email**
+   to yourself before contacting anyone.
+
+**`DATABASE_URL` is the only variable this needs.** Everything else is derived:
+
+- Sign-in switches itself on whenever a database is configured, so
+  `VITE_AUTH_ENABLED` no longer has to be flipped. (It still forces sign-in off
+  when there is *no* database — which is exactly local `npm run dev`.)
+- `BETTER_AUTH_SECRET` is derived from `DATABASE_URL` when unset: stable across
+  serverless instances, which a random per-process secret is not.
+- `BETTER_AUTH_URL` falls back to `VERCEL_PROJECT_PRODUCTION_URL` / `VERCEL_URL`,
+  which Vercel injects into every deployment.
+- `APP_OWNER_EMAIL` falls back to "the first account created owns the app".
+
+Set any of them explicitly and the explicit value wins. `APP_OWNER_EMAIL` is
+still worth setting if you want no window at all between going live and claiming
+the app.
 
 `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and `XAI_API_KEY` are already on the
 production project. Do not rotate them unless you have to.
 
 Two separate questions, deliberately: Better Auth decides *who you are*,
 `APP_OWNER_EMAIL` decides *whether you may be here* (`src/lib/auth/owner.ts`).
-Anyone can create an account — the endpoint is public — but only an address on
-the allowlist gets past `requireUserId`, so a stranger's account can read
-nothing, send nothing, and spend nothing.
+Anyone can create an account — the endpoint is public — but only the owner gets
+past `requireUserId`, so a stranger's account can read nothing, send nothing,
+and spend nothing. The owner is `APP_OWNER_EMAIL` when set, and otherwise the
+first account created on the deployment.
 
 ## Requirements
 
@@ -183,10 +192,10 @@ Server-only. None of these is ever sent to the browser, and none belongs in git.
 | Variable | Needed for | Notes |
 | --- | --- | --- |
 | `DATABASE_URL` | Sync, and everything in Outreach | Injected by Vercel when you attach Neon under Storage. Do not put it in git |
-| `VITE_AUTH_ENABLED` | Sign-in on a public deployment | `"true"`. Baked into the client at build time, so change + redeploy together. Left at `"false"` there is no way to tell visitors apart, and adding `DATABASE_URL` makes every request fail closed |
-| `BETTER_AUTH_SECRET` | Same | Long random string, and **stable** — without it each serverless instance signs cookies differently and sessions break at random |
-| `BETTER_AUTH_URL` | Same | The app's public origin, no trailing slash: `https://peak-swift-leads.vercel.app` |
-| `APP_OWNER_EMAIL` | Same | The only address allowed to use the app. Sign-up is open, so without this anyone who finds the URL can create an account |
+| `VITE_AUTH_ENABLED` | Optional | Only forces sign-in **off**, and only when no database is configured. With `DATABASE_URL` present, sign-in is on regardless |
+| `BETTER_AUTH_SECRET` | Optional | Derived from `DATABASE_URL` when unset. Set it explicitly to rotate sessions independently of the database password |
+| `BETTER_AUTH_URL` | Optional | Falls back to the URL Vercel injects. Set it for a custom domain, with no trailing slash |
+| `APP_OWNER_EMAIL` | Optional | The only address allowed to use the app. Unset, the first account created owns it. Set it to close even that window |
 | `GOOGLE_CLIENT_ID` | Connecting Gmail | From your Google Cloud OAuth client |
 | `GOOGLE_CLIENT_SECRET` | Connecting Gmail | Same. **Never** prefix with `VITE_` |
 | `GMAIL_SENDER` | Optional | Pins the account, e.g. `PeakSwiftStudio@gmail.com`. Connecting any other account is then refused |

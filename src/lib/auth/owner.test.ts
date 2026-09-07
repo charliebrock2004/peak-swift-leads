@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { checkOwner, parseOwnerList, type OwnerPolicy } from "./owner.ts";
+import { checkFirstOwner, checkOwner, parseOwnerList, type OwnerPolicy } from "./owner.ts";
 
 const policy = (overrides: Partial<OwnerPolicy> = {}): OwnerPolicy => ({
   allowlist: [],
@@ -33,12 +33,39 @@ test("local work with no database still admits anyone", () => {
   assert.equal(verdict.ok, true);
 });
 
-test("a deployment with no allowlist fails CLOSED", () => {
+test("checkOwner alone still refuses when it has no allowlist to check", () => {
+  // `owner.server.ts` no longer reaches this path on a deployment — with no
+  // APP_OWNER_EMAIL it defers to `checkFirstOwner` instead. Kept because
+  // `checkOwner` must never admit somebody it was given no grounds to admit.
   const verdict = checkOwner("whoever@example.com", policy());
   assert.equal(verdict.ok, false);
   assert.equal(verdict.ok === false && verdict.reason, "no-allowlist");
-  // The message has to name the fix, or the owner is left guessing.
   assert.match(verdict.ok === false ? verdict.message : "", /APP_OWNER_EMAIL/);
+});
+
+test("with no allowlist, the first account created owns the app", () => {
+  assert.equal(checkFirstOwner("user-1", "user-1").ok, true);
+});
+
+test("every later account is refused, however many there are", () => {
+  for (const later of ["user-2", "user-3", "user-99"]) {
+    const verdict = checkFirstOwner(later, "user-1");
+    assert.equal(verdict.ok, false, `${later} was admitted`);
+    assert.equal(verdict.ok === false && verdict.reason, "not-owner");
+  }
+});
+
+test("nobody is the owner before any account exists", () => {
+  const verdict = checkFirstOwner("user-1", null);
+  assert.equal(verdict.ok, false);
+  assert.equal(verdict.ok === false && verdict.reason, "not-owner");
+});
+
+test("first-owner matching is exact, not prefix or case-folded", () => {
+  // Ids are opaque strings; a near-miss must never be treated as the owner.
+  assert.equal(checkFirstOwner("user-10", "user-1").ok, false);
+  assert.equal(checkFirstOwner("USER-1", "user-1").ok, false);
+  assert.equal(checkFirstOwner("", "user-1").ok, false);
 });
 
 test("the owner is admitted, case- and whitespace-insensitively", () => {

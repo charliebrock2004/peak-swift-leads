@@ -117,7 +117,15 @@ export async function requireUserId(bearerToken?: string): Promise<string> {
   // Verified, but this deployment may still not be theirs to use. Checked here
   // rather than per server function so a new server function cannot forget it.
   const { authorizeOwner } = await import("./owner.server");
-  const verdict = authorizeOwner(user.email);
+  // The owner may have to be read from the database (first account wins when no
+  // APP_OWNER_EMAIL is set), so a database failure here must not masquerade as a
+  // refusal — it is reported as itself.
+  let sql = null;
+  if (databaseConfigured) {
+    const { getSql } = await import("@/lib/db");
+    sql = await getSql();
+  }
+  const verdict = await authorizeOwner(user, sql);
   if (!verdict.ok) throw new ForbiddenError(verdict.message);
   return user.id;
 }

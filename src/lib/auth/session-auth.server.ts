@@ -16,14 +16,32 @@ import { emailAndPasswordEnabled } from "./email-password";
 import { gateIdentityEnabled } from "./gate-identity.server";
 import { authConfigured } from "./server";
 
+/** A real Postgres is configured — i.e. this is a deployment, not a scratch run. */
+export function databaseConfigured(): boolean {
+  return Boolean(process.env.DATABASE_URL?.trim());
+}
+
 /**
- * The `VITE_AUTH_ENABLED` off-switch, read exactly as `auth/server.ts` reads it.
+ * Is sign-in on?
  *
- * With it set to `"false"` the CLIENT resolves a dev user without ever asking
- * the server, so a server that demanded a session would break `npm run dev`
- * outright. Sign-in being *possible* is not the same as sign-in being *on*.
+ * `VITE_AUTH_ENABLED=false` is the template's off-switch, and it is the shipped
+ * default in `.grok/app-env.json`. Honouring it blindly on a deployment created
+ * a trap: with a real database and the flag off, `requireUserId` refused *every*
+ * request — Outreach and lead sync alike — and the only cure was an environment
+ * variable nobody could guess they needed.
+ *
+ * A configured database settles it instead. Rows are owned by a `user_id`, so
+ * either the server can tell people apart or it cannot serve them at all; there
+ * is no useful third state. Sign-in therefore switches itself on whenever
+ * `DATABASE_URL` is present, and the flag only decides the case where no
+ * database exists — which is exactly local `npm run dev`, still the dev user,
+ * still no sign-in.
+ *
+ * This is strictly stricter than before: the configuration that used to mean
+ * "refuse everyone" now means "ask who you are".
  */
 export function authFlagOn(): boolean {
+  if (databaseConfigured()) return true;
   return process.env.VITE_AUTH_ENABLED?.trim() !== "false";
 }
 

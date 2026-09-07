@@ -2,7 +2,6 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { authClient } from "@/lib/auth/client";
-import { useCurrentUserState } from "@/lib/auth/use-current-user";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
@@ -24,7 +23,13 @@ export const Route = createFileRoute("/login")({ component: Login });
  */
 function Login() {
   const navigate = useNavigate();
-  const { user, isPending } = useCurrentUserState();
+  // The REAL session, not `useCurrentUserState()`. That hook hands back a stand-in
+  // dev user whenever the client was built with `VITE_AUTH_ENABLED=false`, which
+  // on this page means "already signed in" — it redirected straight back out and
+  // left no way to reach the form at all. The server decides whether sign-in
+  // matters; this page only needs to know if a real session exists.
+  const { data: session, isPending } = authClient.useSession();
+  const user = session?.user ?? null;
   const [mode, setMode] = useState<"sign-in" | "sign-up">("sign-in");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");

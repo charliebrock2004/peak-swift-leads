@@ -20,6 +20,36 @@ export type OwnerVerdict =
   | { ok: true }
   | { ok: false; reason: "not-owner" | "no-allowlist"; message: string };
 
+/**
+ * With no `APP_OWNER_EMAIL` set, the app belongs to the first account created on
+ * it — and to nobody else, ever.
+ *
+ * The alternative was refusing everyone until an environment variable appeared,
+ * which is safe but leaves a correctly-configured deployment dead with no
+ * on-screen way out. This is the pattern self-hosted software has settled on for
+ * the same reason: the first person through the door claims the installation.
+ *
+ * It is still exactly one owner, still enforced server-side on every request.
+ * The exposure is only the gap between a deployment going live and the owner
+ * registering, and it closes the moment they do. `APP_OWNER_EMAIL` remains the
+ * way to remove even that gap, and always wins when set.
+ */
+export function checkFirstOwner(
+  userId: string,
+  firstUserId: string | null,
+): OwnerVerdict {
+  if (!firstUserId) {
+    // No account exists yet, so this request cannot be from one.
+    return { ok: false, reason: "not-owner", message: "This app has no owner account yet." };
+  }
+  if (userId === firstUserId) return { ok: true };
+  return {
+    ok: false,
+    reason: "not-owner",
+    message: "That account is not the owner of this app.",
+  };
+}
+
 export type OwnerPolicy = {
   /** Lowercased addresses permitted to use the app. Empty means unconfigured. */
   allowlist: readonly string[];

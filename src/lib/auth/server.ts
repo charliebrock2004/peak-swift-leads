@@ -33,7 +33,7 @@ import { betterAuth } from "better-auth";
 import { bearer, genericOAuth } from "better-auth/plugins";
 import { tanstackStartCookies } from "better-auth/tanstack-start";
 import { getCookie } from "@tanstack/react-start/server";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { Pool } from "pg";
 import { ensureDbReady, getPglite } from "../db";
 import { emailAndPasswordEnabled } from "./email-password";
@@ -65,6 +65,30 @@ const globalAuthRef = globalThis as typeof globalThis & {
 function previewAuthSecret(): string {
   globalAuthRef.__grokAuthPreviewSecret__ ??= randomBytes(32).toString("hex");
   return globalAuthRef.__grokAuthPreviewSecret__;
+}
+
+/**
+ * A stable cookie-signing secret for a deployment that was never given one.
+ *
+ * `previewAuthSecret()` is random per process. That is right for one long-lived
+ * dev server and catastrophic on serverless: every cold start mints a new
+ * secret, so a cookie signed by one instance is rejected by the next and nobody
+ * can stay signed in. The failure is intermittent, which makes it worse.
+ *
+ * So when a database is configured, derive the secret from `DATABASE_URL`
+ * instead. It is stable for the life of the deployment, server-only, and
+ * already high-entropy (a provisioned Postgres password). The hash is one-way,
+ * so this never discloses the connection string, and knowing the derived secret
+ * would require knowing `DATABASE_URL` — at which point an attacker owns the
+ * database outright and forging a session gains them nothing.
+ *
+ * An explicit `BETTER_AUTH_SECRET` still wins, and rotating it (or the database
+ * password) simply signs everyone out.
+ */
+function derivedDeploymentSecret(): string | undefined {
+  const databaseUrl = env("DATABASE_URL");
+  if (!databaseUrl) return undefined;
+  return createHash("sha256").update(`peakswift.better-auth.v1:${databaseUrl}`).digest("hex");
 }
 
 /** Read an env var, treating empty/whitespace as unset. */
@@ -106,7 +130,24 @@ const LOCAL_DEV_ORIGINS: string[] = [
   "http://127.0.0.1:8080",
   "http://[::1]:8080",
 ];
-const baseURL = explicitBaseURL ?? {
+/**
+ * The public origin Vercel already knows, so `BETTER_AUTH_URL` is optional.
+ *
+ * `VERCEL_PROJECT_PRODUCTION_URL` is the project's stable production domain and
+ * is injected into every deployment; `VERCEL_URL` is this deployment's own
+ * hostname, which is what a preview build is actually served on. Neither
+ * includes a scheme. Without this, a deployment with no `BETTER_AUTH_URL` fell
+ * back to the preview allowlist and rejected its own sign-in POSTs as
+ * "Invalid origin".
+ */
+const vercelHost = env("VERCEL_PROJECT_PRODUCTION_URL") ?? env("VERCEL_URL");
+const vercelOrigin = vercelHost ? `https://${vercelHost.replace(/^https?:\/\//, "")}` : undefined;
+/** This deployment's own hostname too, so preview URLs sign in as well. */
+const vercelDeploymentOrigin = env("VERCEL_URL")
+  ? `https://${env("VERCEL_URL")!.replace(/^https?:\/\//, "")}`
+  : undefined;
+
+const baseURL = explicitBaseURL ?? vercelOrigin ?? {
   // Include loopback hosts so dynamic baseURL resolves for local email/password
   // (not only the preview wildcard).
   allowedHosts: [...previewAllowedHosts, "localhost", "127.0.0.1", "[::1]"],
@@ -118,8 +159,14 @@ const baseURL = explicitBaseURL ?? {
 
 // Origins Better Auth accepts on credentialed POSTs (sign-up/sign-in, etc.).
 // Missing entries here surface as FORBIDDEN "Invalid origin".
+const deployedOrigins: string[] = [vercelOrigin, vercelDeploymentOrigin].filter(
+  (origin): origin is string => Boolean(origin),
+);
+
 const trustedOrigins: string[] = explicitBaseURL
-  ? [explicitBaseURL, ...LOCAL_DEV_ORIGINS]
+  ? [explicitBaseURL, ...deployedOrigins, ...LOCAL_DEV_ORIGINS]
+  : deployedOrigins.length > 0
+  ? [...deployedOrigins, ...LOCAL_DEV_ORIGINS]
   : [
       // Host wildcards (matched against Origin's host)
       ...previewAllowedHosts,
@@ -179,7 +226,7 @@ export const auth = betterAuth({
   baseURL,
   // Deployed apps inject BETTER_AUTH_SECRET. Preview: process-stable secret on
   // globalThis so HMR doesn't invalidate PGLite-backed sessions (see above).
-  secret: env("BETTER_AUTH_SECRET") ?? previewAuthSecret(),
+  secret: env("BETTER_AUTH_SECRET") ?? derivedDeploymentSecret() ?? previewAuthSecret(),
   database,
 
   // CSRF / origin check for credentialed auth POSTs (email sign-up/sign-in, …).
