@@ -15,6 +15,7 @@ import {
   type OutreachState,
 } from "@/lib/outreach/server";
 import { OAUTH_STATE_KEY } from "@/lib/outreach/oauth-state";
+import { classifySetupError, type SetupReason } from "@/lib/outreach/setup-state";
 import type { OutreachSettings, OutreachTemplate } from "@/lib/outreach/types";
 
 /**
@@ -28,6 +29,8 @@ import type { OutreachSettings, OutreachTemplate } from "@/lib/outreach/types";
 export function useOutreach() {
   const [state, setState] = useState<OutreachState | null>(null);
   const [error, setError] = useState("");
+  /** Why outreach is unavailable, when it is — drives the setup screen. */
+  const [setup, setSetup] = useState<SetupReason | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState("");
 
@@ -36,12 +39,18 @@ export function useOutreach() {
       const next = await getOutreachState();
       if (!next.ok) {
         setError(next.error);
+        setSetup(next.setup ?? classifySetupError(next.error));
         return;
       }
       setState(next);
       setError("");
+      setSetup(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not load outreach.");
+      // The auth middleware rejects before the handler runs, so these never
+      // carry the server's own classification — read it from the message.
+      const message = err instanceof Error ? err.message : "Could not load outreach.";
+      setError(message);
+      setSetup(classifySetupError(message));
     } finally {
       setLoading(false);
     }
@@ -166,5 +175,5 @@ export function useOutreach() {
       }),
   };
 
-  return { state, loading, busy, error, setError, reload, actions };
+  return { state, loading, busy, error, setError, setup, reload, actions };
 }

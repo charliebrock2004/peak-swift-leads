@@ -26,6 +26,12 @@ import { composeEmail, parseAiDraft, type AiDraft } from "./compose.ts";
 import { checkEligibility, emptyContext, type EligibilityContext } from "./eligibility.ts";
 import { allowance, nextBatch, sanitizeSettings } from "./limits.ts";
 import { checkEmailQuality, readsAsUnsubscribe } from "./quality.ts";
+import {
+  classifySetupError,
+  SETUP_COPY,
+  UNDEFINED_TABLE,
+  type SetupReason,
+} from "./setup-state.ts";
 import { SENDER_STUDIO } from "./templates.ts";
 import {
   DEFAULT_SETTINGS,
@@ -48,7 +54,13 @@ function idList(value: unknown, max = 200): string[] {
 }
 
 /** The failure shape every one of these functions uses. Never throws at the UI. */
-export type Fail = { ok: false; error: string; needsAttention?: boolean };
+export type Fail = {
+  ok: false;
+  error: string;
+  needsAttention?: boolean;
+  /** Set when the failure is a setup problem the UI should explain, not just report. */
+  setup?: SetupReason;
+};
 
 /**
  * Build the context the eligibility rules need, from what is actually stored:
@@ -232,9 +244,26 @@ export const getOutreachState = createServerFn({ method: "GET" })
       };
     } catch (error) {
       console.error("[outreach] state failed:", error);
-      return { ok: false, error: "Could not load outreach. Is the database configured?" };
+      const setup = await classifyStateFailure(error);
+      return { ok: false, error: SETUP_COPY[setup].detail, setup };
     }
   });
+
+/**
+ * Work out what actually went wrong loading outreach state.
+ *
+ * The environment is asked first and the error text second: `dbSource` and the
+ * Postgres error code are facts, whereas message matching is a guess. Only when
+ * neither is conclusive does this fall back to reading the message.
+ */
+async function classifyStateFailure(error: unknown): Promise<SetupReason> {
+  const { dbSource } = await import("@/lib/db");
+  if (dbSource === "none") return "no-database";
+  if (typeof error === "object" && error !== null && "code" in error) {
+    if ((error as { code?: unknown }).code === UNDEFINED_TABLE) return "schema-missing";
+  }
+  return classifySetupError(error instanceof Error ? error.message : String(error ?? ""));
+}
 
 // ── Gmail connect / disconnect / test ────────────────────────────────────────
 

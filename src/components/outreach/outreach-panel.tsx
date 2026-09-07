@@ -9,6 +9,7 @@ import { OutreachQueue } from "@/components/outreach/outreach-queue";
 import { OutreachLists } from "@/components/outreach/outreach-lists";
 import { OutreachSettingsTab } from "@/components/outreach/outreach-settings";
 import { checkEligibility, emptyContext, type EligibilityContext } from "@/lib/outreach/eligibility";
+import { SETUP_COPY, type SetupReason } from "@/lib/outreach/setup-state";
 import type { OutreachLead } from "@/lib/outreach/types";
 import { cn } from "@/lib/utils";
 
@@ -32,7 +33,7 @@ export type OutreachTab = (typeof TABS)[number]["id"];
 export function OutreachPanel({ onClose }: { onClose: () => void }) {
   const [tab, setTab] = useState<OutreachTab>("dashboard");
   const [mounted, setMounted] = useState(false);
-  const { state, loading, busy, error, setError, actions } = useOutreach();
+  const { state, loading, busy, error, setError, setup, actions } = useOutreach();
 
   useEffect(() => setMounted(true), []);
 
@@ -107,7 +108,9 @@ export function OutreachPanel({ onClose }: { onClose: () => void }) {
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-3xl px-4 py-5 pb-[max(1.5rem,env(safe-area-inset-bottom))] md:px-6 md:py-8">
-          {error ? (
+          {/* The setup screen already explains a load failure in full — showing
+              the same text again as a red banner reads as two separate faults. */}
+          {error && (state || !setup) ? (
             <div className="mb-4 flex items-start gap-3 rounded-md bg-hot/10 px-4 py-3">
               <p className="min-w-0 flex-1 text-sm text-hot">{error}</p>
               <button type="button" className="shrink-0 text-xs text-hot underline" onClick={() => setError("")}>
@@ -122,16 +125,7 @@ export function OutreachPanel({ onClose }: { onClose: () => void }) {
               <p className="mt-4 text-sm text-muted">Loading outreach…</p>
             </div>
           ) : !state ? (
-            <div className="rounded-xl bg-surface px-5 py-14 text-center shadow-(--shadow-border)">
-              <p className="font-medium">Outreach needs the database</p>
-              <p className="mx-auto mt-2 max-w-sm text-sm text-muted">
-                Sending, the queue and the suppression list all live on the server. Your lead sheet is
-                unaffected and still works exactly as it did.
-              </p>
-              <Button className="mt-5" onClick={onClose}>
-                Back to leads
-              </Button>
-            </div>
+            <OutreachSetupState reason={setup ?? "unknown"} onClose={onClose} />
           ) : (
             <>
               {tab === "dashboard" ? (
@@ -161,3 +155,24 @@ export function OutreachPanel({ onClose }: { onClose: () => void }) {
 }
 
 export type OutreachActions = ReturnType<typeof useOutreach>["actions"];
+
+/**
+ * What Outreach shows when it cannot load at all.
+ *
+ * Names the actual cause and the actual fix. The previous version said "needs
+ * the database" whatever had happened, which sent someone whose session had
+ * simply expired off to configure Postgres.
+ */
+function OutreachSetupState({ reason, onClose }: { reason: SetupReason; onClose: () => void }) {
+  const copy = SETUP_COPY[reason];
+  return (
+    <div className="rounded-xl bg-surface px-5 py-14 text-center shadow-(--shadow-border)">
+      <p className="font-medium">{copy.title}</p>
+      <p className="mx-auto mt-2 max-w-sm text-sm text-muted">{copy.detail}</p>
+      {copy.fix ? <p className="mx-auto mt-3 max-w-sm text-sm text-subtle">{copy.fix}</p> : null}
+      <Button className="mt-5" onClick={onClose}>
+        Back to leads
+      </Button>
+    </div>
+  );
+}

@@ -129,6 +129,25 @@ The app needs its own Google OAuth client. This part cannot be automated:
 7. In the app: **Outreach → Settings → Connect Gmail**, approve, and use
    **Send test email** before contacting anyone.
 
+### Signing in when deployed outside the Grok platform
+
+On `grok.me` the platform identifies visitors with a signed header, and on the
+sandbox preview the shared broker client does it. Neither exists on a plain
+Vercel domain: `preview.ts` defaults the broker secret to `""`, so
+`authConfigured` is false there whatever `VITE_AUTH_ENABLED` says.
+
+So this app also carries Better Auth's own **email and password** sign-in
+(`src/lib/auth/email-password.ts`), served at `/api/auth/*`, which needs no
+external identity provider and works on any origin. Set the four variables
+above, deploy, then open `/login` and choose **Create the owner account** using
+the address you put in `APP_OWNER_EMAIL`.
+
+Two separate questions, deliberately: Better Auth decides *who you are*,
+`APP_OWNER_EMAIL` decides *whether you may be here* (`src/lib/auth/owner.ts`).
+Anyone can create an account — the endpoint is public — but only an address on
+the allowlist gets past `requireUserId`, so a stranger's account can read
+nothing, send nothing, and spend nothing.
+
 ## Requirements
 
 - Node.js 22+
@@ -142,7 +161,11 @@ Server-only. None of these is ever sent to the browser, and none belongs in git.
 
 | Variable | Needed for | Notes |
 | --- | --- | --- |
-| `DATABASE_URL` | Sync, and everything in Outreach | Provisioned on deploy |
+| `DATABASE_URL` | Sync, and everything in Outreach | Provisioned on deploy by the Grok platform; set it by hand on a plain Vercel project |
+| `VITE_AUTH_ENABLED` | Sign-in on a public deployment | `"true"`. Left at `"false"` there is no way to tell visitors apart, and adding `DATABASE_URL` makes every request fail closed |
+| `BETTER_AUTH_SECRET` | Same | Long random string, and **stable** — without it each serverless instance signs cookies differently and sessions break at random |
+| `BETTER_AUTH_URL` | Same | The app's public origin, no trailing slash. Doubles as the trusted origin, so a wrong value reads as "Invalid origin" |
+| `APP_OWNER_EMAIL` | Same | The only address allowed to use the app. Sign-up is open, so without this anyone who finds the URL can create an account |
 | `GOOGLE_CLIENT_ID` | Connecting Gmail | From your Google Cloud OAuth client |
 | `GOOGLE_CLIENT_SECRET` | Connecting Gmail | Same. **Never** prefix with `VITE_` |
 | `GMAIL_SENDER` | Optional | Pins the account, e.g. `PeakSwiftStudio@gmail.com`. Connecting any other account is then refused |
