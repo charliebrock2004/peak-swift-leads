@@ -158,6 +158,68 @@ database. Kept here because they are easy to reintroduce:
    and silently drop every write. `dbSource` is now `"none"` for a production
    build with no `DATABASE_URL`: a clear failure beats a database that forgets.
 
+## Phase 3 — outreach
+
+Sending real email from a real mailbox to real businesses. The whole subsystem
+is built around one idea: **the cost of one bad email is much higher than the
+cost of refusing to send it.**
+
+| Piece | File |
+| --- | --- |
+| Who may be emailed, and why not (pure) | `src/lib/outreach/eligibility.ts` |
+| The last gate before Gmail (pure) | `src/lib/outreach/quality.ts` |
+| Templates, variables, opt-out (pure) | `src/lib/outreach/templates.ts` |
+| AI prompt, parsing, fallback (pure) | `src/lib/outreach/compose.ts` |
+| Daily limit, batching (pure) | `src/lib/outreach/limits.ts` |
+| When a follow-up is due (pure) | `src/lib/outreach/follow-ups.ts` |
+| Dashboard figures (pure) | `src/lib/outreach/dashboard.ts` |
+| OAuth URLs and expiry maths (pure) | `src/lib/gmail/oauth.ts` |
+| RFC 2822 message building (pure) | `src/lib/gmail/mime.ts` |
+| Google HTTP — **server only** | `src/lib/gmail/client.server.ts` |
+| Every outreach SQL statement — server only | `src/lib/outreach/store.server.ts` |
+| Policy: the server functions | `src/lib/outreach/server.ts` |
+| Schema | `migrations/0005_outreach.sql` |
+| UI | `src/components/outreach/*`, `src/routes/oauth.gmail.tsx` |
+
+Key decisions:
+
+- **Everything is checked twice.** Once when you approve, once immediately
+  before Gmail. Approval can be days old, and in between a lead can reply,
+  unsubscribe, or be marked Not Interested after a phone call.
+- **The server decides who may be emailed**, from its own lead row. A client can
+  ask to email lead X; it cannot assert that lead X is eligible. The sheet is
+  local-first and therefore not trustworthy as an authorisation input.
+- **Duplicate protection is a database constraint, not just code.** A partial
+  unique index on `(user_id, lower(recipient), kind)` over the live statuses
+  means two paths racing cannot produce two first emails. The code check gives
+  the good error message; the index is what makes it true.
+- **The daily count is derived, never stored.** A counter drifts on a crash, a
+  retry or two tabs; counting rows with today's `sent_at` cannot.
+- **Suppression is its own table**, not just `leads.unsubscribed`. It has to
+  outlive the lead row, or deleting and re-importing a business would resurrect
+  it as a valid target.
+- **A failure is a stop, not a retry.** Gmail rejecting a message is permanent;
+  the email is marked failed and the batch continues. Only a dead token stops
+  the batch, because every remaining send would fail identically.
+- **AI is optional and never trusted.** A draft that is insulting, generic,
+  placeholder-laden or talking about itself is thrown away and the template used
+  instead — and the UI says which happened. With no `XAI_API_KEY` at all,
+  outreach works entirely on templates.
+- **Sole traders are held, not sent.** UK rules treat them like individuals. The
+  heuristic (personal mailbox, or a person's name as the business name) only
+  ever adds caution, and a held lead is never selectable.
+- **The opt-out is a sentence, not a link.** An unsubscribe URL this app does not
+  serve would be worse than none; a reply is something it can genuinely act on.
+- **Replies are read, never answered.** `gmail.readonly` is used solely to look
+  up threads this app created.
+
+### The one thing that cannot be automated
+
+The app needs its own Google Cloud OAuth client, and creating one requires a
+person in a browser at console.cloud.google.com. The README has the steps. Until
+`GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` are set, Settings says so plainly
+and Connect is disabled — rather than failing at the moment you try to send.
+
 ## Product decisions
 
 - **One tap records a whole call.** The six outcome chips on a lead card set

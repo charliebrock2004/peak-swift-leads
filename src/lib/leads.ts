@@ -14,6 +14,9 @@ export const CALL_RESULT_OPTIONS = [
   "Not Interested",
   "Wrong Number",
   "Booked",
+  // The end of the funnel. Outreach must never email a customer you already
+  // won, and the dashboard counts them.
+  "Won",
 ] as const;
 
 export const WEBSITE_STATUS_OPTIONS = [

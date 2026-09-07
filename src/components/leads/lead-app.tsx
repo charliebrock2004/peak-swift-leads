@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Download, FileUp, Loader2, Mail, Plus, Search, SlidersHorizontal } from "lucide-react";
+import { Download, FileUp, Loader2, Mail, Plus, Search, Send, SlidersHorizontal } from "lucide-react";
 import { toast } from "sonner";
 import { FindLeadsPanel } from "@/components/leads/find-leads";
 import { ImportPanel } from "@/components/leads/import-panel";
+import { OutreachPanel } from "@/components/outreach/outreach-panel";
 import { LeadCards } from "@/components/leads/lead-cards";
 import { LeadFormDialog } from "@/components/leads/lead-form";
 import { LeadTable } from "@/components/leads/lead-table";
@@ -83,6 +84,7 @@ export function LeadApp() {
   const [pendingDelete, setPendingDelete] = useState<Lead | null>(null);
   const [finding, setFinding] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [outreachOpen, setOutreachOpen] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [summaryKey, setSummaryKey] = useState<keyof LeadSummary | null>(null);
   const [hydrated, setHydrated] = useState(true);
@@ -499,6 +501,10 @@ export function LeadApp() {
                 <span className="hidden sm:inline">Export CSV</span>
               </Button>
             </div>
+            <Button variant="secondary" className="h-12 sm:h-10" onClick={() => setOutreachOpen(true)}>
+              <Send />
+              Outreach
+            </Button>
           </div>
         </header>
 
@@ -864,6 +870,17 @@ export function LeadApp() {
 
       {importing ? (
         <ImportPanel leads={leads} onClose={() => setImporting(false)} onApply={applySpreadsheet} />
+      ) : null}
+
+      {/* Outreach reads and writes on the server, so closing it re-syncs the
+          sheet: a lead marked Sent or Unsubscribed there has to show up here. */}
+      {outreachOpen ? (
+        <OutreachPanel
+          onClose={() => {
+            setOutreachOpen(false);
+            void useLeadsStore.getState().sync();
+          }}
+        />
       ) : null}
 
       {pendingDelete ? (
