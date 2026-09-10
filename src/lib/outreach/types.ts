@@ -123,6 +123,19 @@ export type GmailConnection = {
   connectedAt: string;
   /** False when the server has no OAuth client configured at all. */
   configured: boolean;
+  /**
+   * Which Google OAuth client this deployment will actually ask for, so an
+   * `invalid_client` can be checked against the Google Cloud Credentials page
+   * instead of guessed at. Masked; client ids are public but there is no reason
+   * to leave a full one on screen. Empty when nothing is configured.
+   */
+  clientProject: string;
+  clientMasked: string;
+  /**
+   * The redirect URI Google must have registered. Empty means the app derives
+   * it from the address you are on, which is `<origin>/oauth/gmail`.
+   */
+  redirectUriOverride: string;
 };
 
 export type SuppressionEntry = {

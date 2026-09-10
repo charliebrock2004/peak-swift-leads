@@ -219,6 +219,26 @@ export type OutreachState = {
   aiAvailable: boolean;
 };
 
+/**
+ * Which Google OAuth client this deployment will ask for, safe to show.
+ *
+ * `invalid_client` from Google has one cause the server cannot detect: a
+ * well-formed client id naming a client that no longer exists, or that belongs
+ * to a different Cloud project than the one being looked at. The id carries its
+ * project number, so showing it turns an unanswerable error into a comparison.
+ * The secret is never included, and the id's random middle is masked.
+ */
+async function clientIdentity(config: { clientId: string } | null) {
+  if (!config) return { clientProject: "", clientMasked: "", redirectUriOverride: "" };
+  const { describeClientId } = await import("@/lib/gmail/oauth.ts");
+  const described = describeClientId(config.clientId);
+  return {
+    clientProject: described.project,
+    clientMasked: described.masked,
+    redirectUriOverride: process.env.GOOGLE_REDIRECT_URI?.trim() ?? "",
+  };
+}
+
 /** Everything the outreach screen needs, in one round trip. */
 export const getOutreachState = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
@@ -226,6 +246,7 @@ export const getOutreachState = createServerFn({ method: "GET" })
     try {
       const { sql, store, settings, emails, templates } = await loadWorld(context.userId);
       const gmail = await import("@/lib/gmail/client.server.ts");
+      const config = gmail.googleConfig();
       const [account, suppression, leads] = await Promise.all([
         store.loadGmailAccount(sql, context.userId),
         store.loadSuppression(sql, context.userId),
@@ -233,7 +254,7 @@ export const getOutreachState = createServerFn({ method: "GET" })
       ]);
       return {
         ok: true,
-        connection: store.publicConnection(account, gmail.googleConfig() !== null),
+        connection: store.publicConnection(account, config !== null, await clientIdentity(config)),
         settings,
         templates,
         emails,
@@ -367,7 +388,10 @@ export const completeGmailConnect = createServerFn({ method: "POST" })
       scope: exchanged.scope,
     });
     const account = await store.loadGmailAccount(sql, context.userId);
-    return { ok: true, connection: store.publicConnection(account, true) };
+    return {
+      ok: true,
+      connection: store.publicConnection(account, true, await clientIdentity(gmail.googleConfig())),
+    };
   });
 
 export const disconnectGmail = createServerFn({ method: "POST" })

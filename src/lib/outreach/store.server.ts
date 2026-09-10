@@ -55,9 +55,28 @@ export async function loadGmailAccount(sql: Sql, userId: string): Promise<GmailA
 }
 
 /** What the browser may see: an address and a health state, never a token. */
-export function publicConnection(row: GmailAccountRow | null, configured: boolean): GmailConnection {
+export function publicConnection(
+  row: GmailAccountRow | null,
+  configured: boolean,
+  client: { clientProject?: string; clientMasked?: string; redirectUriOverride?: string } = {},
+): GmailConnection {
+  // Which OAuth client this deployment will ask Google for. Carried on every
+  // connection state, including "not configured", because that is exactly when
+  // somebody needs to check it against the Credentials page.
+  const identity = {
+    clientProject: client.clientProject ?? "",
+    clientMasked: client.clientMasked ?? "",
+    redirectUriOverride: client.redirectUriOverride ?? "",
+  };
   if (!row || row.status === "disconnected") {
-    return { email: row?.email ?? "", status: "disconnected", lastError: row?.last_error ?? "", connectedAt: "", configured };
+    return {
+      email: row?.email ?? "",
+      status: "disconnected",
+      lastError: row?.last_error ?? "",
+      connectedAt: "",
+      configured,
+      ...identity,
+    };
   }
   return {
     email: row.email,
@@ -65,6 +84,7 @@ export function publicConnection(row: GmailAccountRow | null, configured: boolea
     lastError: row.last_error,
     connectedAt: iso(row.connected_at),
     configured,
+    ...identity,
   };
 }
 

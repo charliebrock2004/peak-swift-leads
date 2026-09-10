@@ -77,6 +77,44 @@ export function clientIdProblem(clientId: string): string | null {
   return null;
 }
 
+/**
+ * What this deployment will ask Google for, in a form you can compare against
+ * the Credentials page without reading a secret off a screen.
+ *
+ * `invalid_client` has one cause the app cannot detect on its own: a perfectly
+ * well-formed client id that names a client Google no longer has, or that
+ * belongs to a different Google Cloud project than the one you are looking at.
+ * Nothing in the app can tell those apart — but the id itself says which
+ * project it came from, and that is the fact that settles it.
+ *
+ * A Google client id is `<project number>-<random>.apps.googleusercontent.com`.
+ * The leading digits are the Cloud project number. Client ids are not secrets —
+ * they travel in the authorize URL and are visible in the browser's address bar
+ * — but the random middle is masked anyway so nothing sensitive-looking is left
+ * sitting on a screen.
+ */
+export type ClientIdDescription = {
+  /** Google Cloud project number the client belongs to, or "" if unreadable. */
+  project: string;
+  /** Enough of the id to compare exactly, with the middle masked. */
+  masked: string;
+};
+
+export function describeClientId(clientId: string): ClientIdDescription {
+  const value = clientId.trim();
+  if (!value) return { project: "", masked: "" };
+  const match = value.match(/^(\d+)-([^.]+)\.apps\.googleusercontent\.com$/);
+  if (!match) {
+    // Not the expected shape; show the ends so a wrong paste is still obvious.
+    const head = value.slice(0, 6);
+    const tail = value.length > 12 ? value.slice(-6) : "";
+    return { project: "", masked: tail ? `${head}…${tail}` : head };
+  }
+  const [, project, random] = match;
+  const tail = random.slice(-6);
+  return { project, masked: `${project}-…${tail}.apps.googleusercontent.com` };
+}
+
 export function buildAuthUrl(options: AuthUrlOptions): string {
   const params = new URLSearchParams({
     client_id: options.clientId,

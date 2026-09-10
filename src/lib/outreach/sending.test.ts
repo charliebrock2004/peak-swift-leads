@@ -9,7 +9,7 @@ import {
   formatAddress,
   sanitizeHeaderValue,
 } from "../gmail/mime.ts";
-import { buildAuthUrl, clientIdProblem, expiryFrom, hasRequiredScopes, isFatalAuthError, needsRefresh, SCOPE_STRING } from "../gmail/oauth.ts";
+import { buildAuthUrl, clientIdProblem, describeClientId, expiryFrom, hasRequiredScopes, isFatalAuthError, needsRefresh, SCOPE_STRING } from "../gmail/oauth.ts";
 import { computeStats } from "./dashboard.ts";
 import { emptyContext } from "./eligibility.ts";
 import { followUpDueFor, followUpsDue } from "./follow-ups.ts";
@@ -358,5 +358,37 @@ describe("google client id shape", () => {
     // Shape is all this checks. A well-formed id for a client that no longer
     // exists still passes here and still fails at Google, by design.
     assert.equal(clientIdProblem(VALID), null);
+  });
+});
+
+describe("describing the configured client", () => {
+  const VALID = "123456789012-abcdefghijklmnopqrstuvwxyz012345.apps.googleusercontent.com";
+
+  it("exposes the Cloud project number, which is what settles a wrong project", () => {
+    const { project, masked } = describeClientId(VALID);
+    assert.equal(project, "123456789012");
+    assert.match(masked, /^123456789012-…/);
+    assert.match(masked, /\.apps\.googleusercontent\.com$/);
+  });
+
+  it("masks the random middle so a full id is never left on screen", () => {
+    const { masked } = describeClientId(VALID);
+    assert.ok(!masked.includes("abcdefghijklmnopqrstuvwxyz"), "the random middle leaked");
+    assert.ok(masked.includes("012345"), "the tail must stay comparable");
+  });
+
+  it("never returns the value verbatim", () => {
+    assert.notEqual(describeClientId(VALID).masked, VALID);
+  });
+
+  it("still shows the ends of a value that is not a Google client id", () => {
+    const { project, masked } = describeClientId("GOCSPX-some-secret-value");
+    assert.equal(project, "", "a non-client-id has no project number");
+    assert.match(masked, /^GOCSPX…/);
+  });
+
+  it("says nothing at all for an empty value", () => {
+    assert.deepEqual(describeClientId(""), { project: "", masked: "" });
+    assert.deepEqual(describeClientId("   "), { project: "", masked: "" });
   });
 });

@@ -58,6 +58,27 @@ export function OutreachSettingsTab({
           </div>
         ) : null}
 
+        {/* Google answers a client it cannot find with "invalid_client" and names
+            no cause. The id carries its Cloud project number, so showing it turns
+            that dead end into a comparison against the Credentials page. */}
+        {connection.configured && connection.clientMasked ? (
+          <p className="mt-3 text-xs text-subtle">
+            Asking Google for client <code className="text-muted">{connection.clientMasked}</code>
+            {connection.clientProject ? (
+              <>
+                {" "}
+                (Google Cloud project <code className="text-muted">{connection.clientProject}</code>)
+              </>
+            ) : null}
+            . Callback:{" "}
+            <code className="text-muted">
+              {connection.redirectUriOverride ||
+                (typeof window === "undefined" ? "" : `${window.location.origin}/oauth/gmail`)}
+            </code>
+            . Both must match Google Cloud exactly.
+          </p>
+        ) : null}
+
         <dl className="mt-3 flex flex-col gap-2 text-sm">
           <div className="flex items-baseline justify-between gap-3">
             <dt className="text-muted">Connected account</dt>
