@@ -40,9 +40,29 @@ function apiBase(): string {
 export type GoogleConfig = { clientId: string; clientSecret: string };
 
 /** The OAuth client, from the environment. Absent means "not set up yet". */
+/**
+ * Strip what an environment variable picks up in transit but never belongs to
+ * the value: surrounding quotes, and — for the client id — any whitespace at
+ * all, including a line break in the middle.
+ *
+ * A trailing newline is invisible in a dashboard field and fatal at Google. A
+ * Google client id is `<digits>-<token>.apps.googleusercontent.com` and can
+ * never legitimately contain a space or a newline, so removing them cannot
+ * change which client is meant — it can only recover it. The secret gets the
+ * gentler treatment (ends only), because internal characters there are opaque
+ * and not ours to second-guess.
+ */
+function cleanClientId(raw: string | undefined): string {
+  return (raw ?? "").replace(/\s+/g, "").replace(/^["']+|["']+$/g, "");
+}
+
+function cleanSecret(raw: string | undefined): string {
+  return (raw ?? "").trim().replace(/^["']+|["']+$/g, "").trim();
+}
+
 export function googleConfig(): GoogleConfig | null {
-  const clientId = process.env.GOOGLE_CLIENT_ID?.trim();
-  const clientSecret = process.env.GOOGLE_CLIENT_SECRET?.trim();
+  const clientId = cleanClientId(process.env.GOOGLE_CLIENT_ID);
+  const clientSecret = cleanSecret(process.env.GOOGLE_CLIENT_SECRET);
   if (!clientId || !clientSecret) return null;
   return { clientId, clientSecret };
 }

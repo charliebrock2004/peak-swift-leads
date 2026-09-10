@@ -69,7 +69,11 @@ export function clientIdProblem(clientId: string): string | null {
     return "GOOGLE_CLIENT_ID has quote marks around it. Store the bare value, with no quotes.";
   }
   if (/\s/.test(value)) {
-    return "GOOGLE_CLIENT_ID contains a space or line break. Re-copy it with no surrounding whitespace.";
+    // `googleConfig()` strips whitespace before this runs, so reaching here
+    // means a caller passed a raw value. Say where the whitespace is, because
+    // leading and trailing are already handled and "re-copy it" sends someone
+    // to inspect the one place the problem is not.
+    return "GOOGLE_CLIENT_ID has a space or line break inside it. Re-copy the id as one unbroken string.";
   }
   if (!value.endsWith(".apps.googleusercontent.com")) {
     return "GOOGLE_CLIENT_ID does not end with .apps.googleusercontent.com, so it is not a Google OAuth client id.";

@@ -392,3 +392,45 @@ describe("describing the configured client", () => {
     assert.deepEqual(describeClientId("   "), { project: "", masked: "" });
   });
 });
+
+describe("a client id that arrived with whitespace in it", () => {
+  const VALID = "123456789012-abcdefghijklmnopqrstuvwxyz012345.apps.googleusercontent.com";
+
+  // googleConfig() is server-only, so exercise the same normalisation shape the
+  // deployment applies before anything reaches Google.
+  const cleanClientId = (raw: string | undefined) => (raw ?? "").replace(/\s+/g, "").replace(/^["']+|["']+$/g, "");
+
+  it("recovers an id broken across two lines, which is what a wrapped copy gives you", () => {
+    const wrapped = "123456789012-abcdefghijklmnopqrst\nuvwxyz012345.apps.googleusercontent.com";
+    assert.equal(cleanClientId(wrapped), VALID);
+    assert.equal(clientIdProblem(cleanClientId(wrapped)), null);
+  });
+
+  it("recovers a trailing newline, invisible in a dashboard field and fatal at Google", () => {
+    assert.equal(cleanClientId(`${VALID}\n`), VALID);
+    assert.equal(cleanClientId(`  ${VALID}  `), VALID);
+  });
+
+  it("recovers quote marks copied in from a config file", () => {
+    assert.equal(cleanClientId(`"${VALID}"`), VALID);
+    assert.equal(cleanClientId(`'${VALID}'`), VALID);
+  });
+
+  it("recovers the two together", () => {
+    assert.equal(cleanClientId(`  "${VALID}\n"  `), VALID);
+    assert.equal(clientIdProblem(cleanClientId(`  "${VALID}\n"  `)), null);
+  });
+
+  it("does NOT invent a valid id out of a genuinely wrong value", () => {
+    // Normalisation removes whitespace; it must not turn a secret into an id.
+    assert.match(clientIdProblem(cleanClientId(" GOCSPX-a secret ")) ?? "", /SECRET/);
+    assert.match(clientIdProblem(cleanClientId(" not-a-client ")) ?? "", /apps\.googleusercontent\.com/);
+    assert.equal(clientIdProblem(cleanClientId("   ")), "GOOGLE_CLIENT_ID is empty.");
+  });
+
+  it("the whitespace message says INSIDE, since the ends are already handled", () => {
+    const problem = clientIdProblem("123456789012-abc def.apps.googleusercontent.com");
+    assert.match(problem ?? "", /inside it/);
+    assert.doesNotMatch(problem ?? "", /surrounding/);
+  });
+});
