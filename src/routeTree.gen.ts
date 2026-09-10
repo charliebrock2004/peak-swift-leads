@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as AdminOwnerEmailRouteImport } from './routes/admin.owner-email'
 import { Route as OauthGmailRouteImport } from './routes/oauth.gmail'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 
@@ -22,6 +23,11 @@ const IndexRoute = IndexRouteImport.update({
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AdminOwnerEmailRoute = AdminOwnerEmailRouteImport.update({
+  id: '/admin/owner-email',
+  path: '/admin/owner-email',
   getParentRoute: () => rootRouteImport,
 } as any)
 const OauthGmailRoute = OauthGmailRouteImport.update({
@@ -38,12 +44,14 @@ const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
+  '/admin/owner-email': typeof AdminOwnerEmailRoute
   '/oauth/gmail': typeof OauthGmailRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
+  '/admin/owner-email': typeof AdminOwnerEmailRoute
   '/oauth/gmail': typeof OauthGmailRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
 }
@@ -51,20 +59,29 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
+  '/admin/owner-email': typeof AdminOwnerEmailRoute
   '/oauth/gmail': typeof OauthGmailRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/login' | '/oauth/gmail' | '/api/auth/$'
+  fullPaths:
+    '/' | '/login' | '/admin/owner-email' | '/oauth/gmail' | '/api/auth/$'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/login' | '/oauth/gmail' | '/api/auth/$'
-  id: '__root__' | '/' | '/login' | '/oauth/gmail' | '/api/auth/$'
+  to: '/' | '/login' | '/admin/owner-email' | '/oauth/gmail' | '/api/auth/$'
+  id:
+    | '__root__'
+    | '/'
+    | '/login'
+    | '/admin/owner-email'
+    | '/oauth/gmail'
+    | '/api/auth/$'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   LoginRoute: typeof LoginRoute
+  AdminOwnerEmailRoute: typeof AdminOwnerEmailRoute
   OauthGmailRoute: typeof OauthGmailRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
 }
@@ -83,6 +100,13 @@ declare module '@tanstack/react-router' {
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/admin/owner-email': {
+      id: '/admin/owner-email'
+      path: '/admin/owner-email'
+      fullPath: '/admin/owner-email'
+      preLoaderRoute: typeof AdminOwnerEmailRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/oauth/gmail': {
@@ -105,6 +129,7 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   LoginRoute: LoginRoute,
+  AdminOwnerEmailRoute: AdminOwnerEmailRoute,
   OauthGmailRoute: OauthGmailRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
 }
