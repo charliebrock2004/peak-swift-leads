@@ -1,5 +1,4 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { auth } from "@/lib/auth/server";
 
 /**
  * Better Auth's HTTP endpoints, at the origin the rest of the app expects.
@@ -19,11 +18,27 @@ import { auth } from "@/lib/auth/server";
  * `ANY` because Better Auth routes internally by method and path: GET for
  * `get-session` and the OAuth callback, POST for the credentialed calls. The
  * splat keeps every one of those on this single handler.
+ *
+ * `auth` is imported INSIDE the handler, not at the top of the file. A route
+ * module belongs to the route tree, which is bundled for the browser as well as
+ * the server; a static import drags `@/lib/auth/server` — and with it `pg`,
+ * `better-auth`, `node:crypto` and PGLite — into that graph. Rollup resolved the
+ * resulting cycle by emitting an SSR chunk that referenced an export its own
+ * dependency never defined, so the whole server bundle failed to evaluate with
+ * `SyntaxError: Export 'ssr_exports' is not defined in module` and every request
+ * — including the lead sheet — answered 500.
+ *
+ * This is the same rule `leads-server.ts` and `outreach/server.ts` already
+ * follow, and for the same reason they give: server-only modules are loaded
+ * when the handler runs, never when the route is defined.
  */
 export const Route = createFileRoute("/api/auth/$")({
   server: {
     handlers: {
-      ANY: ({ request }) => auth.handler(request),
+      ANY: async ({ request }) => {
+        const { auth } = await import("@/lib/auth/server");
+        return auth.handler(request);
+      },
     },
   },
 });

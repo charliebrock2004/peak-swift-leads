@@ -1,4 +1,6 @@
 import { getRequest } from "@tanstack/react-start/server";
+import { getSql } from "@/lib/db";
+import { authorizeOwner } from "./owner.server";
 import { auth, authConfigured } from "./server";
 import { sessionAuthActive } from "./session-auth.server";
 
@@ -116,15 +118,14 @@ export async function requireUserId(bearerToken?: string): Promise<string> {
   if (!user) throw new UnauthorizedError();
   // Verified, but this deployment may still not be theirs to use. Checked here
   // rather than per server function so a new server function cannot forget it.
-  const { authorizeOwner } = await import("./owner.server");
-  // The owner may have to be read from the database (first account wins when no
-  // APP_OWNER_EMAIL is set), so a database failure here must not masquerade as a
-  // refusal — it is reported as itself.
-  let sql = null;
-  if (databaseConfigured) {
-    const { getSql } = await import("@/lib/db");
-    sql = await getSql();
-  }
+  //
+  // `owner.server` and `@/lib/db` are STATIC imports (see the top of the file).
+  // Importing them dynamically from here added two chunk boundaries around the
+  // better-auth + pg subgraph, and the bundler's split of the SSR entry emitted
+  // a chunk that re-exported a binding it no longer defined — the whole server
+  // failing to load with `Export 'ssr_exports' is not defined in module`. This
+  // module is server-only either way, so a static import costs nothing.
+  const sql = databaseConfigured ? await getSql() : null;
   const verdict = await authorizeOwner(user, sql);
   if (!verdict.ok) throw new ForbiddenError(verdict.message);
   return user.id;

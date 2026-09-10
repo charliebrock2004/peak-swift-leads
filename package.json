@@ -8,7 +8,7 @@
   },
   "scripts": {
     "dev": "node scripts/with-app-env.mjs vite dev --host 0.0.0.0 --port 8080",
-    "build": "node scripts/with-app-env.mjs vite build && npm run db:migrate",
+    "build": "node scripts/with-app-env.mjs vite build && node scripts/check-ssr-bundle.mjs && npm run db:migrate",
     "db:migrate": "node scripts/migrate.mjs",
     "build:dev": "node scripts/with-app-env.mjs vite build --mode development",
     "preview": "node scripts/with-app-env.mjs vite preview",
@@ -19,7 +19,8 @@
     "test": "npm run test:app && node --test 'scripts/**/*.test.mjs'",
     "test:app": "node --experimental-strip-types --test src/lib/app-data/app-data.test.ts src/lib/auth/gate-identity.test.ts src/lib/auth/owner.test.ts src/lib/leads.test.ts src/lib/leads-sync.test.ts src/lib/csv-import.test.ts src/lib/scotland-places.test.ts src/lib/run-search.test.ts src/lib/osm-discover.test.ts src/lib/companies-house.test.ts src/lib/qualify.test.ts src/lib/outreach/setup-state.test.ts src/lib/outreach/eligibility.test.ts src/lib/outreach/compose.test.ts src/lib/outreach/sending.test.ts",
     "lint": "eslint .",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "check:ssr": "node scripts/check-ssr-bundle.mjs"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.4",
