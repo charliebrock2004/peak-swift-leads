@@ -4,6 +4,7 @@ import { CheckCircle2, Loader2, TriangleAlert } from "lucide-react";
 import {
   getAccountsOverview,
   getOwnerEmailState,
+  mergeOwnerAccount,
   renameOwnerEmail,
   type AccountsOverview,
   type OwnerEmailState,
@@ -29,6 +30,8 @@ function OwnerEmailAdmin() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
+  const [mergeFrom, setMergeFrom] = useState("");
+  const [mergeTo, setMergeTo] = useState("");
 
   const load = useCallback(async () => {
     try {
@@ -181,6 +184,79 @@ function OwnerEmailAdmin() {
                 <Button type="submit" disabled={busy} className="h-11 w-full">
                   {busy ? <Loader2 className="size-4 animate-spin" /> : null}
                   Change the owner email
+                </Button>
+              </form>
+            )}
+
+            {done ? null : (
+              <form
+                className="mt-6 space-y-3 rounded-md bg-hot/5 px-3 py-3"
+                onSubmit={async (event) => {
+                  event.preventDefault();
+                  if (busy) return;
+                  setBusy(true);
+                  setError("");
+                  try {
+                    const result = await mergeOwnerAccount({
+                      data: { from: mergeFrom, to: mergeTo },
+                    });
+                    if (!result.ok) {
+                      setError(result.error);
+                      return;
+                    }
+                    setDone(
+                      `Done. Owner is now ${result.email}, user id ${result.userId} unchanged. ` +
+                        `Leads ${result.leads}, templates ${result.templates}. ` +
+                        `Removed empty account ${result.deletedUserId}.` +
+                        (result.orphanedSettingsRows
+                          ? ` ${result.orphanedSettingsRows} settings row left orphaned (inert).`
+                          : ""),
+                    );
+                    setMergeFrom("");
+                    setMergeTo("");
+                    await load();
+                  } catch (err) {
+                    setError(err instanceof Error ? err.message : "That did not work.");
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                <p className="text-xs font-medium tracking-widest text-hot uppercase">
+                  Absorb an empty duplicate
+                </p>
+                <p className="text-xs text-muted">
+                  Deletes the OTHER account only if it holds no leads, templates, outreach or Gmail
+                  connection, then moves its address onto yours. One transaction; your user id, your
+                  password and every lead stay as they are.
+                </p>
+                <label className="block text-sm text-muted" htmlFor="mfrom">
+                  Your current address
+                </label>
+                <Input
+                  id="mfrom"
+                  type="email"
+                  required
+                  autoComplete="off"
+                  placeholder={state.email}
+                  value={mergeFrom}
+                  onChange={(event) => setMergeFrom(event.target.value)}
+                />
+                <label className="block text-sm text-muted" htmlFor="mto">
+                  Empty account to absorb
+                </label>
+                <Input
+                  id="mto"
+                  type="email"
+                  required
+                  autoComplete="off"
+                  placeholder="the-other@example.com"
+                  value={mergeTo}
+                  onChange={(event) => setMergeTo(event.target.value)}
+                />
+                <Button type="submit" variant="danger" disabled={busy} className="h-11 w-full">
+                  {busy ? <Loader2 className="size-4 animate-spin" /> : null}
+                  Absorb and take the address
                 </Button>
               </form>
             )}

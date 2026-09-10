@@ -301,3 +301,166 @@ export const getAccountsOverview = createServerFn({ method: "GET" })
       return { ok: false, error: "Could not read the account overview." };
     }
   });
+
+// ── Plan A: absorb an empty duplicate account, then take its address ─────────
+
+export type MergeResult =
+  | {
+      ok: true;
+      userId: string;
+      email: string;
+      leads: number;
+      templates: number;
+      deletedUserId: string;
+      orphanedSettingsRows: number;
+    }
+  | { ok: false; error: string };
+
+/**
+ * Delete an EMPTY duplicate account and move its email onto the owner's row.
+ *
+ * No lead, template or outreach row is read for anything but counting, and none
+ * is written, moved or deleted — the owner's `user_id` never changes, so
+ * everything filed under it stays exactly where it is. The only rows written are
+ * one `"user"` delete (its `"session"`/`"account"` rows cascade) and one
+ * `"user"` email update.
+ *
+ * It runs on its OWN connection, taken from the same `DATABASE_URL` the app
+ * already uses. The shared client in `@/lib/db` issues every query through
+ * `pool.query()`, which may pick a different pooled connection each time, so
+ * `BEGIN`/`COMMIT` through it would not be one session. Data-modifying CTEs are
+ * not an option either: Postgres does not order them, so the DELETE might not
+ * happen before the UPDATE and the UNIQUE constraint on `"email"` would fire.
+ * A real transaction on a dedicated connection is the only correct shape.
+ *
+ * Every precondition is re-checked INSIDE the transaction, and the lead and
+ * template counts are compared before and after — a mismatch rolls back.
+ */
+export const mergeOwnerAccount = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((input: unknown) => {
+    const source = (input ?? {}) as { from?: unknown; to?: unknown };
+    return { from: str(source.from), to: str(source.to) };
+  })
+  .handler(async ({ data, context }): Promise<MergeResult> => {
+    const from = data.from.trim().toLowerCase();
+    const to = data.to.trim();
+    if (!from || !to) return { ok: false, error: "Both addresses are required." };
+    if (!looksLikeEmail(to)) return { ok: false, error: "The target address is not a valid email." };
+    if (from === to.toLowerCase()) return { ok: false, error: "The two addresses are the same." };
+
+    const connectionString = process.env.DATABASE_URL?.trim();
+    if (!connectionString) return { ok: false, error: "No database is configured." };
+
+    const pg = await import("pg");
+    const client = new pg.default.Client({ connectionString });
+    await client.connect();
+    try {
+      await client.query("BEGIN");
+
+      // The owner's own row, locked for the duration.
+      const me = await client.query<{ id: string; email: string }>(
+        `select "id", "email" from "user" where "id" = $1 for update`,
+        [context.userId],
+      );
+      if (me.rowCount !== 1) throw new Error("No account row for this session.");
+      if (me.rows[0].email.toLowerCase() !== from) {
+        throw new Error(`You are signed in as ${me.rows[0].email}, not ${from}.`);
+      }
+
+      // Exactly one OTHER account may hold the target address.
+      const others = await client.query<{ id: string }>(
+        `select "id" from "user" where lower("email") = lower($1) and "id" <> $2 for update`,
+        [to, context.userId],
+      );
+      if (others.rowCount !== 1) {
+        throw new Error(
+          others.rowCount === 0
+            ? `No account uses ${to}. Use the rename action instead.`
+            : `${others.rowCount} accounts use ${to}. Refusing to guess which to remove.`,
+        );
+      }
+      const victimId = others.rows[0].id;
+
+      // It must be EMPTY. Anything filed under it would be orphaned by the delete.
+      const counts = await client.query<{
+        leads: number;
+        emails: number;
+        templates: number;
+        suppression: number;
+        gmail: number;
+        settings: number;
+      }>(
+        `select (select count(*)::int from leads                 where user_id = $1) as leads,
+                (select count(*)::int from outreach_emails       where user_id = $1) as emails,
+                (select count(*)::int from outreach_templates    where user_id = $1) as templates,
+                (select count(*)::int from outreach_suppression  where user_id = $1) as suppression,
+                (select count(*)::int from gmail_accounts        where user_id = $1) as gmail,
+                (select count(*)::int from outreach_settings     where user_id = $1) as settings`,
+        [victimId],
+      );
+      const v = counts.rows[0];
+      const notEmpty = [
+        v.leads ? `${v.leads} lead(s)` : "",
+        v.emails ? `${v.emails} outreach email(s)` : "",
+        v.templates ? `${v.templates} template(s)` : "",
+        v.suppression ? `${v.suppression} suppressed address(es)` : "",
+        v.gmail ? `${v.gmail} Gmail connection(s)` : "",
+      ].filter(Boolean);
+      if (notEmpty.length > 0) {
+        throw new Error(`${to} is not empty — it holds ${notEmpty.join(", ")}. Refusing to delete it.`);
+      }
+
+      // What must survive, measured before the writes.
+      const before = await client.query<{ leads: number; templates: number }>(
+        `select (select count(*)::int from leads              where user_id = $1) as leads,
+                (select count(*)::int from outreach_templates where user_id = $1) as templates`,
+        [context.userId],
+      );
+      const beforeLeads = before.rows[0].leads;
+      const beforeTemplates = before.rows[0].templates;
+
+      // 1. Remove the empty account. "session" and "account" cascade.
+      const deleted = await client.query(`delete from "user" where "id" = $1`, [victimId]);
+      if (deleted.rowCount !== 1) throw new Error("The empty account was not removed.");
+
+      // 2. Take its address. The user id is untouched, so nothing filed under
+      //    this owner moves.
+      const renamed = await client.query(
+        `update "user" set "email" = $2, "updatedAt" = now() where "id" = $1`,
+        [context.userId, to],
+      );
+      if (renamed.rowCount !== 1) throw new Error("The owner email was not updated.");
+
+      // 3. Prove the data is untouched before committing.
+      const after = await client.query<{ leads: number; templates: number }>(
+        `select (select count(*)::int from leads              where user_id = $1) as leads,
+                (select count(*)::int from outreach_templates where user_id = $1) as templates`,
+        [context.userId],
+      );
+      if (after.rows[0].leads !== beforeLeads || after.rows[0].templates !== beforeTemplates) {
+        throw new Error(
+          `Row counts moved (leads ${beforeLeads}->${after.rows[0].leads}, ` +
+            `templates ${beforeTemplates}->${after.rows[0].templates}). Rolled back.`,
+        );
+      }
+
+      await client.query("COMMIT");
+      return {
+        ok: true,
+        userId: context.userId,
+        email: to,
+        leads: after.rows[0].leads,
+        templates: after.rows[0].templates,
+        deletedUserId: victimId,
+        orphanedSettingsRows: v.settings,
+      };
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      console.error("[owner-email] merge failed:", error);
+      const message = error instanceof Error ? error.message : String(error ?? "");
+      return { ok: false, error: `${message} Nothing was changed.` };
+    } finally {
+      await client.end().catch(() => undefined);
+    }
+  });
