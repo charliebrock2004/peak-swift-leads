@@ -9,7 +9,7 @@ import {
   formatAddress,
   sanitizeHeaderValue,
 } from "../gmail/mime.ts";
-import { buildAuthUrl, expiryFrom, hasRequiredScopes, isFatalAuthError, needsRefresh, SCOPE_STRING } from "../gmail/oauth.ts";
+import { buildAuthUrl, clientIdProblem, expiryFrom, hasRequiredScopes, isFatalAuthError, needsRefresh, SCOPE_STRING } from "../gmail/oauth.ts";
 import { computeStats } from "./dashboard.ts";
 import { emptyContext } from "./eligibility.ts";
 import { followUpDueFor, followUpsDue } from "./follow-ups.ts";
@@ -320,5 +320,43 @@ describe("the dashboard", () => {
     assert.equal(stats.failed, 1);
     assert.equal(stats.replies, 1);
     assert.equal(stats.dailyLimit, DEFAULT_SETTINGS.dailyLimit);
+  });
+});
+
+describe("google client id shape", () => {
+  const VALID = "123456789012-abcdefghijklmnopqrstuvwxyz012345.apps.googleusercontent.com";
+
+  it("accepts a real client id", () => {
+    assert.equal(clientIdProblem(VALID), null);
+    assert.equal(clientIdProblem(`  ${VALID}  `), null, "surrounding whitespace is trimmed, not rejected");
+  });
+
+  it("names the swapped-secret mistake, which Google reports only as invalid_client", () => {
+    const problem = clientIdProblem("GOCSPX-not-a-client-id");
+    assert.match(problem ?? "", /SECRET/);
+  });
+
+  it("catches quotes copied in from a config file", () => {
+    assert.match(clientIdProblem(`"${VALID}"`) ?? "", /quote/i);
+    assert.match(clientIdProblem(`'${VALID}'`) ?? "", /quote/i);
+  });
+
+  it("catches an embedded newline, which a pasted variable often carries", () => {
+    assert.match(clientIdProblem(`${VALID}\nextra`) ?? "", /space or line break/i);
+  });
+
+  it("catches a value that is not a Google client id at all", () => {
+    assert.match(clientIdProblem("my-app-client") ?? "", /apps\.googleusercontent\.com/);
+  });
+
+  it("reports an empty value rather than building a doomed URL", () => {
+    assert.match(clientIdProblem("") ?? "", /empty/i);
+    assert.match(clientIdProblem("   ") ?? "", /empty/i);
+  });
+
+  it("cannot tell a deleted client from a live one — that is Google's to answer", () => {
+    // Shape is all this checks. A well-formed id for a client that no longer
+    // exists still passes here and still fails at Google, by design.
+    assert.equal(clientIdProblem(VALID), null);
   });
 });

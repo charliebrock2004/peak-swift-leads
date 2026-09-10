@@ -279,13 +279,23 @@ export const startGmailConnect = createServerFn({ method: "POST" })
   .validator((input: unknown) => ({ origin: str((input as { origin?: unknown })?.origin, 200) }))
   .handler(async ({ data }): Promise<{ ok: true; url: string; state: string } | Fail> => {
     const gmail = await import("@/lib/gmail/client.server.ts");
-    const { buildAuthUrl, newState } = await import("@/lib/gmail/oauth.ts");
+    const { buildAuthUrl, clientIdProblem, newState } = await import("@/lib/gmail/oauth.ts");
     const config = gmail.googleConfig();
     if (!config) {
       return {
         ok: false,
         error:
           "Google OAuth is not set up. Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to the server environment.",
+      };
+    }
+    // Catch a malformed client id here rather than letting Google answer
+    // "Error 401: invalid_client" on its own page, which names no cause and
+    // reads like a sign-in fault instead of a configuration one.
+    const badClientId = clientIdProblem(config.clientId);
+    if (badClientId) {
+      return {
+        ok: false,
+        error: `${badClientId} Fix it in the deployment's environment variables and redeploy.`,
       };
     }
     const redirectUri = redirectUriFor(data.origin);

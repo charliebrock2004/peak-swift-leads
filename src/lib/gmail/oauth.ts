@@ -46,6 +46,37 @@ export type AuthUrlOptions = {
   authEndpoint?: string;
 };
 
+/**
+ * Is this string shaped like a Google OAuth client id at all?
+ *
+ * Google answers a bad one with `Error 401: invalid_client — The OAuth client
+ * was not found`, on Google's own page, before it has looked at any account.
+ * That reads like a sign-in problem and is nothing of the sort: it means the
+ * `GOOGLE_CLIENT_ID` this deployment sent does not name a client Google knows.
+ *
+ * The shape is checkable, so the obvious causes get named here instead of
+ * bouncing somebody to an error page that explains none of them. A client id
+ * from the right project but a deleted client still looks valid — Google alone
+ * can say — so this narrows the field rather than closing it.
+ */
+export function clientIdProblem(clientId: string): string | null {
+  const value = clientId.trim();
+  if (!value) return "GOOGLE_CLIENT_ID is empty.";
+  if (/^GOCSPX-/i.test(value)) {
+    return "GOOGLE_CLIENT_ID looks like a client SECRET (it starts with GOCSPX-). The two values are swapped.";
+  }
+  if (/^["']|["']$/.test(value)) {
+    return "GOOGLE_CLIENT_ID has quote marks around it. Store the bare value, with no quotes.";
+  }
+  if (/\s/.test(value)) {
+    return "GOOGLE_CLIENT_ID contains a space or line break. Re-copy it with no surrounding whitespace.";
+  }
+  if (!value.endsWith(".apps.googleusercontent.com")) {
+    return "GOOGLE_CLIENT_ID does not end with .apps.googleusercontent.com, so it is not a Google OAuth client id.";
+  }
+  return null;
+}
+
 export function buildAuthUrl(options: AuthUrlOptions): string {
   const params = new URLSearchParams({
     client_id: options.clientId,
