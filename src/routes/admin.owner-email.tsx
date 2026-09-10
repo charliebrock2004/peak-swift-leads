@@ -2,8 +2,10 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
 import { CheckCircle2, Loader2, TriangleAlert } from "lucide-react";
 import {
+  getAccountsOverview,
   getOwnerEmailState,
   renameOwnerEmail,
+  type AccountsOverview,
   type OwnerEmailState,
 } from "@/lib/auth/owner-email";
 import { Button } from "@/components/ui/button";
@@ -21,6 +23,7 @@ export const Route = createFileRoute("/admin/owner-email")({ component: OwnerEma
  */
 function OwnerEmailAdmin() {
   const [state, setState] = useState<OwnerEmailState | null>(null);
+  const [overview, setOverview] = useState<AccountsOverview | null>(null);
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [busy, setBusy] = useState(false);
@@ -32,6 +35,11 @@ function OwnerEmailAdmin() {
       setState(await getOwnerEmailState());
     } catch (err) {
       setState({ ok: false, error: err instanceof Error ? err.message : "Could not load." });
+    }
+    try {
+      setOverview(await getAccountsOverview());
+    } catch (err) {
+      setOverview({ ok: false, error: err instanceof Error ? err.message : "Could not load." });
     }
   }, []);
 
@@ -73,6 +81,42 @@ function OwnerEmailAdmin() {
           Changes only the address on your own account. The user id, your password, every lead and all
           outreach data are left exactly as they are.
         </p>
+
+        {overview?.ok ? (
+          <div className="mt-5">
+            <p className="text-xs font-medium tracking-widest text-muted uppercase">
+              All accounts — read only
+            </p>
+            <ul className="mt-2 flex flex-col gap-2">
+              {overview.accounts.map((row) => (
+                <li key={row.userId} className="rounded-md bg-surface-2 px-3 py-3 text-sm">
+                  <div className="flex items-baseline justify-between gap-3">
+                    <span className="min-w-0 truncate font-medium">{row.email}</span>
+                    <span className="shrink-0 text-xs text-subtle">
+                      {row.isOwner ? "OWNER" : "not owner"}
+                      {row.isYou ? " · you" : ""}
+                    </span>
+                  </div>
+                  <p className="mt-1 font-mono text-[11px] break-all text-subtle">{row.userId}</p>
+                  <p className="mt-1 text-xs text-muted">
+                    leads {row.leads} · outreach emails {row.outreachEmails} · settings{" "}
+                    {row.outreachSettings} · templates {row.outreachTemplates} · suppressed{" "}
+                    {row.outreachSuppression} · gmail {row.gmailAccounts}
+                  </p>
+                  <p className="mt-1 text-[11px] text-subtle">created {row.createdAt}</p>
+                </li>
+              ))}
+            </ul>
+            {overview.overlaps.map((o) => (
+              <p key={o.otherUserId} className="mt-2 text-xs text-subtle">
+                Shared ids with <span className="text-muted">{o.otherEmail}</span> — leads{" "}
+                {o.sharedLeadIds} · outreach emails {o.sharedEmailIds} · templates{" "}
+                {o.sharedTemplateIds} · suppressed {o.sharedSuppressed}. Any non-zero figure is a
+                primary-key collision that a straight move of rows cannot resolve on its own.
+              </p>
+            ))}
+          </div>
+        ) : null}
 
         {state === null ? (
           <Loader2 className="mx-auto mt-8 size-6 animate-spin text-muted" />

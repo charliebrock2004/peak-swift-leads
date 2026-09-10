@@ -180,3 +180,124 @@ export const renameOwnerEmail = createServerFn({ method: "POST" })
       return { ok: false, error: "The update did not run. Nothing was changed." };
     }
   });
+
+// ── Read-only account inspection ─────────────────────────────────────────────
+
+export type AccountRow = {
+  userId: string;
+  email: string;
+  createdAt: string;
+  isOwner: boolean;
+  isYou: boolean;
+  leads: number;
+  outreachEmails: number;
+  outreachSettings: number;
+  outreachTemplates: number;
+  outreachSuppression: number;
+  gmailAccounts: number;
+};
+
+export type Overlap = {
+  otherUserId: string;
+  otherEmail: string;
+  sharedLeadIds: number;
+  sharedEmailIds: number;
+  sharedTemplateIds: number;
+  sharedSuppressed: number;
+};
+
+export type AccountsOverview =
+  | { ok: true; accounts: AccountRow[]; overlaps: Overlap[] }
+  | { ok: false; error: string };
+
+/**
+ * Every account and what is filed under it. READ ONLY — no statement here
+ * writes anything.
+ *
+ * The overlap figures are the ones that decide whether two accounts can be
+ * merged by moving rows. `leads` is keyed `(user_id, id)`, so a lead id present
+ * under BOTH accounts cannot simply have its `user_id` rewritten: that would
+ * collide with the existing primary key. The same is true of
+ * `outreach_templates`, `outreach_emails` and `outreach_suppression`, and
+ * `outreach_settings` and `gmail_accounts` are one row per user by definition.
+ */
+export const getAccountsOverview = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }): Promise<AccountsOverview> => {
+    try {
+      const { getSql } = await import("@/lib/db");
+      const sql = await getSql();
+
+      const rows = await sql.query<{
+        id: string;
+        email: string;
+        createdAt: string | Date;
+        leads: number;
+        outreach_emails: number;
+        outreach_settings: number;
+        outreach_templates: number;
+        outreach_suppression: number;
+        gmail_accounts: number;
+      }>(
+        `select u."id", u."email", u."createdAt",
+                (select count(*)::int from leads                l where l.user_id = u."id") as leads,
+                (select count(*)::int from outreach_emails      e where e.user_id = u."id") as outreach_emails,
+                (select count(*)::int from outreach_settings    s where s.user_id = u."id") as outreach_settings,
+                (select count(*)::int from outreach_templates   t where t.user_id = u."id") as outreach_templates,
+                (select count(*)::int from outreach_suppression p where p.user_id = u."id") as outreach_suppression,
+                (select count(*)::int from gmail_accounts       g where g.user_id = u."id") as gmail_accounts
+           from "user" u
+          order by u."createdAt" asc, u."id" asc`,
+      );
+
+      const accounts: AccountRow[] = rows.map((row, index) => ({
+        userId: row.id,
+        email: row.email,
+        createdAt: new Date(row.createdAt).toISOString(),
+        isOwner: index === 0,
+        isYou: row.id === context.userId,
+        leads: row.leads,
+        outreachEmails: row.outreach_emails,
+        outreachSettings: row.outreach_settings,
+        outreachTemplates: row.outreach_templates,
+        outreachSuppression: row.outreach_suppression,
+        gmailAccounts: row.gmail_accounts,
+      }));
+
+      // What a merge into the signed-in account would collide with.
+      const overlaps: Overlap[] = [];
+      for (const other of accounts) {
+        if (other.userId === context.userId) continue;
+        const [o] = await sql.query<{
+          shared_lead_ids: number;
+          shared_email_ids: number;
+          shared_template_ids: number;
+          shared_suppressed: number;
+        }>(
+          `select
+             (select count(*)::int from leads x join leads y
+                 on x.id = y.id and x.user_id = $1 and y.user_id = $2)                    as shared_lead_ids,
+             (select count(*)::int from outreach_emails x join outreach_emails y
+                 on x.id = y.id and x.user_id = $1 and y.user_id = $2)                    as shared_email_ids,
+             (select count(*)::int from outreach_templates x join outreach_templates y
+                 on x.id = y.id and x.user_id = $1 and y.user_id = $2)                    as shared_template_ids,
+             (select count(*)::int from outreach_suppression x join outreach_suppression y
+                 on x.email = y.email and x.user_id = $1 and y.user_id = $2)              as shared_suppressed`,
+          [context.userId, other.userId],
+        );
+        overlaps.push({
+          otherUserId: other.userId,
+          otherEmail: other.email,
+          sharedLeadIds: o?.shared_lead_ids ?? 0,
+          sharedEmailIds: o?.shared_email_ids ?? 0,
+          sharedTemplateIds: o?.shared_template_ids ?? 0,
+          sharedSuppressed: o?.shared_suppressed ?? 0,
+        });
+      }
+
+      return { ok: true, accounts, overlaps };
+    } catch (error) {
+      console.error("[owner-email] overview failed:", error);
+      return { ok: false, error: "Could not read the account overview." };
+    }
+  });
