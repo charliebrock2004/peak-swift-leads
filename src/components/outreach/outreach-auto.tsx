@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Bot, CircleStop, Loader2, Phone, Play, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -19,7 +19,16 @@ import {
   type AutoRunConfig,
   type RingingLead,
 } from "@/lib/outreach/auto-run";
-import type { OutreachState } from "@/lib/outreach/server";
+import { getRecentRuns, type OutreachState } from "@/lib/outreach/server";
+import {
+  runDate,
+  runDuration,
+  runHadTrouble,
+  runOutcome,
+  runTitle,
+  runTotals,
+  type RunRecord,
+} from "@/lib/outreach/runs";
 import { RADIUS_MILES, TOWN_SUGGESTIONS, TRADE_SUGGESTIONS } from "@/lib/leads";
 import {
   ENGLAND_TOWN_SUGGESTIONS,
@@ -244,9 +253,88 @@ export function OutreachAuto({
             the app is shut. Suppressed, unsubscribed, already-contacted, replied, booked, won and
             manual-review leads are never contacted.
           </p>
+
+          <RunHistory />
         </div>
       )}
     </section>
+  );
+}
+
+/**
+ * What previous runs actually produced.
+ *
+ * Every run has always been recorded; nothing read the records back, so
+ * "did last week's Perth run produce anything?" had no answer in the app.
+ * It does not block the form: history is useful, and a database that cannot
+ * answer should cost you the list, not the ability to start a run.
+ */
+function RunHistory() {
+  const [runs, setRuns] = useState<RunRecord[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getRecentRuns()
+      .then((result) => {
+        if (cancelled || !result.success) return;
+        setRuns(result.runs as RunRecord[]);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (runs.length === 0) return null;
+  const totals = runTotals(runs);
+
+  return (
+    <div className="mt-2">
+      <h4 className="text-xs font-medium tracking-wide text-muted uppercase">Previous runs</h4>
+      <ul className="mt-2 divide-y divide-border overflow-hidden rounded-xl bg-surface shadow-(--shadow-border)">
+        {runs.map((entry) => {
+          const when = runDate(entry.startedAt);
+          const took = runDuration(entry.startedAt, entry.finishedAt);
+          return (
+            <li key={entry.id} className="px-4 py-2.5">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium">{runTitle(entry)}</p>
+                  <p className="text-xs text-subtle">
+                    {[when, took, entry.mode === "send" ? "sent" : "dry run"]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </p>
+                </div>
+                <p
+                  className={cn(
+                    "shrink-0 text-sm tabular-nums",
+                    runHadTrouble(entry) ? "text-hot" : "text-muted",
+                  )}
+                >
+                  {runOutcome(entry)}
+                </p>
+              </div>
+              <p className="mt-1 text-xs text-subtle">
+                {entry.found} found · {entry.emailsFound} with an email · {entry.callCount} to call
+                {entry.replies > 0 ? ` · ${entry.replies} replied` : ""}
+                {runHadTrouble(entry)
+                  ? ` · ${entry.errors} error${entry.errors === 1 ? "" : "s"}`
+                  : ""}
+              </p>
+              {entry.bottleneck ? (
+                <p className="mt-1 text-xs text-subtle">Biggest blocker: {entry.bottleneck}</p>
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
+      <p className="mt-2 text-xs text-subtle">
+        Across these {totals.runs} run{totals.runs === 1 ? "" : "s"}: {totals.found} found,{" "}
+        {totals.emailsFound} with an email, {totals.prepared} prepared, {totals.sent} sent,{" "}
+        {totals.replies} replied.
+      </p>
+    </div>
   );
 }
 
