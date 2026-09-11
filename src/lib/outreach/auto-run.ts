@@ -17,6 +17,7 @@
  * The server checks all of this again anyway, twice. This is the client being
  * honest, not the client being trusted.
  */
+import type { Lead } from "../leads.ts";
 import { checkEligibility, REASON_LABELS, type EligibilityContext } from "./eligibility.ts";
 import type { OutreachEmail, OutreachLead, OutreachSettings } from "./types.ts";
 
@@ -123,8 +124,14 @@ export function emptyCounters(): AutoCounters {
   return { found: 0, qualified: 0, prepared: 0, sent: 0, replies: 0, skipped: 0, errors: 0 };
 }
 
-/** One lead the run declined to contact, and the reason in plain words. */
-export type AutoSkip = { businessName: string; reason: string };
+/**
+ * One lead the run declined to contact, and every reason why.
+ *
+ * All of them, not just the first: a business with no website usually fails
+ * two rules at once ("No public email found" and "Low opportunity"), and
+ * showing one of those sends you looking in the wrong place.
+ */
+export type AutoSkip = { businessName: string; reasons: string[] };
 
 export type AutoTone = "info" | "good" | "warn" | "bad";
 export type AutoEvent = { at: string; text: string; tone: AutoTone };
@@ -240,10 +247,10 @@ export function planTargets(
       eligible.push({ lead, band: verdict.band, score: verdict.score });
       continue;
     }
-    const reason = verdict.reasons[0];
+    const reasons = verdict.reasons.map((reason) => REASON_LABELS[reason] ?? reason);
     skipped.push({
       businessName: lead.businessName || "Unnamed business",
-      reason: reason ? (REASON_LABELS[reason] ?? reason) : "Not eligible",
+      reasons: reasons.length > 0 ? reasons : ["Not eligible"],
     });
   }
 
@@ -270,6 +277,82 @@ export function batchDelayMs(settings: Pick<OutreachSettings, "delaySeconds">): 
   const seconds = Number(settings.delaySeconds);
   if (!Number.isFinite(seconds)) return 45_000;
   return Math.min(600, Math.max(5, Math.round(seconds))) * 1000;
+}
+
+/**
+ * The skip list, folded into "6 × No public email found".
+ *
+ * A run that skips everything skips it for two or three shared reasons, and a
+ * flat list of forty business names hides that completely. Counted and ordered,
+ * the cause of a disappointing run is the first line you read.
+ */
+export function groupSkips(skips: readonly AutoSkip[]): { reason: string; count: number }[] {
+  const counts = new Map<string, number>();
+  for (const skip of skips) {
+    for (const reason of skip.reasons.length > 0 ? skip.reasons : ["Not eligible"]) {
+      counts.set(reason, (counts.get(reason) ?? 0) + 1);
+    }
+  }
+  return [...counts.entries()]
+    .map(([reason, count]) => ({ reason, count }))
+    .sort((a, b) => (b.count - a.count) || a.reason.localeCompare(b.reason));
+}
+
+/** The reason that explains most of a run's skips, or "" if there were none. */
+export function dominantSkip(skips: readonly AutoSkip[]): string {
+  return groupSkips(skips)[0]?.reason ?? "";
+}
+
+/**
+ * What a skip reason actually means for what to do next.
+ *
+ * Written for the case that prompted them. "No public email found" is not a
+ * fault to fix — it is what happens when a business has no website to publish
+ * an address on, which is the very thing that made them a good prospect.
+ */
+export const SKIP_ADVICE: Record<string, string> = {
+  "No public email found":
+    "These businesses have no website with a contact address on it. Peak Swift never guesses an address, so they cannot be emailed — but they are on your sheet, with phone numbers, to ring instead.",
+  "Low opportunity":
+    "Their listing did not show enough of a website problem to be worth writing about. Turn on “Include low opportunity” in Settings if you want them offered anyway.",
+  "Email confidence too low":
+    "An address was seen but not on a page that clearly belongs to the business, so it was not trusted.",
+  "Their website is already good":
+    "Nothing honest to offer them — their site is fine as it is.",
+  "Already emailed": "They already have an email from you. Nobody is written to twice.",
+  "Manual review required":
+    "They look like a sole trader or use a personal mailbox. UK rules treat those like individuals, so they are held for you to send by hand from the Prospects tab.",
+  "On the suppression list": "They asked not to be contacted, permanently.",
+  "Asked not to be contacted": "They opted out.",
+};
+
+/**
+ * Merge every patch for one lead into a single entry.
+ *
+ * The qualify step produces up to two patches per lead — one from the website
+ * check, one from the email lookup — and the store keys patches by lead id, so
+ * handing it both means the second wins and the first is lost.
+ */
+export function mergePatches(
+  patches: readonly { id: string; patch: Partial<Lead> }[],
+): { id: string; patch: Partial<Lead> }[] {
+  const byId = new Map<string, Partial<Lead>>();
+  for (const entry of patches) {
+    byId.set(entry.id, { ...(byId.get(entry.id) ?? {}), ...entry.patch });
+  }
+  return [...byId.entries()].map(([id, patch]) => ({ id, patch }));
+}
+
+/**
+ * How many businesses to look at, to end up with `target` worth contacting.
+ *
+ * Most businesses a search finds cannot be emailed at all: the ones with the
+ * highest opportunity are exactly the ones with no website, and a business with
+ * no website has nowhere to publish a contact address. Looking at only `target`
+ * of them is how a run ends with nothing to send.
+ */
+export function searchBreadth(target: number): number {
+  return Math.min(100, Math.max(12, Math.round(target) * 4));
 }
 
 /** "20 found · 12 qualified · 8 sent" — the one-line summary of a finished run. */

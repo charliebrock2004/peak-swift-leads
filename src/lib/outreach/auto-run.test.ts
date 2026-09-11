@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { createLead, type Lead } from "../leads.ts";
+import { computeOpportunity, createLead, type Lead } from "../leads.ts";
 import {
   appendLog,
   appendSkips,
   autoContext,
+  dominantSkip,
+  groupSkips,
+  mergePatches,
+  searchBreadth,
+  SKIP_ADVICE,
   AUTO_DAILY_MAX,
   AUTO_TARGET_MAX,
   batchDelayMs,
@@ -111,21 +116,21 @@ describe("choosing who to write to", () => {
     const plan = planTargets([soleTrader], context(), 10);
     assert.deepEqual(plan.leadIds, []);
     assert.equal(plan.skipped.length, 1);
-    assert.match(plan.skipped[0].reason, /manual review/i);
+    assert.ok(plan.skipped[0].reasons.some((r) => /manual review/i.test(r)));
   });
 
   it("never picks up a suppressed address", () => {
     const ctx = autoContext([], ["hello@strathearnjoinery.co.uk"], DEFAULT_SETTINGS);
     const plan = planTargets([sendable({ id: "a" })], ctx, 10);
     assert.deepEqual(plan.leadIds, []);
-    assert.match(plan.skipped[0].reason, /suppression/i);
+    assert.ok(plan.skipped[0].reasons.some((r) => /suppression/i.test(r)));
   });
 
   it("never picks up a lead that already has a live email", () => {
     const ctx = autoContext([email({ leadId: "a" })], [], DEFAULT_SETTINGS);
     const plan = planTargets([sendable({ id: "a" })], ctx, 10);
     assert.deepEqual(plan.leadIds, []);
-    assert.match(plan.skipped[0].reason, /already emailed/i);
+    assert.ok(plan.skipped[0].reasons.some((r) => /already emailed/i.test(r)));
   });
 
   it("never picks up a second lead sharing an address already written to", () => {
@@ -221,7 +226,7 @@ describe("the run's own bookkeeping", () => {
 
     const many: AutoSkip[] = Array.from({ length: SKIP_LIMIT + 20 }, (_, i) => ({
       businessName: `b${i}`,
-      reason: "x",
+      reasons: ["x"],
     }));
     assert.equal(appendSkips([], many).length, SKIP_LIMIT);
   });
@@ -237,5 +242,196 @@ describe("the run's own bookkeeping", () => {
     const counters = { found: 20, qualified: 12, prepared: 8, sent: 0, replies: 0, skipped: 4, errors: 0 };
     assert.equal(summarise(counters, "prepare").includes("sent"), false);
     assert.ok(summarise({ ...counters, sent: 8 }, "send").includes("8 sent"));
+  });
+});
+
+/**
+ * The Stirling run: 8 businesses found, 0 qualified, 8 skipped.
+ *
+ * These lock down what actually happened, so a future change cannot quietly
+ * reintroduce it — and so the reason it happened stays visible rather than
+ * being papered over by loosening a rule.
+ */
+describe("a search that turns up nothing contactable", () => {
+  /** What discovery produces: Companies House gives "Unclear", OSM "No Website Found". */
+  function found(partial: Partial<Lead> = {}): OutreachLead {
+    return createLead({
+      trade: "Joiner",
+      town: "Stirling",
+      businessStatus: "Active",
+      called: "Not Called",
+      // Nothing in discovery supplies an address for most businesses.
+      email: "",
+      emailSource: "",
+      emailConfidence: "",
+      ...partial,
+    }) as OutreachLead;
+  }
+
+  const stirling: OutreachLead[] = [
+    found({ id: "ch-1", businessName: "Stirling Joinery Services Ltd", websiteStatus: "Unclear" }),
+    found({ id: "ch-2", businessName: "Forth Valley Carpentry Ltd", websiteStatus: "Unclear" }),
+    found({ id: "ch-3", businessName: "Bannockburn Joiners Ltd", websiteStatus: "Unclear" }),
+    found({ id: "osm-1", businessName: "Kings Park Woodwork Ltd", websiteStatus: "No Website Found", phone: "01786 450001" }),
+    found({ id: "osm-2", businessName: "Raploch Joinery Ltd", websiteStatus: "No Website Found", phone: "01786 450002" }),
+    found({ id: "osm-3", businessName: "Causewayhead Carpentry Ltd", website: "https://facebook.com/cw", websiteStatus: "Social Only", phone: "01786 450003" }),
+    found({ id: "osm-4", businessName: "Bridge of Allan Joiners Ltd", website: "https://boa.co.uk", websiteStatus: "Basic Website", phone: "01786 450004" }),
+    found({ id: "osm-5", businessName: "Cambusbarron Woodcraft Ltd", website: "https://cw.co.uk", websiteStatus: "Proper Website", phone: "01786 450005" }),
+  ];
+
+  it("skips every one of them, and it is the missing email that does it", () => {
+    const plan = planTargets(stirling, context(), 30);
+    assert.deepEqual(plan.leadIds, []);
+    assert.equal(plan.skipped.length, 8);
+    const groups = groupSkips(plan.skipped);
+    assert.equal(groups[0].reason, "No public email found");
+    assert.equal(groups[0].count, 8, "all eight failed for the same reason");
+  });
+
+  it("reports the second reason too, instead of hiding it behind the first", () => {
+    // The Companies House rows are Low opportunity AS WELL as having no email.
+    // Showing only the first reason sends you looking in the wrong place.
+    const plan = planTargets(stirling, context(), 30);
+    const companiesHouse = plan.skipped.find((s) => s.businessName === "Stirling Joinery Services Ltd");
+    assert.ok(companiesHouse);
+    assert.deepEqual(companiesHouse.reasons, ["No public email found", "Low opportunity"]);
+  });
+
+  it("explains the dominant reason rather than leaving it as a bare count", () => {
+    const plan = planTargets(stirling, context(), 30);
+    assert.equal(dominantSkip(plan.skipped), "No public email found");
+    assert.match(SKIP_ADVICE[dominantSkip(plan.skipped)], /never guesses an address/i);
+  });
+
+  it("qualifies the one business that has a real, scrapeable opportunity", () => {
+    // What the email lookup can actually achieve: an address from the one site
+    // it could fetch. Nothing else about the eight changes.
+    const enriched = stirling.map((lead) =>
+      lead.id === "osm-4"
+        ? { ...lead, email: "info@boa.co.uk", emailSource: "Business contact page", emailConfidence: "HIGH" as const }
+        : lead,
+    );
+    const plan = planTargets(enriched, context(), 30);
+    assert.deepEqual(plan.leadIds, ["osm-4"]);
+    assert.equal(plan.skipped.length, 7);
+  });
+
+  it("still refuses the good-website business even once it has an address", () => {
+    const enriched = stirling.map((lead) =>
+      lead.id === "osm-5"
+        ? {
+            ...lead,
+            email: "info@cw.co.uk",
+            emailSource: "Business contact page",
+            emailConfidence: "HIGH" as const,
+            websiteQuality: "good" as const,
+          }
+        : lead,
+    );
+    const plan = planTargets(enriched, context(), 30);
+    assert.equal(plan.leadIds.includes("osm-5"), false);
+    const row = plan.skipped.find((s) => s.businessName === "Cambusbarron Woodcraft Ltd");
+    assert.ok(row?.reasons.includes("Their website is already good"));
+  });
+});
+
+describe("counting the reasons a run skipped things", () => {
+  it("folds repeats together, commonest first", () => {
+    const groups = groupSkips([
+      { businessName: "a", reasons: ["No public email found"] },
+      { businessName: "b", reasons: ["No public email found", "Low opportunity"] },
+      { businessName: "c", reasons: ["No public email found"] },
+      { businessName: "d", reasons: ["Low opportunity"] },
+    ]);
+    assert.deepEqual(groups, [
+      { reason: "No public email found", count: 3 },
+      { reason: "Low opportunity", count: 2 },
+    ]);
+  });
+
+  it("copes with a skip that carries no reason at all", () => {
+    assert.deepEqual(groupSkips([{ businessName: "a", reasons: [] }]), [
+      { reason: "Not eligible", count: 1 },
+    ]);
+  });
+
+  it("has nothing to say about an empty list", () => {
+    assert.deepEqual(groupSkips([]), []);
+    assert.equal(dominantSkip([]), "");
+  });
+});
+
+describe("keeping both halves of the qualify step", () => {
+  it("merges the website patch and the email patch instead of losing one", () => {
+    // The store keys patches by lead id, so handing it two entries for one lead
+    // means the second replaces the first — and the website check always runs
+    // first. This is the bug that threw away every website quality score.
+    const merged = mergePatches([
+      { id: "a", patch: { websiteQuality: "poor", websiteScore: 22, websiteAnalysis: "Thin page." } },
+      { id: "a", patch: { email: "hello@a.test", emailConfidence: "HIGH" } },
+    ]);
+    assert.equal(merged.length, 1);
+    assert.deepEqual(merged[0].patch, {
+      websiteQuality: "poor",
+      websiteScore: 22,
+      websiteAnalysis: "Thin page.",
+      email: "hello@a.test",
+      emailConfidence: "HIGH",
+    });
+  });
+
+  it("lets the later patch win on a field both of them set", () => {
+    const merged = mergePatches([
+      { id: "a", patch: { email: "old@a.test" } },
+      { id: "a", patch: { email: "new@a.test" } },
+    ]);
+    assert.equal(merged[0].patch.email, "new@a.test");
+  });
+
+  it("keeps separate leads separate", () => {
+    const merged = mergePatches([
+      { id: "a", patch: { email: "a@x.test" } },
+      { id: "b", patch: { email: "b@x.test" } },
+    ]);
+    assert.equal(merged.length, 2);
+  });
+
+  it("a lost website patch costs a poor-website lead its opportunity", () => {
+    // Why the merge matters: without the website patch the lead is scored on
+    // its status alone, and a poor site scores lower than it should.
+    const base = createLead({
+      businessName: "Doune Joinery Ltd",
+      email: "hello@doune.test",
+      emailConfidence: "HIGH",
+      emailSource: "Business contact page",
+      website: "https://doune.test",
+      websiteStatus: "Proper Website",
+      businessStatus: "Active",
+      phone: "01786 450010",
+    }) as OutreachLead;
+    const withoutQuality = computeOpportunity(base as Lead);
+    const withQuality = computeOpportunity({ ...base, websiteQuality: "poor" } as Lead);
+    assert.ok(
+      withQuality > withoutQuality,
+      `losing the website patch drops the score from ${withQuality} to ${withoutQuality}`,
+    );
+  });
+});
+
+describe("how wide a run searches", () => {
+  it("looks at several times the number it expects to contact", () => {
+    // Most businesses found cannot be emailed at all, so searching for exactly
+    // the target is how a run ends with nothing to send.
+    assert.ok(searchBreadth(8) > 8);
+    assert.equal(searchBreadth(8), 32);
+  });
+
+  it("never asks for fewer than one full batch", () => {
+    assert.equal(searchBreadth(1), 12);
+  });
+
+  it("stays within what the search itself accepts", () => {
+    assert.equal(searchBreadth(50), 100);
+    assert.equal(searchBreadth(9999), 100);
   });
 });

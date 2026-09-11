@@ -8,8 +8,11 @@ import {
   AUTO_TARGET_MAX,
   clampAutoConfig,
   DEFAULT_AUTO_CONFIG,
+  dominantSkip,
+  groupSkips,
   isFinished,
   PHASE_LABELS,
+  SKIP_ADVICE,
   type AutoRunConfig,
 } from "@/lib/outreach/auto-run";
 import type { OutreachState } from "@/lib/outreach/server";
@@ -277,22 +280,7 @@ function RunView({
         )}
       </div>
 
-      {run.skips.length > 0 ? (
-        <details className="rounded-xl bg-surface px-4 py-3 shadow-(--shadow-border)">
-          <summary className="cursor-pointer text-sm font-medium">
-            {run.skips.length} skipped — why
-          </summary>
-          <ul className="mt-2 flex flex-col gap-1">
-            {run.skips.map((entry, index) => (
-              <li key={`${entry.businessName}-${index}`} className="text-sm text-muted">
-                {entry.businessName ? <span className="text-fg">{entry.businessName}</span> : null}
-                {entry.businessName ? " — " : null}
-                {entry.reason}
-              </li>
-            ))}
-          </ul>
-        </details>
-      ) : null}
+      {run.skips.length > 0 ? <SkippedWhy skips={run.skips} /> : null}
 
       {run.log.length > 0 ? (
         <div>
@@ -321,6 +309,46 @@ function RunView({
           </ul>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * Why the run did not write to them.
+ *
+ * Counted reasons first, then the businesses. A run that skips everything skips
+ * it for two or three shared reasons, and forty business names in a list hide
+ * that completely — the whole question is "why did nothing qualify", and the
+ * count answers it on the first line. The advice under it says what, if
+ * anything, to do: "no public email" is usually not a fault to fix.
+ */
+function SkippedWhy({ skips }: { skips: { businessName: string; reasons: string[] }[] }) {
+  const groups = groupSkips(skips);
+  const advice = SKIP_ADVICE[dominantSkip(skips)];
+  return (
+    <div className="rounded-xl bg-surface px-4 py-4 shadow-(--shadow-border)">
+      <p className="text-sm font-medium">{skips.length} skipped — why</p>
+      <ul className="mt-3 flex flex-col gap-1.5">
+        {groups.map((group) => (
+          <li key={group.reason} className="flex items-baseline gap-3 text-sm">
+            <span className="w-8 shrink-0 text-right font-medium tabular-nums">{group.count}</span>
+            <span className="min-w-0 flex-1 text-muted">{group.reason}</span>
+          </li>
+        ))}
+      </ul>
+      {advice ? <p className="mt-3 text-sm text-subtle">{advice}</p> : null}
+      <details className="mt-3">
+        <summary className="cursor-pointer text-xs text-muted">Show each business</summary>
+        <ul className="mt-2 flex flex-col gap-1">
+          {skips.map((entry, index) => (
+            <li key={`${entry.businessName}-${index}`} className="text-sm text-muted">
+              {entry.businessName ? <span className="text-fg">{entry.businessName}</span> : null}
+              {entry.businessName ? " — " : null}
+              {entry.reasons.join(" · ")}
+            </li>
+          ))}
+        </ul>
+      </details>
     </div>
   );
 }

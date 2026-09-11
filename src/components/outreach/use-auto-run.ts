@@ -3,6 +3,7 @@ import { findDuplicate, liveLeads, newLeadId, type Lead } from "@/lib/leads";
 import { emailPatch, websitePatch } from "@/lib/qualify";
 import { checkLeadWebsite, findLeadEmail } from "@/lib/qualify-server";
 import { researchProspects, type Prospect } from "@/lib/research";
+import { runPlannedSearch } from "@/lib/run-search";
 import {
   checkReplies,
   generateEmails,
@@ -22,7 +23,9 @@ import {
   emptyCounters,
   initialRunState,
   isRunning,
+  mergePatches,
   planTargets,
+  searchBreadth,
   summarise,
   type AutoCounters,
   type AutoPhase,
@@ -215,21 +218,55 @@ export function useAutoRun(onFinished?: () => void) {
         }
 
         // ── 1. SEARCH ────────────────────────────────────────────────────────
-        const found = await researchProspects({
-          data: {
-            location: config.location,
-            businessType: config.businessType,
-            limit: config.target,
-            radiusMiles: config.radiusMiles,
+        //
+        // Through `runPlannedSearch`, which fans the area into town batches and
+        // keeps going until it has enough. Most businesses found will have no
+        // public email — that is the whole reason they are worth writing to —
+        // so the run looks at several times the number it expects to contact.
+        const searchFor = searchBreadth(config.target);
+        const search = await runPlannedSearch({
+          location: config.location,
+          businessType: config.businessType,
+          limit: searchFor,
+          shouldCancel: shouldStop,
+          concurrency: 2,
+          onProgress: (progress) => {
+            if (progress.phase === "done") return;
+            detail(
+              `Searching ${progress.area} (${progress.index} of ${progress.total}) — ` +
+                `${progress.found} of ${progress.target} found`,
+            );
+          },
+          research: async (input) => {
+            const result = await researchProspects({
+              data: {
+                location: input.location,
+                businessType: input.businessType,
+                limit: input.limit,
+                radiusMiles: config.radiusMiles,
+              },
+            });
+            return result;
           },
         });
         if (shouldStop()) return finish("stopped", "Stopped before anything was written.", "warn");
-        if (!found.ok) {
-          finish("failed", found.error, "bad");
+        for (const problem of search.errors.slice(0, 4)) log(problem, "warn");
+        if (search.prospects.length === 0) {
+          finish(
+            "failed",
+            search.errors[0] ??
+              `No ${config.businessType.toLowerCase()} businesses found near ${config.location}.`,
+            "bad",
+          );
           return;
         }
+        const found = { prospects: search.prospects, location: search.plan.label };
         count({ found: found.prospects.length });
-        log(`Found ${found.prospects.length} businesses in ${found.location}.`, "good");
+        log(
+          `Found ${found.prospects.length} businesses across ${search.plan.areas.length} ` +
+            `area${search.plan.areas.length === 1 ? "" : "s"} near ${found.location}.`,
+          "good",
+        );
 
         // ── 2. Into the sheet, de-duplicated against what is already there ───
         const sheet = liveLeads(useLeadsStore.getState().leads);
@@ -316,7 +353,12 @@ export function useAutoRun(onFinished?: () => void) {
         await Promise.all(
           Array.from({ length: Math.max(1, Math.min(QUALIFY_CONCURRENCY, toQualify.length)) }, worker),
         );
-        if (patches.length > 0) useLeadsStore.getState().updateLeads(patches);
+        // `updateLeads` keys its patches by lead id, so two entries for one lead
+        // means the second silently replaces the first — and the website check
+        // always runs before the email lookup. Merge them per lead, or every
+        // website quality, score and analysis this step just fetched is thrown
+        // away before it reaches the sheet or the eligibility gate.
+        if (patches.length > 0) useLeadsStore.getState().updateLeads(mergePatches(patches));
         const pushedAgain = await pushSheet();
         if (pushedAgain) {
           finish("failed", pushedAgain, "bad");
@@ -377,7 +419,7 @@ export function useAutoRun(onFinished?: () => void) {
               skip([
                 {
                   businessName: nameOf.get(row.leadId) ?? "",
-                  reason: row.error ?? "Could not write an email",
+                  reasons: [row.error ?? "Could not write an email"],
                 },
               ]);
             }
@@ -407,7 +449,7 @@ export function useAutoRun(onFinished?: () => void) {
           return;
         }
         if (queued.refused.length > 0) {
-          skip(queued.refused.map((reason) => ({ businessName: "", reason })));
+          skip(queued.refused.map((reason) => ({ businessName: "", reasons: [reason] })));
         }
         if (queued.changed === 0) {
           finish("done", "Nothing could be queued. The drafts are in Review.", "warn");
@@ -429,7 +471,7 @@ export function useAutoRun(onFinished?: () => void) {
               .filter((line) => line.status === "skipped")
               .map((line) => ({
                 businessName: line.businessName,
-                reason: line.error || "Refused at send time",
+                reasons: [line.error || "Refused at send time"],
               })),
           );
           for (const line of report.details) {
