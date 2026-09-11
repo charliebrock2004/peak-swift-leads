@@ -86,6 +86,12 @@ function nameTokens(businessName: string): string[] {
     .filter((word) => word.length >= 3);
 }
 
+/**
+ * SUPERSEDED by `@/lib/email-discovery`, which checks contact pages, sitemaps,
+ * structured data and obfuscated forms rather than one page's plain text, and
+ * reports why it failed. Kept because its tests document the extraction rules,
+ * but nothing in the app calls it any more — reach for the engine instead.
+ */
 export function extractEmails(html: string): string[] {
   const found = html.match(EMAIL_RE) ?? [];
   const unique: string[] = [];

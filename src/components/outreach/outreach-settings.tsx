@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { CheckCircle2, Link2, Loader2, Send, TriangleAlert, Unlink } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { EmailDiscoveryTest } from "@/components/outreach/email-discovery-test";
 import { Input } from "@/components/ui/input";
 import type { OutreachActions } from "@/components/outreach/outreach-panel";
 import { HealthBadge } from "@/components/outreach/outreach-dashboard";
@@ -289,6 +290,7 @@ export function OutreachSettingsTab({
         website. Addresses are never guessed, anything that looks like a sole trader is held for you to
         check, and every email says who it is from and how to stop them.
       </p>
+      <EmailDiscoveryTest />
     </section>
   );
 }

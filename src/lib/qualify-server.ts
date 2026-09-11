@@ -9,9 +9,21 @@
 import { createServerFn } from "@tanstack/react-start";
 import { classifyWebsiteUrl, hasWebsite, websiteHref } from "@/lib/leads";
 import {
-  contactLinksFrom,
-  extractEmails,
-  pickBusinessEmail,
+  CANDIDATE_PATHS,
+  contactLinks,
+  decide,
+  extractCandidates,
+  GOOD_ENOUGH_SCORE,
+  MAX_PAGES,
+  noWebsiteResult,
+  rankCandidates,
+  sitemapContactUrls,
+  sitemapIndexUrls,
+  type DiscoveryReason,
+  type DiscoveryResult,
+  type EmailCandidate,
+} from "@/lib/email-discovery";
+import {
   scoreWebsitePage,
   type FoundEmail,
   type WebsiteCheck,
@@ -50,7 +62,18 @@ export type CheckWebsiteResult =
   | { ok: false; error: string };
 
 export type FindEmailResult =
-  | { ok: true; found: FoundEmail | null; foundAt: string; message: string }
+  | {
+      ok: true;
+      found: FoundEmail | null;
+      foundAt: string;
+      message: string;
+      /**
+       * The full discovery record: what was tried, what was found, and why it
+       * ended where it did. `found` stays alongside it so every existing caller
+       * keeps working unchanged.
+       */
+      discovery: DiscoveryResult;
+    }
   | { ok: false; error: string };
 
 export const checkLeadWebsite = createServerFn({ method: "POST" })
@@ -97,59 +120,199 @@ export const checkLeadWebsite = createServerFn({ method: "POST" })
     }
   });
 
+/**
+ * One page fetch, tolerant of the ways a small business site is set up wrong.
+ *
+ * Tries the address as given, then the www/non-www sibling, then http. A site
+ * that only answers on one of those is common enough that giving up after the
+ * first attempt loses real prospects.
+ */
+async function fetchWithFallbacks(
+  url: string,
+  timeoutMs: number,
+): Promise<{ ok: boolean; status: number; finalUrl: string; html: string } | null> {
+  const attempts = [url];
+  try {
+    const parsed = new URL(url);
+    const swapped = parsed.host.startsWith("www.")
+      ? parsed.host.slice(4)
+      : `www.${parsed.host}`;
+    attempts.push(`${parsed.protocol}//${swapped}${parsed.pathname}${parsed.search}`);
+    if (parsed.protocol === "https:") attempts.push(`http://${parsed.host}${parsed.pathname}`);
+  } catch {
+    /* the single attempt is all we have */
+  }
+  for (const attempt of attempts) {
+    try {
+      const page = await fetchPage(attempt, timeoutMs);
+      if (page.ok && page.html) return page;
+      // A 4xx/5xx on the canonical host is still information; keep it if the
+      // siblings also fail.
+      if (page.status >= 400 && attempt === attempts[attempts.length - 1]) return page;
+    } catch {
+      /* try the next shape */
+    }
+  }
+  return null;
+}
+
+/** Absolute URLs for the well-known contact paths on this origin. */
+function wellKnownPaths(origin: string): string[] {
+  return CANDIDATE_PATHS.map((path) => `${origin}${path}`);
+}
+
 export const findLeadEmail = createServerFn({ method: "POST" })
   .validator((input: unknown) => {
     if (!input || typeof input !== "object") throw new Error("Missing lead");
-    const website = asString((input as { website?: unknown }).website, 500);
-    const existingEmail = asString((input as { existingEmail?: unknown }).existingEmail, 160).toLowerCase();
-    const existingSource = asString((input as { existingSource?: unknown }).existingSource, 80);
-    return { website, existingEmail, existingSource };
+    const source = input as Record<string, unknown>;
+    return {
+      website: asString(source.website, 500),
+      existingEmail: asString(source.existingEmail, 160).toLowerCase(),
+      existingSource: asString(source.existingSource, 80),
+      businessName: asString(source.businessName, 160),
+    };
   })
   .handler(async ({ data }): Promise<FindEmailResult> => {
     const foundAt = new Date().toISOString();
-    const href = websiteHref(data.website);
+    const context = { websiteUrl: data.website, businessName: data.businessName };
+    const candidates: EmailCandidate[] = [];
+    const sourcesChecked: string[] = [];
+    let attempts = 0;
+    let failure: DiscoveryReason | null = null;
+    let sawContactPage = false;
 
-    if (href && classifyWebsiteUrl(href) === "Proper Website") {
+    /** The address already on the row, if the listing carried one. */
+    const listingCandidate = (): EmailCandidate[] =>
+      data.existingEmail.includes("@")
+        ? [{
+            email: data.existingEmail,
+            source: "EXISTING_LISTING" as const,
+            sourceUrl: "",
+            method: "LISTING_FIELD" as const,
+            evidence: data.existingSource || "Carried on the business listing",
+          }]
+        : [];
+
+    const best = () => rankCandidates(candidates, context)[0]?.score ?? 0;
+
+    const readPage = async (url: string, isContact: boolean, timeout = 5000) => {
+      if (attempts >= MAX_PAGES) return;
+      attempts += 1;
+      const page = await fetchWithFallbacks(url, timeout);
+      sourcesChecked.push(url);
+      if (!page) return;
+      if (page.status === 403 || page.status === 401) { failure ??= "BLOCKED_BY_SITE"; return; }
+      if (page.status === 429) { failure ??= "RATE_LIMITED"; return; }
+      if (!page.html) return;
+      if (isContact) sawContactPage = true;
+      candidates.push(
+        ...extractCandidates(page.html, page.finalUrl || url, isContact ? "OFFICIAL_CONTACT_PAGE" : "OFFICIAL_WEBSITE"),
+      );
+      return page;
+    };
+
+    const href = websiteHref(data.website);
+    const scrapable = href && classifyWebsiteUrl(href) !== "Social Only" && classifyWebsiteUrl(href) !== "Directory Only";
+
+    if (!href) {
+      const ranked = listingCandidate();
+      const result = ranked.length
+        ? decide({ candidates: ranked, context, sourcesChecked: [], attempts: 0 })
+        : noWebsiteResult();
+      return { ok: true, found: toFoundEmail(result), foundAt, message: result.reason ?? "", discovery: result };
+    }
+
+    if (scrapable) {
+      let origin = "";
       try {
-        const home = await fetchPage(href, 5000);
-        const fromHome = pickBusinessEmail(extractEmails(home.html), home.finalUrl || href);
-        if (fromHome) {
-          return { ok: true, found: fromHome, foundAt, message: "" };
+        origin = new URL(href).origin;
+      } catch {
+        origin = "";
+      }
+
+      const home = await readPage(href, false);
+      if (!home && !failure) failure = "WEBSITE_UNREACHABLE";
+
+      // Linked contact pages first — a link the business chose to publish is
+      // better evidence than a path we guessed at.
+      if (best() < GOOD_ENOUGH_SCORE && home?.html) {
+        for (const link of contactLinks(home.html, home.finalUrl || href)) {
+          if (best() >= GOOD_ENOUGH_SCORE || attempts >= MAX_PAGES) break;
+          await readPage(link, true, 4500);
         }
-        const extra = contactLinksFrom(home.html, home.finalUrl || href)[0];
-        if (extra) {
-          try {
-            const contact = await fetchPage(extra, 4000);
-            const fromContact = pickBusinessEmail(extractEmails(contact.html), href);
-            if (fromContact) {
-              return {
-                ok: true,
-                found: { ...fromContact, source: "Business contact page" },
-                foundAt,
-                message: "",
-              };
+      }
+
+      // Then the sitemap, which finds pages nothing links to.
+      if (best() < GOOD_ENOUGH_SCORE && origin && attempts < MAX_PAGES) {
+        attempts += 1;
+        sourcesChecked.push(`${origin}/sitemap.xml`);
+        const map = await fetchWithFallbacks(`${origin}/sitemap.xml`, 4000);
+        if (map?.html) {
+          let urls = sitemapContactUrls(map.html, origin);
+          if (urls.length === 0) {
+            for (const nested of sitemapIndexUrls(map.html, origin, 1)) {
+              const child = await fetchWithFallbacks(nested, 4000);
+              if (child?.html) urls = sitemapContactUrls(child.html, origin);
+              break;
             }
-          } catch {
-            // Homepage had no email and the contact page failed — fall through.
+          }
+          for (const url of urls) {
+            if (best() >= GOOD_ENOUGH_SCORE || attempts >= MAX_PAGES) break;
+            await readPage(url, true, 4500);
           }
         }
-      } catch {
-        // Site unreachable — fall through to any listing email already on the row.
+      }
+
+      // Finally the well-known paths, for sites that link to nothing at all.
+      if (best() < GOOD_ENOUGH_SCORE && origin && attempts < MAX_PAGES) {
+        const tried = new Set(sourcesChecked);
+        for (const url of wellKnownPaths(origin)) {
+          if (best() >= GOOD_ENOUGH_SCORE || attempts >= MAX_PAGES) break;
+          if (tried.has(url)) continue;
+          await readPage(url, true, 3500);
+        }
       }
     }
 
-    if (data.existingEmail.includes("@")) {
-      return {
-        ok: true,
-        found: {
-          email: data.existingEmail,
-          source: data.existingSource || "Existing listing",
-          confidence: "MEDIUM",
-        },
-        foundAt,
-        message: "",
-      };
-    }
+    // The listing address is a real source, just a weak one — it only wins if
+    // nothing better turned up.
+    candidates.push(...listingCandidate());
 
-    return { ok: true, found: null, foundAt, message: "No public email found" };
+    const result = decide({ candidates, context, sourcesChecked, attempts, failure, sawContactPage });
+    return { ok: true, found: toFoundEmail(result), foundAt, message: result.reason ?? "", discovery: result };
   });
+
+/**
+ * The old shape, kept so every existing caller works untouched.
+ *
+ * A LOW-confidence address is deliberately NOT returned here: the eligibility
+ * gate refuses it anyway, and handing it back as `found` would put a weak
+ * address on the lead row where it looks like a real one.
+ */
+function toFoundEmail(result: DiscoveryResult): FoundEmail | null {
+  if (result.status !== "FOUND" || !result.email || !result.confidence) return null;
+  return {
+    email: result.email,
+    source: describeSource(result),
+    confidence: result.confidence === "LOW" ? "LOW" : result.confidence,
+  };
+}
+
+function describeSource(result: DiscoveryResult): string {
+  switch (result.source) {
+    case "OFFICIAL_CONTACT_PAGE":
+      return "Business contact page";
+    case "OFFICIAL_WEBSITE":
+      return "Business website";
+    case "STRUCTURED_DATA":
+      return "Business website (structured data)";
+    case "PUBLIC_BUSINESS_PROFILE":
+      return "Public business profile";
+    case "PUBLIC_DIRECTORY":
+      return "Public business directory";
+    case "EXISTING_LISTING":
+      return result.evidence || "Existing listing";
+    default:
+      return "Business website";
+  }
+}

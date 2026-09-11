@@ -14,6 +14,12 @@ import {
   setEmailDecision,
 } from "@/lib/outreach/server";
 import {
+  discoveryIsFresh,
+  emptyTally,
+  tallyDiscovery,
+  type DiscoveryTally,
+} from "@/lib/email-discovery";
+import {
   appendLog,
   appendSkips,
   autoContext,
@@ -350,6 +356,7 @@ export function useAutoRun(onFinished?: () => void) {
         let index = 0;
         let done = 0;
         const patches: { id: string; patch: Partial<Lead> }[] = [];
+        const discovery: DiscoveryTally & { cached: number } = emptyTally();
 
         const worker = async () => {
           while (true) {
@@ -359,6 +366,13 @@ export function useAutoRun(onFinished?: () => void) {
             if (at >= toQualify.length) return;
             const lead = toQualify[at]!;
             let working: Lead = lead;
+            // Recently searched and already answered: do not crawl them again.
+            if (discoveryIsFresh(lead)) {
+              discovery.cached += 1;
+              done += 1;
+              detail(`Checked ${done} of ${toQualify.length}`);
+              continue;
+            }
             try {
               if (lead.website.trim()) {
                 const site = await checkLeadWebsite({
@@ -375,11 +389,15 @@ export function useAutoRun(onFinished?: () => void) {
                   website: working.website,
                   existingEmail: working.email,
                   existingSource: working.emailSource,
+                  // The scorer needs the name to tell a business's own Gmail
+                  // from an unrelated one.
+                  businessName: working.businessName,
                 },
               });
-              if (mail.ok) {
+                if (mail.ok) {
                 const patch = emailPatch(working, mail.found, mail.foundAt);
                 patches.push({ id: lead.id, patch });
+                tallyDiscovery(discovery, mail.discovery);
               }
             } catch (error) {
               count({ errors: 1 });
@@ -401,6 +419,27 @@ export function useAutoRun(onFinished?: () => void) {
         // always runs before the email lookup. Merge them per lead, or every
         // website quality, score and analysis this step just fetched is thrown
         // away before it reaches the sheet or the eligibility gate.
+        // Say what email discovery actually achieved, and where it got stuck.
+        // "No public email found" on its own tells nobody what to fix.
+        {
+          const { bestSource, biggestBottleneck, REASON_LABELS } = await import("@/lib/email-discovery");
+          const top = bestSource(discovery);
+          const stuck = biggestBottleneck(discovery);
+          log(
+            `Email discovery: ${discovery.found} found of ${discovery.searched} searched` +
+              (discovery.cached > 0 ? ` (${discovery.cached} already known)` : "") +
+              ` · ${discovery.high} high, ${discovery.medium} medium confidence`,
+            discovery.found > 0 ? "good" : "warn",
+          );
+          if (top) log(`Best source: ${top.source.toLowerCase().replace(/_/g, " ")} (${top.count}).`);
+          if (stuck) {
+            log(
+              `Biggest blocker: ${REASON_LABELS[stuck.reason as keyof typeof REASON_LABELS] ?? stuck.reason} (${stuck.count}).`,
+              "warn",
+            );
+          }
+        }
+
         if (patches.length > 0) useLeadsStore.getState().updateLeads(mergePatches(patches));
         const pushedAgain = await pushSheet();
         if (pushedAgain) {
