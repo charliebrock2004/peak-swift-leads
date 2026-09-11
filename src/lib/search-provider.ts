@@ -18,7 +18,7 @@
  */
 
 /** Providers this app knows how to talk to, in the order they are preferred. */
-export const SEARCH_PROVIDERS = ["brave", "bing"] as const;
+export const SEARCH_PROVIDERS = ["tavily", "brave", "bing"] as const;
 export type SearchProviderName = (typeof SEARCH_PROVIDERS)[number];
 
 export type SearchResult = {
@@ -26,6 +26,16 @@ export type SearchResult = {
   url: string;
   /** The provider's snippet. Often carries the address or phone number. */
   snippet: string;
+  /**
+   * The page's extracted text, when the provider returns it.
+   *
+   * Tavily does; Brave and Bing do not. It matters more than it sounds: the
+   * provider has already fetched the page, so an address published there can be
+   * read without spending one of our own page budget on it — and on a site that
+   * blocks our crawler but not theirs, it is the only way we will ever see it.
+   * Still an address observed in a fetched public source, which is the rule.
+   */
+  rawContent?: string;
 };
 
 export type SearchQuery = {
@@ -215,24 +225,86 @@ export function parseBing(payload: unknown): SearchResult[] {
 }
 
 /** Where to send the request, and how to authenticate it. */
+export type ProviderRequest = {
+  url: string;
+  method: "GET" | "POST";
+  headers: Record<string, string>;
+  /** Present for providers that take a JSON body. */
+  body?: string;
+};
+
+/**
+ * Where to send the request, and how to authenticate it.
+ *
+ * Each provider's own documented endpoint — never a results page, which would
+ * break their terms and their markup at the same time. The key always travels
+ * in a header or a JSON body, never in the URL, so it cannot end up in a log,
+ * a redirect chain or a referrer.
+ */
 export function providerRequest(
   provider: SearchProviderName,
   key: string,
   query: string,
-): { url: string; headers: Record<string, string> } {
+): ProviderRequest {
+  if (provider === "tavily") {
+    return {
+      url: "https://api.tavily.com/search",
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+      body: JSON.stringify({
+        query,
+        // "basic" is one credit per search; "advanced" is two and re-ranks more
+        // aggressively. Basic is enough to find a business's own site, and the
+        // identity check does the discriminating either way.
+        search_depth: "basic",
+        max_results: MAX_RESULTS_PER_QUERY,
+        // The page text, so a published address can be read without spending
+        // one of our own page fetches on it.
+        include_raw_content: true,
+        include_answer: false,
+        include_images: false,
+      }),
+    };
+  }
   if (provider === "brave") {
     return {
       url: `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${MAX_RESULTS_PER_QUERY}&country=gb`,
+      method: "GET",
       headers: { Accept: "application/json", "X-Subscription-Token": key },
     };
   }
   return {
     url: `https://api.bing.microsoft.com/v7.0/search?q=${encodeURIComponent(query)}&count=${MAX_RESULTS_PER_QUERY}&mkt=en-GB`,
+    method: "GET",
     headers: { Accept: "application/json", "Ocp-Apim-Subscription-Key": key },
   };
 }
 
+/**
+ * Tavily's `/search` payload.
+ *
+ * `content` is the snippet and `raw_content` the extracted page text, which is
+ * null unless `include_raw_content` was set and the page could be read.
+ */
+export function parseTavily(payload: unknown): SearchResult[] {
+  const results = (payload as { results?: unknown })?.results;
+  if (!Array.isArray(results)) return [];
+  return results
+    .map((entry) => {
+      const row = entry as { title?: unknown; url?: unknown; content?: unknown; raw_content?: unknown };
+      return {
+        title: typeof row.title === "string" ? row.title : "",
+        url: typeof row.url === "string" ? row.url : "",
+        snippet: typeof row.content === "string" ? row.content : "",
+        rawContent: typeof row.raw_content === "string" ? row.raw_content : undefined,
+      };
+    })
+    .filter((row) => row.url !== "")
+    .slice(0, MAX_RESULTS_PER_QUERY);
+}
+
 export function parseProvider(provider: SearchProviderName, payload: unknown): SearchResult[] {
+  if (provider === "tavily") return parseTavily(payload);
   return provider === "brave" ? parseBrave(payload) : parseBing(payload);
 }
 
@@ -292,8 +364,15 @@ export function classifySearchFailure(status: number, body = ""): { kind: Search
   // to slow down, and reporting it as an exhausted plan sends someone to their
   // billing page over a problem that clears itself in a second.
   const quotaish =
-    /\bquota\b|out of credits|call volume|plan limit|subscription (?:has )?(?:expired|inactive|is inactive)/i.test(text);
+    /\bquota\b|out of credits|call volume|plan limit|usage limit|credit(?:s)? (?:limit|exceeded|exhausted)|subscription (?:has )?(?:expired|inactive|is inactive)/i.test(text);
 
+  // Quota first, whatever the code. Providers do not agree on one: Brave uses
+  // 429, Azure 403, and Tavily a non-standard 432. Reading the body is the only
+  // thing that works across all three, and getting it wrong sends someone to
+  // their billing page over a rate limit — or the reverse.
+  if (status >= 400 && status < 500 && quotaish) {
+    return { kind: "QUOTA", detail: `${status} — quota or credits exhausted` };
+  }
   if (status === 401) return { kind: "AUTH", detail: "401 — key rejected" };
   if (status === 403) {
     return quotaish

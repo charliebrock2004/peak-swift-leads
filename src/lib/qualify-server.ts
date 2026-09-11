@@ -109,6 +109,8 @@ export type FindEmailResult =
       searchesRun?: number;
       /** Named reason the search layer produced nothing, when it failed. */
       searchFailure?: SearchFailureKind | null;
+      /** Provider-supplied page extracts mined for addresses, on the verified site only. */
+      providerExtracts?: number;
       /** Sites considered and turned down, so a miss can be understood. */
       rejectedCandidates?: { url: string; why: string }[];
     }
@@ -214,6 +216,7 @@ const WEBSITE_PROBES = 4;
  */
 function searchProvider(): { name: SearchProviderName; key: string } | null {
   const keys: Record<SearchProviderName, string | undefined> = {
+    tavily: process.env.TAVILY_API_KEY,
     brave: process.env.BRAVE_SEARCH_API_KEY,
     bing: process.env.BING_SEARCH_API_KEY,
   };
@@ -236,13 +239,15 @@ async function runSearch(
   provider: { name: SearchProviderName; key: string },
   query: string,
 ): Promise<SearchOutcome> {
-  const { url, headers } = providerRequest(provider.name, provider.key, query);
+  const { url, method, headers, body: requestBody } = providerRequest(provider.name, provider.key, query);
 
   const once = async (): Promise<SearchOutcome> => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 6000);
     try {
-      const response = await fetch(url, { headers, signal: controller.signal });
+      const response = await fetch(url, {
+        method, headers, body: requestBody, signal: controller.signal,
+      });
       const body = (await response.text()).slice(0, MAX_SEARCH_BYTES);
 
       if (!response.ok) {
@@ -343,6 +348,10 @@ export const findLeadEmail = createServerFn({ method: "POST" })
     let searchUsed: SearchProviderName | null = null;
     let searchesRun = 0;
     let searchFailure: SearchFailureKind | null = null;
+    /** Results kept so a verified site's provider-extracted text can be read. */
+    const collectedResults: SearchResult[] = [];
+    /** How many provider page-extracts were mined for addresses. */
+    let providerExtracts = 0;
     /** Candidates looked at and turned down, with the reason. */
     const rejected: { url: string; why: string }[] = [];
 
@@ -375,7 +384,7 @@ export const findLeadEmail = createServerFn({ method: "POST" })
       const searchLeads: WebsiteLead[] = [];
       if (provider) {
         searchUsed = provider.name;
-        const collected: SearchResult[] = [];
+        const collected: SearchResult[] = collectedResults;
         for (const query of buildQueries(identity)) {
           searchesRun += 1;
           sourcesChecked.push(`search:${query.text}`);
@@ -411,6 +420,38 @@ export const findLeadEmail = createServerFn({ method: "POST" })
       if (discoveredSite) {
         href = discoveredSite.url;
         discoveryVia = "SEARCH";
+
+        // Tavily returns the text of pages it fetched. Read addresses out of it
+        // for the site we just VERIFIED — and only that site. The provider
+        // already fetched the page, so this is still an address observed in a
+        // public source, and on a site that blocks our crawler but not theirs
+        // it is the only way we will ever see it.
+        //
+        // Scoping to the verified origin is the whole safety of this: raw text
+        // from an unverified result would harvest a different business's
+        // address and attach it here with full confidence.
+        let verifiedOrigin = "";
+        try {
+          verifiedOrigin = new URL(discoveredSite.url).origin;
+        } catch {
+          verifiedOrigin = "";
+        }
+        if (verifiedOrigin) {
+          for (const result of collectedResults) {
+            if (!result.rawContent) continue;
+            let sameSite = false;
+            try {
+              sameSite = new URL(result.url).origin === verifiedOrigin;
+            } catch {
+              sameSite = false;
+            }
+            if (!sameSite) continue;
+            providerExtracts += 1;
+            candidates.push(
+              ...extractCandidates(result.rawContent, result.url, "OFFICIAL_WEBSITE"),
+            );
+          }
+        }
       }
       // Concurrently: most candidate domains do not resolve, and waiting out
       // four DNS failures one after another would add twenty seconds to every
@@ -458,7 +499,7 @@ export const findLeadEmail = createServerFn({ method: "POST" })
       return {
         ok: true, found: toFoundEmail(result), foundAt, message: result.reason ?? "", discovery: result,
         website: null, discoveryVia, searchProvider: searchUsed, searchesRun,
-        searchFailure, rejectedCandidates: rejected,
+        searchFailure, providerExtracts, rejectedCandidates: rejected,
       };
     }
 
@@ -530,6 +571,7 @@ export const findLeadEmail = createServerFn({ method: "POST" })
       searchProvider: searchUsed,
       searchesRun,
       searchFailure,
+      providerExtracts,
       rejectedCandidates: rejected,
     };
   });

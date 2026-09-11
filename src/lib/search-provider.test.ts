@@ -6,9 +6,13 @@ import {
   looksLikeOwnWebsite,
   looksLikePublicProfile,
   MAX_SEARCHES_PER_LEAD,
+  classifySearchFailure,
+  MAX_RESULTS_PER_QUERY,
   parseBing,
   parseBrave,
   parseProvider,
+  parseTavily,
+  SEARCH_PROVIDERS,
   providerRequest,
   type SearchResult,
 } from "./search-provider.ts";
@@ -161,5 +165,111 @@ describe("how a provider is called", () => {
 
   it("escapes the query", () => {
     assert.ok(providerRequest("brave", "k", '"Cutting Edge" Cupar').url.includes("%22Cutting%20Edge%22"));
+  });
+});
+
+
+describe("Tavily", () => {
+  const payload = {
+    query: '"Salon T Elle" Kinross',
+    results: [
+      {
+        title: "Salon T Elle | Kinross",
+        url: "https://salontelle.co.uk/",
+        content: "Hairdressing in Kinross",
+        raw_content: "Salon T Elle, 4 High Street, Kinross KY13 8AN. Tel 01577 863000. info@salontelle.co.uk",
+        score: 0.97,
+      },
+      { title: "Yell", url: "https://www.yell.com/biz/salon-t-elle", content: "listing", raw_content: null },
+    ],
+  };
+
+  it("reads results, snippets and the extracted page text", () => {
+    const out = parseTavily(payload);
+    assert.equal(out.length, 2);
+    assert.equal(out[0].url, "https://salontelle.co.uk/");
+    assert.equal(out[0].snippet, "Hairdressing in Kinross");
+    assert.match(out[0].rawContent ?? "", /info@salontelle\.co\.uk/);
+  });
+
+  it("treats a null raw_content as simply absent", () => {
+    assert.equal(parseTavily(payload)[1].rawContent, undefined);
+  });
+
+  it("survives any unexpected payload shape", () => {
+    for (const junk of [null, undefined, {}, { results: "no" }, { results: [{}] }, [1]]) {
+      assert.doesNotThrow(() => parseTavily(junk));
+    }
+    assert.deepEqual(parseTavily({ results: [{ title: "x" }] }), [], "no URL means no result");
+  });
+
+  it("is dispatched to by parseProvider", () => {
+    assert.equal(parseProvider("tavily", payload).length, 2);
+  });
+
+  it("is preferred over the others when several keys exist", () => {
+    assert.equal(SEARCH_PROVIDERS[0], "tavily");
+  });
+});
+
+describe("how Tavily is called", () => {
+  const req = providerRequest("tavily", "tvly-secret", '"Salon T Elle" Kinross');
+
+  it("POSTs to Tavily's documented endpoint, never a results page", () => {
+    assert.equal(req.url, "https://api.tavily.com/search");
+    assert.equal(req.method, "POST");
+    assert.ok(!/google|bing\.com\/search|duckduckgo/.test(req.url));
+  });
+
+  it("sends the key as a bearer token, never in the URL or query", () => {
+    assert.equal(req.headers.Authorization, "Bearer tvly-secret");
+    assert.ok(!req.url.includes("tvly-secret"));
+    const body = JSON.parse(req.body ?? "{}");
+    assert.ok(!JSON.stringify(body.query).includes("tvly-secret"));
+  });
+
+  it("asks for the page text, which is what makes Tavily worth preferring", () => {
+    assert.equal(JSON.parse(req.body ?? "{}").include_raw_content, true);
+  });
+
+  it("uses the one-credit search depth and a bounded result count", () => {
+    const body = JSON.parse(req.body ?? "{}");
+    assert.equal(body.search_depth, "basic");
+    assert.equal(body.max_results, MAX_RESULTS_PER_QUERY);
+    assert.equal(body.include_answer, false);
+  });
+
+  it("still sends GET for the header-authenticated providers", () => {
+    assert.equal(providerRequest("brave", "k", "q").method, "GET");
+    assert.equal(providerRequest("bing", "k", "q").method, "GET");
+    assert.equal(providerRequest("brave", "k", "q").body, undefined);
+  });
+});
+
+describe("Tavily's own limit wording", () => {
+  it("is read as quota, not as a rejected key", () => {
+    for (const body of [
+      "Your usage limit has been reached",
+      "You have run out of credits",
+      "Credits exceeded for this plan",
+    ]) {
+      assert.equal(classifySearchFailure(432, body).kind === "AUTH", false, body);
+    }
+    assert.equal(classifySearchFailure(429, "Your usage limit has been reached").kind, "QUOTA");
+  });
+
+  it("reads Tavily's non-standard 432 as quota", () => {
+    // Providers do not agree on a code for this: Brave 429, Azure 403, Tavily
+    // 432. Only the body works across all three.
+    assert.equal(classifySearchFailure(432, "Your usage limit has been reached").kind, "QUOTA");
+    assert.equal(classifySearchFailure(433, "You have run out of credits").kind, "QUOTA");
+  });
+
+  it("does not call every odd 4xx a quota problem", () => {
+    assert.notEqual(classifySearchFailure(432, "Something else went wrong").kind, "QUOTA");
+  });
+
+  it("still reports a bad Tavily key as AUTH", () => {
+    assert.equal(classifySearchFailure(401, '{"detail":{"error":"Invalid API key"}}').kind, "AUTH");
   });
 });

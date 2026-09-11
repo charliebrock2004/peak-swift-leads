@@ -131,7 +131,7 @@ export function EmailDiscoveryTest() {
               <p className="mt-1 text-muted">
                 Search:{" "}
                 {report.searchProvider
-                  ? `${report.searchProvider}, ${report.searchesRun ?? 0} quer${(report.searchesRun ?? 0) === 1 ? "y" : "ies"}`
+                  ? `${report.searchProvider}, ${report.searchesRun ?? 0} quer${(report.searchesRun ?? 0) === 1 ? "y" : "ies"}${(report.providerExtracts ?? 0) > 0 ? `, ${report.providerExtracts} page extract(s) read` : ""}`
                   : "no provider configured"}
               </p>
               {report.searchFailure ? (
