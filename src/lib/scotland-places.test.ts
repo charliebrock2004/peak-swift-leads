@@ -1,6 +1,17 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { detectPlace, locationKindFor, planSearch, RESEARCH_BATCH_MAX, chSearchTowns } from "./scotland-places.ts";
+import {
+  detectPlace,
+  locationKindFor,
+  planSearch,
+  RESEARCH_BATCH_MAX,
+  chSearchTowns,
+  ENGLAND_REGION_SUGGESTIONS,
+  ENGLAND_CITY_SUGGESTIONS,
+  NATIONS,
+  ENGLAND_TOWN_SUGGESTIONS,
+  nationFor,
+} from "./scotland-places.ts";
 
 describe("detectPlace", () => {
   it("treats Perthshire aliases as a region of real towns", () => {
@@ -128,5 +139,116 @@ describe("locationKindFor", () => {
     assert.equal(locationKindFor("Perth"), "city");
     assert.equal(locationKindFor("Perthshire"), "region");
     assert.equal(locationKindFor("Scotland"), "nation");
+  });
+});
+
+describe("England expansion", () => {
+  it("still detects Scotland exactly as before", () => {
+    const place = detectPlace("Scotland");
+    assert.equal(place.kind, "nation");
+    assert.equal(place.label, "Scotland");
+    assert.ok(place.towns.includes("Glasgow"));
+    assert.ok(!place.towns.includes("Manchester"));
+  });
+
+  it("treats England as its own nation of English towns", () => {
+    const place = detectPlace("England");
+    assert.equal(place.kind, "nation");
+    assert.equal(place.label, "England");
+    assert.ok(place.towns.includes("Manchester"));
+    assert.ok(place.towns.includes("Birmingham"));
+    assert.ok(!place.towns.includes("Crieff"));
+  });
+
+  it("detects an English region and returns its towns", () => {
+    const place = detectPlace("Greater Manchester");
+    assert.equal(place.kind, "region");
+    assert.equal(place.label, "Greater Manchester");
+    assert.ok(place.towns.includes("Bolton"));
+    assert.ok(place.towns.includes("Stockport"));
+  });
+
+  it("detects an English city and keeps it a city, not a bare town", () => {
+    const place = detectPlace("Leeds");
+    assert.equal(place.kind, "city");
+    assert.ok(place.towns.includes("Leeds"));
+    assert.ok(place.towns.includes("Bradford"));
+  });
+
+  it("fans a typed English town out to its region neighbours", () => {
+    const place = detectPlace("Huddersfield");
+    assert.equal(place.kind, "town");
+    assert.equal(place.label, "Huddersfield");
+    assert.equal(place.towns[0], "Huddersfield");
+    assert.ok(place.towns.includes("Leeds"));
+  });
+
+  it("keeps an unknown location a lone town rather than guessing a nation", () => {
+    const place = detectPlace("Llandudno");
+    assert.equal(place.kind, "town");
+    assert.deepEqual(place.towns, ["Llandudno"]);
+  });
+
+  it("plans an England-wide run across many English towns", () => {
+    const plan = planSearch("England", 50);
+    assert.equal(plan.kind, "nation");
+    assert.equal(plan.label, "England");
+    assert.ok(plan.areas.length >= 5);
+    const names = plan.areas.map((area) => area.name);
+    assert.ok(names.includes("Manchester") || names.includes("Birmingham"));
+    assert.ok(!names.includes("Glasgow"));
+    for (const area of plan.areas) {
+      assert.ok(area.quota <= RESEARCH_BATCH_MAX);
+    }
+  });
+
+  it("classifies English inputs by kind", () => {
+    assert.equal(locationKindFor("England"), "nation");
+    assert.equal(locationKindFor("Cheshire"), "region");
+    assert.equal(locationKindFor("Sheffield"), "city");
+  });
+
+  it("searches English anchors for an England-wide company lookup", () => {
+    const towns = chSearchTowns("England", 4);
+    assert.ok(towns.includes("Manchester"));
+    assert.ok(!towns.includes("Glasgow"));
+    assert.deepEqual(chSearchTowns("Scotland", 4)[0], "Glasgow");
+  });
+
+  it("offers English regions and cities as suggestions", () => {
+    assert.ok(ENGLAND_REGION_SUGGESTIONS.includes("West Yorkshire"));
+    assert.ok(ENGLAND_CITY_SUGGESTIONS.includes("Liverpool"));
+    assert.deepEqual([...NATIONS], ["Scotland", "England"]);
+  });
+
+  it("never lists the same town twice within a nation", () => {
+    for (const nation of ["Scotland", "England"]) {
+      const towns = detectPlace(nation).towns;
+      assert.equal(new Set(towns.map((t) => t.toLowerCase())).size, towns.length);
+    }
+  });
+});
+
+describe("nationFor", () => {
+  it("routes English places to England and everything else to Scotland", () => {
+    assert.equal(nationFor("England"), "England");
+    assert.equal(nationFor("Greater Manchester"), "England");
+    assert.equal(nationFor("Liverpool"), "England");
+    assert.equal(nationFor("Huddersfield"), "England");
+    assert.equal(nationFor("Scotland"), "Scotland");
+    assert.equal(nationFor("Crieff"), "Scotland");
+    assert.equal(nationFor("Perthshire"), "Scotland");
+  });
+
+  it("falls back to the home market for anything it does not recognise", () => {
+    assert.equal(nationFor(""), "Scotland");
+    assert.equal(nationFor("Llandudno"), "Scotland");
+  });
+
+  it("offers English town chips that are real English towns", () => {
+    assert.ok(ENGLAND_TOWN_SUGGESTIONS.length > 0);
+    for (const town of ENGLAND_TOWN_SUGGESTIONS) {
+      assert.equal(nationFor(town), "England");
+    }
   });
 });

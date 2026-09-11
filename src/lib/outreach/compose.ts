@@ -11,7 +11,13 @@
  * unit-tested: specifically, that it is only ever given facts we actually hold,
  * and is told in as many words not to invent the rest.
  */
-import { computeOpportunity, opportunityBand, type Lead } from "../leads.ts";
+import {
+  evidenceFacts,
+  gatherEvidence,
+  hasRealPersonalisation,
+  strongestEvidence,
+  type Evidence,
+} from "./evidence.ts";
 import { checkEmailQuality } from "./quality.ts";
 import {
   composeFromTemplate,
@@ -21,25 +27,23 @@ import {
   SENDER_NAME,
   SENDER_STUDIO,
   templateForLead,
-  websiteStatusPhrase,
   type ComposedEmail,
 } from "./templates.ts";
 import type { EmailKind, OutreachLead, OutreachTemplate } from "./types.ts";
 
 /** Only what we actually know. Anything absent is simply not mentioned. */
 export function leadFacts(lead: OutreachLead): string[] {
-  const facts: string[] = [`Business name: ${lead.businessName}`];
-  if (lead.trade.trim()) facts.push(`Trade: ${lead.trade}`);
-  if (lead.town.trim()) facts.push(`Town: ${lead.town}`);
-  facts.push(`Website situation: ${websiteStatusPhrase(lead)}`);
-  if (lead.website.trim()) facts.push(`Website address: ${lead.website}`);
-  if (lead.websiteQuality) facts.push(`Website assessment: ${lead.websiteQuality}`);
-  if (lead.websiteAnalysis.trim()) facts.push(`What the site check saw: ${lead.websiteAnalysis}`);
-  if (typeof lead.rating === "number") facts.push(`Public rating: ${lead.rating}`);
-  if (typeof lead.reviews === "number") facts.push(`Public review count: ${lead.reviews}`);
-  const score = computeOpportunity(lead as Lead);
-  facts.push(`Opportunity score: ${score} (${opportunityBand(score)})`);
-  return facts;
+  return evidenceFacts(lead);
+}
+
+/** The evidence an email was built on, for storing and for the Review screen. */
+export function evidenceFor(lead: OutreachLead): Evidence[] {
+  return strongestEvidence(gatherEvidence(lead));
+}
+
+/** Is there enough to write something genuinely personal? */
+export function canPersonalise(lead: OutreachLead): boolean {
+  return hasRealPersonalisation(gatherEvidence(lead));
 }
 
 const KIND_BRIEF: Record<EmailKind, string> = {
@@ -68,8 +72,11 @@ ${leadFacts(lead)
 ${KIND_BRIEF[kind]}
 
 Rules — all of them matter:
-- Write as ${SENDER_NAME} from ${SENDER_STUDIO}, a small web design studio in Perthshire, Scotland.
+- Write as ${SENDER_NAME} from ${SENDER_STUDIO}, a small web design studio in Scotland. Name ${SENDER_STUDIO} in the body, so it is obvious who is writing and why.
+- Open by referring to ONE of the observations above, in your own words. If there are none worth using, write a short, plain note that does not pretend to have noticed anything.
 - Use ONLY the facts above. Never invent a detail, a service, a statistic, a competitor or a compliment.
+- Never claim anything about speed, mobile, design age, search ranking or traffic. Nothing above measures those, so any such claim would be fabricated.
+- Never invent a first name. Address the business, not a person, unless a name appears above.
 - If they have no website, say plainly that you could not find one — do not assume why.
 - If they have a website, be respectful about it. Never call it bad, old, ugly, broken or embarrassing. Suggest it could do more, at most.
 - No pushy sales language, no urgency, no flattery, no buzzwords, no bullet lists of benefits.

@@ -14,9 +14,15 @@ import {
 import { researchProspects, type Prospect } from "@/lib/research";
 import {
   CITY_SUGGESTIONS,
+  ENGLAND_CITY_SUGGESTIONS,
+  ENGLAND_REGION_SUGGESTIONS,
+  ENGLAND_TOWN_SUGGESTIONS,
+  NATIONS,
   REGION_SUGGESTIONS,
   locationKindFor,
+  nationFor,
   planSearch,
+  type Nation,
   type PlaceKind,
 } from "@/lib/scotland-places";
 import { cn } from "@/lib/utils";
@@ -27,17 +33,30 @@ const KIND_CHIPS: { id: PlaceKind; label: string }[] = [
   { id: "town", label: "Town" },
   { id: "city", label: "City" },
   { id: "region", label: "Region" },
-  { id: "nation", label: "Scotland" },
+  { id: "nation", label: "Nationwide" },
 ];
 
-const KIND_DEFAULT: Record<PlaceKind, string> = {
-  town: "Crieff",
-  city: "Perth",
-  region: "Perthshire",
-  nation: "Scotland",
+/**
+ * Where each nation starts when the user switches location type. Scotland is
+ * the home market, so it keeps the towns the sheet was built around.
+ */
+const KIND_DEFAULT: Record<Nation, Record<PlaceKind, string>> = {
+  Scotland: { town: "Crieff", city: "Perth", region: "Perthshire", nation: "Scotland" },
+  England: {
+    town: "Huddersfield",
+    city: "Manchester",
+    region: "Greater Manchester",
+    nation: "England",
+  },
 };
 
-function chipsFor(kind: PlaceKind): readonly string[] {
+function chipsFor(kind: PlaceKind, nation: Nation): readonly string[] {
+  if (nation === "England") {
+    if (kind === "region") return ENGLAND_REGION_SUGGESTIONS;
+    if (kind === "city") return ENGLAND_CITY_SUGGESTIONS;
+    if (kind === "nation") return ["England"];
+    return ENGLAND_TOWN_SUGGESTIONS;
+  }
   if (kind === "region") return REGION_SUGGESTIONS;
   if (kind === "city") return CITY_SUGGESTIONS;
   if (kind === "nation") return ["Scotland"];
@@ -64,6 +83,7 @@ export function FindLeadsPanel({
   onImport: (prospects: Prospect[]) => void;
 }) {
   const [kind, setKind] = useState<PlaceKind>("town");
+  const [nation, setNation] = useState<Nation>("Scotland");
   const [location, setLocation] = useState("Crieff");
   const [businessType, setBusinessType] = useState("Joiner");
   const [limit, setLimit] = useState(25);
@@ -96,12 +116,24 @@ export function FindLeadsPanel({
 
   function chooseKind(next: PlaceKind) {
     setKind(next);
-    const current = locationKindFor(location);
     if (next === "nation") {
-      setLocation("Scotland");
+      setLocation(KIND_DEFAULT[nation].nation);
       return;
     }
-    if (current !== next) setLocation(KIND_DEFAULT[next]);
+    const current = locationKindFor(location);
+    if (current !== next || nationFor(location) !== nation) {
+      setLocation(KIND_DEFAULT[nation][next]);
+    }
+  }
+
+  /**
+   * Switching nation moves the picker to that nation's equivalent starting
+   * point. Leaving the old location selected would search Perthshire while the
+   * chips all said England.
+   */
+  function chooseNation(next: Nation) {
+    setNation(next);
+    setLocation(KIND_DEFAULT[next][kind]);
   }
 
   function clampLimit(value: number): number {
@@ -154,7 +186,7 @@ export function FindLeadsPanel({
     onClose();
   }
 
-  const locationChips = chipsFor(kind);
+  const locationChips = chipsFor(kind, nation);
 
   const panel = (
     <div className="find-overlay flex flex-col bg-bg text-fg">
@@ -198,6 +230,20 @@ export function FindLeadsPanel({
 
               <div className="mt-5 grid gap-4">
                 <fieldset>
+                  <legend className="text-xs font-medium text-muted">Nation</legend>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {NATIONS.map((name) => (
+                      <Chip
+                        key={name}
+                        label={name}
+                        active={nation === name}
+                        onClick={() => chooseNation(name)}
+                      />
+                    ))}
+                  </div>
+                </fieldset>
+
+                <fieldset>
                   <legend className="text-xs font-medium text-muted">Location type</legend>
                   <div className="mt-2 flex flex-wrap gap-2">
                     {KIND_CHIPS.map((chip) => (
@@ -229,8 +275,10 @@ export function FindLeadsPanel({
                       value={location}
                       onChange={(event) => {
                         const value = event.target.value;
+                        const typed = value || KIND_DEFAULT[nation].town;
                         setLocation(value);
-                        setKind(locationKindFor(value || "Crieff"));
+                        setKind(locationKindFor(typed));
+                        setNation(nationFor(typed));
                       }}
                       placeholder={
                         kind === "region"

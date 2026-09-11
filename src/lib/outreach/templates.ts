@@ -23,7 +23,16 @@ export const TEMPLATE_VARIABLES = [
 export type TemplateVariable = (typeof TEMPLATE_VARIABLES)[number];
 
 export const SENDER_NAME = "Charlie";
-export const SENDER_STUDIO = "PeakSwift Studio";
+export const SENDER_STUDIO = "PeakSwiftStudio";
+
+/**
+ * The studio's own address, shown in the signature.
+ *
+ * Read from the environment so it is never a guess: with nothing configured the
+ * signature simply omits the line rather than printing a URL that may not
+ * exist. Set PEAKSWIFT_WEBSITE on the deployment to include it.
+ */
+export const SENDER_WEBSITE = (process.env.PEAKSWIFT_WEBSITE ?? "").trim();
 
 /**
  * The opt-out. A plain sentence, not a link: an unsubscribe URL we do not
@@ -32,7 +41,9 @@ export const SENDER_STUDIO = "PeakSwift Studio";
  */
 export const OPT_OUT_LINE = "If you'd rather I didn't contact you again, just let me know and I won't.";
 
-export const DEFAULT_SIGNATURE = `${SENDER_NAME}\n${SENDER_STUDIO}`;
+export const DEFAULT_SIGNATURE = [SENDER_NAME, SENDER_STUDIO, SENDER_WEBSITE]
+  .filter(Boolean)
+  .join("\n");
 
 /** Plain-English website state, safe to put in front of the business owner. */
 export function websiteStatusPhrase(lead: OutreachLead): string {

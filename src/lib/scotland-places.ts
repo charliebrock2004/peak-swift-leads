@@ -296,17 +296,130 @@ function distribute(names: string[], limit: number): SearchArea[] {
   return towns.slice(0, extra).map((name) => ({ name, quota }));
 }
 
+/**
+ * England, as an expandable region set rather than a country dump.
+ *
+ * Same shape as the Scottish tables, so adding a county or a city is a data
+ * edit and never a code change. Deliberately high-value areas only: the point
+ * is to reach markets worth working, not to enumerate every settlement in
+ * England and drown the sheet.
+ */
+const ENGLAND_REGIONS: PlaceEntry[] = [
+  {
+    name: "Greater Manchester",
+    aliases: ["greater manchester", "manchester area"],
+    towns: ["Manchester", "Salford", "Bolton", "Stockport", "Oldham", "Rochdale", "Bury", "Wigan"],
+  },
+  {
+    name: "Merseyside",
+    aliases: ["merseyside", "liverpool area"],
+    towns: ["Liverpool", "Birkenhead", "St Helens", "Southport", "Wallasey"],
+  },
+  {
+    name: "West Yorkshire",
+    aliases: ["west yorkshire", "leeds area"],
+    towns: ["Leeds", "Bradford", "Wakefield", "Huddersfield", "Halifax", "Dewsbury"],
+  },
+  {
+    name: "South Yorkshire",
+    aliases: ["south yorkshire", "sheffield area"],
+    towns: ["Sheffield", "Doncaster", "Rotherham", "Barnsley"],
+  },
+  {
+    name: "Tyne and Wear",
+    aliases: ["tyne and wear", "tyne & wear", "newcastle area", "north east"],
+    towns: ["Newcastle upon Tyne", "Sunderland", "Gateshead", "South Shields", "Washington"],
+  },
+  {
+    name: "West Midlands",
+    aliases: ["west midlands", "birmingham area"],
+    towns: ["Birmingham", "Wolverhampton", "Coventry", "Solihull", "Dudley", "Walsall"],
+  },
+  {
+    name: "East Midlands",
+    aliases: ["east midlands", "nottingham area"],
+    towns: ["Nottingham", "Leicester", "Derby", "Mansfield", "Loughborough"],
+  },
+  {
+    name: "Lancashire",
+    aliases: ["lancashire", "lancs"],
+    towns: ["Preston", "Blackpool", "Blackburn", "Lancaster", "Burnley", "Chorley"],
+  },
+  {
+    name: "Cumbria",
+    aliases: ["cumbria", "lake district"],
+    towns: ["Carlisle", "Barrow-in-Furness", "Kendal", "Whitehaven", "Workington"],
+  },
+  {
+    name: "County Durham",
+    aliases: ["county durham", "durham"],
+    towns: ["Durham", "Darlington", "Hartlepool", "Stockton-on-Tees", "Middlesbrough"],
+  },
+  {
+    name: "Cheshire",
+    aliases: ["cheshire"],
+    towns: ["Chester", "Warrington", "Crewe", "Macclesfield", "Runcorn"],
+  },
+  {
+    name: "North Yorkshire",
+    aliases: ["north yorkshire", "yorkshire"],
+    towns: ["York", "Harrogate", "Scarborough", "Northallerton", "Skipton"],
+  },
+  {
+    name: "Bristol and the South West",
+    aliases: ["bristol area", "south west", "avon"],
+    towns: ["Bristol", "Bath", "Gloucester", "Cheltenham", "Swindon", "Taunton"],
+  },
+];
+
+/** English cities that are worth searching on their own. */
+const ENGLAND_CITIES: PlaceEntry[] = ENGLAND_REGIONS.map((region) => ({
+  name: region.towns[0]!,
+  aliases: [fold(region.towns[0]!)],
+  towns: region.towns.slice(0, 4),
+}));
+
+/** Every English town the app currently knows, for an England-wide run. */
+const ENGLAND_TOWNS = uniqueNames(ENGLAND_REGIONS.flatMap((region) => region.towns));
+
+/** UI chips for English regions. Adding one is a data edit, not a code change. */
+export const ENGLAND_REGION_SUGGESTIONS = ENGLAND_REGIONS.map((region) => region.name);
+export const ENGLAND_CITY_SUGGESTIONS = ENGLAND_CITIES.map((city) => city.name);
+
+/**
+ * A handful of English towns for the picker. Not every town England has: the
+ * chips are a starting point, and the input accepts anything the user types.
+ */
+export const ENGLAND_TOWN_SUGGESTIONS = uniqueNames(
+  ENGLAND_REGIONS.flatMap((region) => region.towns.slice(1, 3)),
+).slice(0, 12);
+
+/**
+ * Which nations the app can search.
+ *
+ * Wales and the rest of the UK are deliberately absent rather than stubbed:
+ * an empty region set would return no towns and look like a bug. Add a table
+ * above and a line here when the market is worth working.
+ */
+export const NATIONS = ["Scotland", "England"] as const;
+export type Nation = (typeof NATIONS)[number];
+
 export function detectPlace(location: string): { kind: PlaceKind; label: string; towns: string[] } {
   const key = fold(location);
   if (key === "scotland" || key === "all scotland" || key === "nationwide") {
     return { kind: "nation", label: "Scotland", towns: [...SCOTLAND_TOWNS] };
   }
-  const region = matchEntry(location, REGIONS);
+  if (key === "england" || key === "all england") {
+    return { kind: "nation", label: "England", towns: [...ENGLAND_TOWNS] };
+  }
+  const region = matchEntry(location, REGIONS) ?? matchEntry(location, ENGLAND_REGIONS);
   if (region) return { kind: "region", label: region.name, towns: region.towns };
-  const city = matchEntry(location, CITIES);
+  const city = matchEntry(location, CITIES) ?? matchEntry(location, ENGLAND_CITIES);
   if (city) return { kind: "city", label: city.name, towns: city.towns };
   const trimmed = location.trim() || "Scotland";
-  const home = REGIONS.find((entry) => entry.towns.some((town) => fold(town) === key));
+  const home =
+    REGIONS.find((entry) => entry.towns.some((town) => fold(town) === key)) ??
+    ENGLAND_REGIONS.find((entry) => entry.towns.some((town) => fold(town) === key));
   return {
     kind: "town",
     label: trimmed,
@@ -334,13 +447,35 @@ export function locationKindFor(location: string): PlaceKind {
 }
 
 /**
+ * Which nation a typed location belongs to.
+ *
+ * Only English data can answer "England"; anything the English tables do not
+ * recognise stays Scotland, which is the home market and the safe default.
+ * This is how the picker follows a typed location instead of stranding the
+ * user on the wrong set of chips.
+ */
+export function nationFor(location: string): Nation {
+  const key = fold(location);
+  if (key === "england" || key === "all england") return "England";
+  if (matchEntry(location, ENGLAND_REGIONS) || matchEntry(location, ENGLAND_CITIES)) {
+    return "England";
+  }
+  if (ENGLAND_TOWNS.some((town) => fold(town) === key)) return "England";
+  return "Scotland";
+}
+
+/**
  * Towns to query when looking up companies around a typed location.
  * Small towns pick their nearest neighbours (Crieff → Perth, Auchterarder).
  */
 export function chSearchTowns(location: string, max = 3): string[] {
   const place = detectPlace(location);
   if (place.kind === "nation") {
-    return ["Glasgow", "Edinburgh", "Perth", "Dundee"].slice(0, Math.max(1, max));
+    const anchors =
+      place.label === "England"
+        ? ["Manchester", "Birmingham", "Leeds", "Liverpool"]
+        : ["Glasgow", "Edinburgh", "Perth", "Dundee"];
+    return anchors.slice(0, Math.max(1, max));
   }
   if (place.kind === "region") {
     return uniqueNames(place.towns).slice(0, Math.max(1, max));

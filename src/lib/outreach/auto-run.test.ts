@@ -64,6 +64,7 @@ function email(partial: Partial<OutreachEmail> = {}): OutreachEmail {
     repliedAt: "",
     createdAt: "",
     updatedAt: "",
+    personalisationEvidence: "",
     ...partial,
   };
 }

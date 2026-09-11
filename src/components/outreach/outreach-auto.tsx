@@ -19,6 +19,12 @@ import {
 } from "@/lib/outreach/auto-run";
 import type { OutreachState } from "@/lib/outreach/server";
 import { RADIUS_MILES, TOWN_SUGGESTIONS, TRADE_SUGGESTIONS } from "@/lib/leads";
+import {
+  ENGLAND_TOWN_SUGGESTIONS,
+  NATIONS,
+  nationFor,
+  type Nation,
+} from "@/lib/scotland-places";
 import { cn } from "@/lib/utils";
 
 const STEPS = [
@@ -52,6 +58,7 @@ export function OutreachAuto({
   const [form, setForm] = useState<AutoRunConfig>(() =>
     clampAutoConfig({ ...DEFAULT_AUTO_CONFIG, dailyLimit: state.settings.dailyLimit }),
   );
+  const [nation, setNation] = useState<Nation>(() => nationFor(DEFAULT_AUTO_CONFIG.location));
   const { run, start, stop, reset, running } = useAutoRun(onReload);
 
   const set = <K extends keyof AutoRunConfig>(key: K, value: AutoRunConfig[K]) =>
@@ -105,14 +112,29 @@ export function OutreachAuto({
         <div className="flex flex-col gap-4">
           <Field label="Town or area">
             <Chips
-              options={TOWN_SUGGESTIONS}
-              value={form.location}
-              onChange={(value) => set("location", value)}
+              options={NATIONS}
+              value={nation}
+              onChange={(value) => {
+                const next = value as Nation;
+                setNation(next);
+                set("location", next === "England" ? "Manchester" : "Crieff");
+              }}
             />
+            <div className="mt-3">
+              <Chips
+                options={nation === "England" ? ENGLAND_TOWN_SUGGESTIONS : TOWN_SUGGESTIONS}
+                value={form.location}
+                onChange={(value) => set("location", value)}
+              />
+            </div>
             <Input
               className="mt-3 h-11"
               value={form.location}
-              onChange={(event) => set("location", event.target.value)}
+              onChange={(event) => {
+                const value = event.target.value;
+                set("location", value);
+                if (value.trim().length >= 3) setNation(nationFor(value));
+              }}
               placeholder="Or type a town, city or region"
               aria-label="Town or area"
             />

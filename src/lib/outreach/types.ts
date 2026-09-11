@@ -64,6 +64,8 @@ export type OutreachEmail = {
   repliedAt: string;
   createdAt: string;
   updatedAt: string;
+  /** The facts this email was personalised from. Empty for older rows. */
+  personalisationEvidence: string;
 };
 
 export const TEMPLATE_KINDS = [

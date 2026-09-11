@@ -22,7 +22,8 @@
 import { createServerFn } from "@tanstack/react-start";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { newLeadId, type Lead } from "@/lib/leads";
-import { composeEmail, parseAiDraft, type AiDraft } from "./compose.ts";
+import { composeEmail, evidenceFor, parseAiDraft, type AiDraft } from "./compose.ts";
+import { evidenceSummary } from "./evidence.ts";
 import { checkEligibility, emptyContext, type EligibilityContext } from "./eligibility.ts";
 import { allowance, nextBatch, sanitizeSettings } from "./limits.ts";
 import { checkEmailQuality, readsAsUnsubscribe } from "./quality.ts";
@@ -465,6 +466,8 @@ export type GeneratedRow = {
   subject?: string;
   body?: string;
   generatedBy?: string;
+  /** What the email was personalised from, so Review can show why. */
+  evidence?: { kind: string; text: string; source: string }[];
   note?: string;
   error?: string;
 };
@@ -531,8 +534,10 @@ export const generateEmails = createServerFn({ method: "POST" })
           .filter((email) => email.leadId === leadId && email.gmailThreadId)
           .sort((a, b) => (b.sentAt || b.createdAt).localeCompare(a.sentAt || a.createdAt))[0];
 
+        const evidence = evidenceFor(lead);
         await store.upsertDraft(sql, context.userId, {
           id,
+          personalisationEvidence: evidenceSummary(evidence),
           leadId,
           businessName: lead.businessName,
           recipient: lead.email,
@@ -559,6 +564,7 @@ export const generateEmails = createServerFn({ method: "POST" })
           subject: composed.subject,
           body: composed.body,
           generatedBy: composed.generatedBy,
+          evidence: evidence.map((item) => ({ kind: item.kind, text: item.text, source: item.source })),
           note: [composed.fellBackBecause, verdict.ok ? "" : verdict.problems[0]?.message]
             .filter(Boolean)
             .join(" "),

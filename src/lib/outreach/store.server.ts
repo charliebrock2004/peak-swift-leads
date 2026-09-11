@@ -244,12 +244,13 @@ export async function saveTemplate(sql: Sql, userId: string, template: OutreachT
 
 // ── Emails ───────────────────────────────────────────────────────────────────
 
-const EMAIL_COLUMNS = `id, lead_id, business_name, recipient, subject, body, status, kind,
+const EMAIL_COLUMNS = `personalisation_evidence, id, lead_id, business_name, recipient, subject, body, status, kind,
   generated_by, sending_account, gmail_message_id, gmail_thread_id, error, attempts,
   approved_at, sent_at, replied_at, created_at, updated_at`;
 
 function emailFromRow(row: Record<string, unknown>): OutreachEmail {
   return {
+    personalisationEvidence: text(row.personalisation_evidence),
     id: text(row.id),
     leadId: text(row.lead_id),
     businessName: text(row.business_name),
@@ -303,6 +304,8 @@ export type NewEmail = {
   generatedBy: string;
   status: EmailStatus;
   gmailThreadId?: string;
+  /** Why this email said what it said, for the Review screen. */
+  personalisationEvidence?: string;
 };
 
 /**
@@ -317,12 +320,14 @@ export async function upsertDraft(sql: Sql, userId: string, email: NewEmail): Pr
   await sql.query(
     `insert into outreach_emails
        (user_id, id, lead_id, business_name, recipient, subject, body, status, kind,
-        generated_by, gmail_thread_id, created_at, updated_at)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, now(), now())
+        generated_by, gmail_thread_id, personalisation_evidence, created_at, updated_at)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, now(), now())
      on conflict (user_id, id) do update set
        subject = excluded.subject, body = excluded.body, status = excluded.status,
        generated_by = excluded.generated_by, recipient = excluded.recipient,
-       business_name = excluded.business_name, error = '', updated_at = now()`,
+       business_name = excluded.business_name,
+       personalisation_evidence = excluded.personalisation_evidence,
+       error = '', updated_at = now()`,
     [
       userId,
       email.id,
@@ -335,6 +340,7 @@ export async function upsertDraft(sql: Sql, userId: string, email: NewEmail): Pr
       email.kind,
       email.generatedBy,
       email.gmailThreadId ?? "",
+      email.personalisationEvidence ?? "",
     ],
   );
 }
