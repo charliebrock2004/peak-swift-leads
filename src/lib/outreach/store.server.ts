@@ -565,3 +565,238 @@ export async function suppressedSet(sql: Sql, userId: string): Promise<Set<strin
   );
   return new Set(rows.map((row) => row.email.toLowerCase()));
 }
+
+// ── Activity, runs, reviews (0006) ───────────────────────────────────────────
+
+function isMissingRelation(error: unknown): boolean {
+  if (typeof error === "object" && error !== null && "code" in error) {
+    return (error as { code?: string }).code === "42P01";
+  }
+  return /does not exist/i.test(error instanceof Error ? error.message : String(error ?? ""));
+}
+
+export type ActivityRow = {
+  id: string;
+  at: string;
+  eventType: string;
+  leadId: string;
+  leadName: string;
+  result: string;
+  reason: string;
+  confidence: number | "";
+  error: string;
+  metadata: string;
+};
+
+export async function insertActivity(
+  sql: Sql,
+  userId: string,
+  event: {
+    id: string;
+    type: string;
+    leadId?: string;
+    leadName?: string;
+    result?: string;
+    reason?: string;
+    confidence?: number | "";
+    error?: string;
+    metadata?: string;
+  },
+): Promise<void> {
+  await sql.query(
+    `insert into activity_events
+       (user_id, id, at, event_type, lead_id, lead_name, result, reason, confidence, error, metadata)
+     values ($1,$2, now(), $3,$4,$5,$6,$7,$8,$9,$10)`,
+    [
+      userId,
+      event.id,
+      event.type.slice(0, 60),
+      event.leadId ?? "",
+      (event.leadName ?? "").slice(0, 200),
+      (event.result ?? "").slice(0, 200),
+      (event.reason ?? "").slice(0, 400),
+      typeof event.confidence === "number" ? event.confidence : null,
+      (event.error ?? "").slice(0, 400),
+      (event.metadata ?? "").slice(0, 2000),
+    ],
+  );
+}
+
+/**
+ * Write an activity row. Never throws: a missing 0006 table or a log failure
+ * must not take down sending, generating, or reply checks.
+ */
+export async function recordActivity(
+  sql: Sql,
+  userId: string,
+  event: {
+    id: string;
+    type: string;
+    leadId?: string;
+    leadName?: string;
+    result?: string;
+    reason?: string;
+    confidence?: number | "";
+    error?: string;
+    metadata?: string;
+  },
+): Promise<void> {
+  try {
+    await insertActivity(sql, userId, event);
+  } catch (error) {
+    if (isMissingRelation(error)) return;
+    console.error("[outreach] activity log failed:", error);
+  }
+}
+
+export async function loadActivity(sql: Sql, userId: string, limit = 80): Promise<ActivityRow[]> {
+  const rows = await sql.query<Record<string, unknown>>(
+    `select id, at, event_type, lead_id, lead_name, result, reason, confidence, error, metadata
+       from activity_events where user_id = $1 order by at desc limit $2`,
+    [userId, Math.min(200, Math.max(1, limit))],
+  );
+  return rows.map((row) => ({
+    id: text(row.id),
+    at: iso(row.at),
+    eventType: text(row.event_type),
+    leadId: text(row.lead_id),
+    leadName: text(row.lead_name),
+    result: text(row.result),
+    reason: text(row.reason),
+    confidence: row.confidence == null || row.confidence === "" ? "" : Number(row.confidence),
+    error: text(row.error),
+    metadata: text(row.metadata),
+  }));
+}
+
+export type StoredRun = {
+  id: string;
+  startedAt: string;
+  finishedAt: string;
+  location: string;
+  businessType: string;
+  mode: string;
+  found: number;
+  qualified: number;
+  hot: number;
+  warm: number;
+  callCount: number;
+  lowCount: number;
+  skipped: number;
+  emailsFound: number;
+  prepared: number;
+  sent: number;
+  replies: number;
+  errors: number;
+  bottleneck: string;
+  summary: string;
+};
+
+export async function insertRun(sql: Sql, userId: string, run: StoredRun): Promise<void> {
+  await sql.query(
+    `insert into outreach_runs (
+       user_id, id, started_at, finished_at, location, business_type, mode,
+       found, qualified, hot, warm, call_count, low_count, skipped,
+       emails_found, prepared, sent, replies, errors, bottleneck, summary
+     ) values (
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21
+     )`,
+    [
+      userId,
+      run.id,
+      run.startedAt || new Date().toISOString(),
+      run.finishedAt || null,
+      run.location.slice(0, 80),
+      run.businessType.slice(0, 80),
+      run.mode.slice(0, 20),
+      run.found,
+      run.qualified,
+      run.hot,
+      run.warm,
+      run.callCount,
+      run.lowCount,
+      run.skipped,
+      run.emailsFound,
+      run.prepared,
+      run.sent,
+      run.replies,
+      run.errors,
+      run.bottleneck.slice(0, 300),
+      run.summary.slice(0, 500),
+    ],
+  );
+}
+
+export async function loadRuns(sql: Sql, userId: string, limit = 8): Promise<StoredRun[]> {
+  const rows = await sql.query<Record<string, unknown>>(
+    `select id, started_at, finished_at, location, business_type, mode,
+            found, qualified, hot, warm, call_count, low_count, skipped,
+            emails_found, prepared, sent, replies, errors, bottleneck, summary
+       from outreach_runs where user_id = $1 order by started_at desc limit $2`,
+    [userId, Math.min(30, Math.max(1, limit))],
+  );
+  const num = (value: unknown) => {
+    const next = Number(value);
+    return Number.isFinite(next) ? next : 0;
+  };
+  return rows.map((row) => ({
+    id: text(row.id),
+    startedAt: iso(row.started_at),
+    finishedAt: iso(row.finished_at),
+    location: text(row.location),
+    businessType: text(row.business_type),
+    mode: text(row.mode),
+    found: num(row.found),
+    qualified: num(row.qualified),
+    hot: num(row.hot),
+    warm: num(row.warm),
+    callCount: num(row.call_count),
+    lowCount: num(row.low_count),
+    skipped: num(row.skipped),
+    emailsFound: num(row.emails_found),
+    prepared: num(row.prepared),
+    sent: num(row.sent),
+    replies: num(row.replies),
+    errors: num(row.errors),
+    bottleneck: text(row.bottleneck),
+    summary: text(row.summary),
+  }));
+}
+
+export type LeadReview = {
+  leadId: string;
+  decision: string;
+  note: string;
+  decidedAt: string;
+};
+
+export async function upsertReview(
+  sql: Sql,
+  userId: string,
+  review: { leadId: string; decision: string; note?: string },
+): Promise<void> {
+  const leadId = review.leadId.trim();
+  if (!leadId) return;
+  await sql.query(
+    `insert into lead_reviews (user_id, lead_id, decision, note, decided_at)
+     values ($1,$2,$3,$4, now())
+     on conflict (user_id, lead_id) do update set
+       decision   = excluded.decision,
+       note       = excluded.note,
+       decided_at = now()`,
+    [userId, leadId, review.decision.slice(0, 40), (review.note ?? "").slice(0, 400)],
+  );
+}
+
+export async function loadReviews(sql: Sql, userId: string): Promise<LeadReview[]> {
+  const rows = await sql.query<Record<string, unknown>>(
+    `select lead_id, decision, note, decided_at from lead_reviews where user_id = $1`,
+    [userId],
+  );
+  return rows.map((row) => ({
+    leadId: text(row.lead_id),
+    decision: text(row.decision),
+    note: text(row.note),
+    decidedAt: iso(row.decided_at),
+  }));
+}

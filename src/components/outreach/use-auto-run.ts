@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from "react";
-import { findDuplicate, liveLeads, newLeadId, type Lead } from "@/lib/leads";
+import { findDuplicate, fillMissingLead, liveLeads, newLeadId, type Lead } from "@/lib/leads";
 import { emailPatch, websitePatch } from "@/lib/qualify";
 import { checkLeadWebsite, findLeadEmail } from "@/lib/qualify-server";
 import { researchProspects, type Prospect } from "@/lib/research";
@@ -8,6 +8,7 @@ import {
   checkReplies,
   generateEmails,
   getOutreachState,
+  saveOutreachRun,
   saveOutreachSettings,
   sendQueued,
   setEmailDecision,
@@ -37,6 +38,7 @@ import {
 } from "@/lib/outreach/auto-run";
 import type { OutreachLead } from "@/lib/outreach/types";
 import { useLeadsStore } from "@/store/leads-store";
+import { decideProspect, describeBottleneck, tallyDecisions } from "@/lib/decision";
 
 /**
  * AI Outreach — the run, driven.
@@ -203,14 +205,43 @@ export function useAutoRun(onFinished?: () => void) {
         log: appendLog([], `Run started — ${config.businessType} in ${config.location}.`),
       });
 
+      let trackedIds = new Set<string>();
+
       const finish = (next: AutoPhase, text: string, tone: AutoTone) => {
-        setRun((current) => ({
-          ...current,
-          phase: next,
-          detail: text,
-          finishedAt: new Date().toISOString(),
-          log: appendLog(current.log, `${text} ${summarise(current.counters, config.mode)}`, tone),
-        }));
+        setRun((current) => {
+          const finishedAt = new Date().toISOString();
+          const runLeads = liveLeads(useLeadsStore.getState().leads).filter((lead) => trackedIds.has(lead.id));
+          void saveOutreachRun({
+            data: {
+              startedAt: current.startedAt,
+              finishedAt,
+              location: config.location,
+              businessType: config.businessType,
+              mode: config.mode,
+              found: current.counters.found,
+              qualified: current.counters.qualified,
+              hot: current.counters.hot,
+              warm: current.counters.warm,
+              callCount: current.counters.call,
+              lowCount: current.counters.low,
+              skipped: current.counters.skipped,
+              emailsFound: current.counters.emailsFound,
+              prepared: current.counters.prepared,
+              sent: current.counters.sent,
+              replies: current.counters.replies,
+              errors: current.counters.errors,
+              bottleneck: describeBottleneck(runLeads.map((lead) => decideProspect(lead))),
+              summary: summarise(current.counters, config.mode),
+            },
+          }).catch(() => undefined);
+          return {
+            ...current,
+            phase: next,
+            detail: text,
+            finishedAt,
+            log: appendLog(current.log, `${text} ${summarise(current.counters, config.mode)}`, tone),
+          };
+        });
       };
 
       try {
@@ -277,23 +308,29 @@ export function useAutoRun(onFinished?: () => void) {
         // ── 2. Into the sheet, de-duplicated against what is already there ───
         const sheet = liveLeads(useLeadsStore.getState().leads);
         const fresh: Partial<Lead>[] = [];
+        const merges: { id: string; patch: Partial<Lead> }[] = [];
         const runLeadIds = new Set<string>();
         for (const prospect of found.prospects) {
           const duplicate = findDuplicate(prospect, sheet);
           if (duplicate) {
-            // Already on the sheet. Still a candidate — the eligibility gate
-            // decides whether it has been written to, not this.
+            // Already on the sheet. Fill any empty fields, keep outreach history.
             runLeadIds.add(duplicate.lead.id);
+            const incoming = leadFromProspect(prospect);
+            const patch = fillMissingLead(duplicate.lead, incoming);
+            if (patch) merges.push({ id: duplicate.lead.id, patch });
             continue;
           }
           const lead = leadFromProspect(prospect);
           fresh.push(lead);
           runLeadIds.add(lead.id as string);
         }
+        trackedIds = runLeadIds;
         if (fresh.length > 0) useLeadsStore.getState().addLeads(fresh);
+        if (merges.length > 0) useLeadsStore.getState().updateLeads(merges);
         log(
           `${fresh.length} new to your sheet` +
-            (found.prospects.length - fresh.length > 0
+            (merges.length > 0 ? ` · ${merges.length} updated` : "") +
+            (found.prospects.length - fresh.length - merges.length > 0
               ? ` · ${found.prospects.length - fresh.length} already there`
               : ""),
         );
@@ -390,15 +427,24 @@ export function useAutoRun(onFinished?: () => void) {
         const plan = planTargets(state.leads as OutreachLead[], context, room, runLeadIds);
         skip(plan.skipped);
         setRinging(plan.ringing);
+        const runLeads = liveLeads(useLeadsStore.getState().leads).filter((lead) => runLeadIds.has(lead.id));
+        const tally = tallyDecisions(runLeads);
         if (plan.ringing.length > 0) {
           log(
             `${plan.ringing.length} worth ringing — good prospects with no public email.`,
             "warn",
           );
         }
-        count({ qualified: plan.leadIds.length + plan.heldForTomorrow });
+        count({
+          qualified: plan.leadIds.length + plan.heldForTomorrow,
+          hot: tally.hot,
+          warm: tally.warm,
+          call: plan.ringing.length,
+          low: tally.low,
+          emailsFound: tally.emailsFound,
+        });
         log(
-          `${plan.leadIds.length + plan.heldForTomorrow} qualified · ${plan.skipped.length} skipped` +
+          `${plan.leadIds.length + plan.heldForTomorrow} qualified · ${plan.ringing.length} CALL · ${plan.skipped.length} skipped` +
             (plan.heldForTomorrow > 0 ? ` · ${plan.heldForTomorrow} held for another day` : ""),
           plan.leadIds.length > 0 ? "good" : "warn",
         );

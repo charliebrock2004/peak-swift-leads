@@ -809,12 +809,27 @@ export function normalizeMaps(value: string): string {
 
 export type LeadIdentity = Pick<Lead, "businessName" | "town" | "phone" | "mapsLink"> & {
   placeId?: string;
+  website?: string;
+  email?: string;
 };
 
 export type DuplicateMatch<T extends LeadIdentity = Lead> = {
   lead: T;
-  via: "place" | "phone" | "maps" | "name" | "name+town";
+  via: "place" | "phone" | "email" | "website" | "maps" | "name" | "name+town";
 };
+
+/** Independent business host, or "" for social/directory/empty. */
+export function independentHost(url: string | undefined): string {
+  const value = (url ?? "").trim();
+  if (!value) return "";
+  const status = classifyWebsiteUrl(value);
+  if (status === "Social Only" || status === "Directory Only" || status === "No Website Found") return "";
+  return hostnameOf(value);
+}
+
+function normalizeEmailAddress(value: string | undefined): string {
+  return (value ?? "").trim().toLowerCase();
+}
 
 export function findDuplicate<T extends LeadIdentity>(
   candidate: LeadIdentity,
@@ -825,6 +840,8 @@ export function findDuplicate<T extends LeadIdentity>(
   const maps = candidate.mapsLink.trim() ? normalizeMaps(candidate.mapsLink) : "";
   const name = normalizeName(candidate.businessName);
   const town = candidate.town.trim().toLowerCase();
+  const email = normalizeEmailAddress(candidate.email);
+  const host = independentHost(candidate.website);
 
   for (const lead of leads) {
     const leadPlace = lead.placeId?.trim() ?? "";
@@ -833,6 +850,10 @@ export function findDuplicate<T extends LeadIdentity>(
     if (phone.length >= 10 && leadPhone.length >= 10 && phone === leadPhone) {
       return { lead, via: "phone" };
     }
+    const leadEmail = normalizeEmailAddress(lead.email);
+    if (email && leadEmail && email === leadEmail) return { lead, via: "email" };
+    const leadHost = independentHost(lead.website);
+    if (host && leadHost && host === leadHost) return { lead, via: "website" };
     const leadMaps = lead.mapsLink.trim() ? normalizeMaps(lead.mapsLink) : "";
     if (maps && leadMaps && maps === leadMaps) return { lead, via: "maps" };
     const sameName = name.length >= 3 && name === normalizeName(lead.businessName);
@@ -845,6 +866,42 @@ export function findDuplicate<T extends LeadIdentity>(
     if (sameName) return { lead, via: "name" };
   }
   return null;
+}
+
+/**
+ * Fill empty fields on an existing lead from a newly discovered copy.
+ *
+ * Never overwrites a value that is already set. Never touches call history,
+ * outreach status, notes, or unsubscribe flags — those outlive rediscovery.
+ */
+const FILL_FIELDS = [
+  "phone",
+  "email",
+  "website",
+  "address",
+  "mapsLink",
+  "placeId",
+  "websiteStatus",
+  "emailSource",
+  "emailConfidence",
+  "emailFoundAt",
+  "rating",
+  "reviews",
+  "businessStatus",
+  "trade",
+] as const satisfies readonly (keyof Lead)[];
+
+export function fillMissingLead(existing: Lead, incoming: Partial<Lead>): Partial<Lead> | null {
+  const patch: Partial<Lead> = {};
+  for (const field of FILL_FIELDS) {
+    const next = incoming[field];
+    if (next === undefined || next === "") continue;
+    const current = existing[field];
+    if (current === undefined || current === "") {
+      Object.assign(patch, { [field]: next });
+    }
+  }
+  return Object.keys(patch).length > 0 ? patch : null;
 }
 
 export const SAMPLE_LEADS: Lead[] = [

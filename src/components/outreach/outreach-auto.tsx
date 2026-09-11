@@ -63,12 +63,19 @@ export function OutreachAuto({
   const stepIndex = useMemo(() => STEPS.findIndex((step) => step.phase === run.phase), [run.phase]);
 
   const tiles = [
-    { label: "Businesses found", value: run.counters.found },
-    { label: "Qualified prospects", value: run.counters.qualified },
-    { label: "Emails prepared", value: run.counters.prepared },
-    { label: "Emails sent", value: run.counters.sent, tone: "good" as const },
-    { label: "Replies received", value: run.counters.replies },
-    { label: "Skipped leads", value: run.counters.skipped },
+    { label: "Found", value: run.counters.found },
+    { label: "Qualified", value: run.counters.qualified },
+    { label: "HOT", value: run.counters.hot, tone: "hot" as const },
+    { label: "WARM", value: run.counters.warm },
+    { label: "CALL", value: run.counters.call },
+    { label: "Emails found", value: run.counters.emailsFound },
+    { label: "Prepared", value: run.counters.prepared },
+    {
+      label: run.config.mode === "send" ? "Sent" : "Would send",
+      value: run.config.mode === "send" ? run.counters.sent : run.counters.prepared,
+      tone: "good" as const,
+    },
+    { label: "Skipped", value: run.counters.skipped },
     { label: "Errors", value: run.counters.errors, tone: run.counters.errors > 0 ? ("hot" as const) : undefined },
   ];
 
@@ -80,8 +87,8 @@ export function OutreachAuto({
           <h3 className="font-display text-xl font-medium">AI Outreach</h3>
         </div>
         <p className="mt-1 text-sm text-muted">
-          Search, qualify, personalise, send and record — in one run, while this screen is open.
-          Manual review is still there in the other tabs and works exactly as before.
+          Search, qualify, personalise, then either prepare drafts or send — while this screen is
+          open. Dry run is the default. Nothing is sent unless you choose send.
         </p>
       </div>
 
@@ -162,14 +169,14 @@ export function OutreachAuto({
           <Field label="What this run does">
             <div className="mt-2 flex flex-wrap gap-2">
               <Chip
+                label="Dry run — nothing sent"
+                active={form.mode === "prepare"}
+                onClick={() => set("mode", "prepare")}
+              />
+              <Chip
                 label="Search, write and send"
                 active={form.mode === "send"}
                 onClick={() => set("mode", "send")}
-              />
-              <Chip
-                label="Prepare drafts only"
-                active={form.mode === "prepare"}
-                onClick={() => set("mode", "prepare")}
               />
             </div>
             <p className="mt-2 text-sm text-subtle">
@@ -178,8 +185,8 @@ export function OutreachAuto({
                     state.allowance.sent
                   } of ${state.allowance.limit} already gone, ${state.settings.batchSize} per batch, ${
                     state.settings.delaySeconds
-                  }s between batches.`
-                : "Runs everything except the send. Drafts land in Review for you to look at."}
+                  }s between batches. You must choose this on purpose.`
+                : "Runs search, qualify, email discovery and personalisation. Drafts land in Review. Nothing is handed to Gmail."}
             </p>
           </Field>
 
@@ -198,14 +205,14 @@ export function OutreachAuto({
           {blocked ? (
             <p className="text-sm text-warm-lead">
               Gmail is not connected, so nothing can be sent. Connect it in Settings, or choose
-              “Prepare drafts only”.
+              “Dry run — nothing sent”.
             </p>
           ) : null}
           {run.phase === "failed" && run.detail ? <p className="text-sm text-hot">{run.detail}</p> : null}
 
           <Button className="h-12 w-full md:w-auto" disabled={blocked} onClick={() => void start(form)}>
             <Play />
-            Start run
+            Start {form.mode === "prepare" ? "dry run" : "run"}
           </Button>
 
           <p className="text-xs text-subtle">
@@ -263,6 +270,20 @@ function RunView({
           ))}
         </ol>
       </div>
+
+      {run.phase === "done" && run.config.mode === "prepare" ? (
+        <div className="rounded-xl bg-accent/10 px-4 py-4">
+          <p className="font-medium">Dry run complete</p>
+          <p className="mt-1 text-sm text-muted">
+            {run.counters.found} found · {run.counters.hot} HOT · {run.counters.warm} WARM ·{" "}
+            {run.counters.call} CALL · {run.counters.emailsFound} emails found · {run.counters.prepared}{" "}
+            would be sent. Nothing was handed to Gmail.
+          </p>
+          <p className="mt-2 text-sm text-subtle">
+            Open Review to approve drafts, or Prospects → CALL to ring the ones without an email.
+          </p>
+        </div>
+      ) : null}
 
       <div className="grid grid-cols-2 gap-px overflow-hidden rounded-xl bg-border sm:grid-cols-4">
         {tiles.map((tile) => (
@@ -377,7 +398,7 @@ function WorthRinging({ leads }: { leads: RingingLead[] }) {
         ))}
       </ul>
       <p className="mt-3 text-xs text-subtle">
-        They stay on your lead sheet with everything above. Prospects → “Worth ringing” shows the
+        They stay on your lead sheet with everything above. Prospects → CALL shows the
         same list any time.
       </p>
     </div>

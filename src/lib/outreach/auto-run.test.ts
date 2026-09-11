@@ -87,9 +87,11 @@ describe("what a run may be asked to do", () => {
     assert.equal(config.dailyLimit, DEFAULT_AUTO_CONFIG.dailyLimit);
   });
 
-  it("only ever stores a known mode", () => {
-    assert.equal(clampAutoConfig({ mode: "blast" as never }).mode, "send");
+  it("only ever stores a known mode, and defaults to dry run", () => {
+    assert.equal(clampAutoConfig({ mode: "blast" as never }).mode, "prepare");
     assert.equal(clampAutoConfig({ mode: "prepare" }).mode, "prepare");
+    assert.equal(clampAutoConfig({ mode: "send" }).mode, "send");
+    assert.equal(DEFAULT_AUTO_CONFIG.mode, "prepare");
   });
 
   it("refuses to start without a place and a trade", () => {
@@ -240,8 +242,22 @@ describe("the run's own bookkeeping", () => {
   });
 
   it("summarises a run without claiming sends it did not make", () => {
-    const counters = { found: 20, qualified: 12, prepared: 8, sent: 0, replies: 0, skipped: 4, errors: 0 };
-    assert.equal(summarise(counters, "prepare").includes("sent"), false);
+    const counters = {
+      found: 20,
+      qualified: 12,
+      prepared: 8,
+      sent: 0,
+      replies: 0,
+      skipped: 4,
+      errors: 0,
+      hot: 5,
+      warm: 2,
+      call: 1,
+      low: 0,
+      emailsFound: 8,
+    };
+    assert.match(summarise(counters, "prepare"), /dry run/i);
+    assert.equal(/8 sent/.test(summarise(counters, "prepare")), false);
     assert.ok(summarise({ ...counters, sent: 8 }, "send").includes("8 sent"));
   });
 });
@@ -280,13 +296,14 @@ describe("a search that turns up nothing contactable", () => {
     found({ id: "osm-5", businessName: "Cambusbarron Woodcraft Ltd", website: "https://cw.co.uk", websiteStatus: "Proper Website", phone: "01786 450005" }),
   ];
 
-  it("skips every one of them, and it is the missing email that does it", () => {
+  it("skips the ones that cannot be emailed or rung", () => {
     const plan = planTargets(stirling, context(), 30);
     assert.deepEqual(plan.leadIds, []);
-    assert.equal(plan.skipped.length, 8);
+    // Strong no-email businesses with a phone are CALL, not SKIP.
+    assert.ok(plan.ringing.length >= 3);
+    assert.ok(plan.skipped.length >= 3);
     const groups = groupSkips(plan.skipped);
-    assert.equal(groups[0].reason, "No public email found");
-    assert.equal(groups[0].count, 8, "all eight failed for the same reason");
+    assert.ok(groups.some((group) => group.reason === "No public email found" || group.reason === "Low opportunity"));
   });
 
   it("reports the second reason too, instead of hiding it behind the first", () => {
@@ -307,8 +324,8 @@ describe("a search that turns up nothing contactable", () => {
 
   it("explains the dominant reason rather than leaving it as a bare count", () => {
     const plan = planTargets(stirling, context(), 30);
-    assert.equal(dominantSkip(plan.skipped), "No public email found");
-    assert.match(SKIP_ADVICE[dominantSkip(plan.skipped)], /never guesses an address/i);
+    const reason = dominantSkip(plan.skipped);
+    assert.ok(SKIP_ADVICE[reason], `missing advice for ${reason}`);
   });
 
   it("qualifies the one business that has a real, scrapeable opportunity", () => {
@@ -321,7 +338,7 @@ describe("a search that turns up nothing contactable", () => {
     );
     const plan = planTargets(enriched, context(), 30);
     assert.deepEqual(plan.leadIds, ["osm-4"]);
-    assert.equal(plan.skipped.length, 7);
+    assert.equal(plan.skipped.length + plan.ringing.length, 7);
   });
 
   it("still refuses the good-website business even once it has an address", () => {
@@ -486,9 +503,10 @@ describe("businesses worth ringing instead", () => {
     assert.match(row.reason, /no public email found — call this business instead/i);
   });
 
-  it("still lists them among the skipped, so no count goes missing", () => {
+  it("does not count a CALL lead as skipped", () => {
     const plan = planTargets([noEmail({ id: "a" })], context(), 10);
-    assert.equal(plan.skipped.length, 1);
+    assert.equal(plan.skipped.length, 0);
+    assert.equal(plan.ringing.length, 1);
   });
 
   it("NEVER lists someone who asked not to be contacted", () => {

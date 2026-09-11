@@ -102,6 +102,23 @@ async function loadWorld(userId: string) {
   return { sql, store, settings, emails, suppression, templates };
 }
 
+async function salesTools() {
+  const [decision, health, dash] = await Promise.all([
+    import("../decision.ts"),
+    import("./health.ts"),
+    import("./dashboard.ts"),
+  ]);
+  return {
+    decideProspect: decision.decideProspect,
+    describeBottleneck: decision.describeBottleneck,
+    needsAiReview: decision.needsAiReview,
+    tallyDecisions: decision.tallyDecisions,
+    toProspectRecord: decision.toProspectRecord,
+    assessHealth: health.assessHealth,
+    computeStats: dash.computeStats,
+  };
+}
+
 // ── AI ───────────────────────────────────────────────────────────────────────
 
 /**
@@ -217,6 +234,7 @@ export type OutreachState = {
   leads: Lead[];
   allowance: { sent: number; limit: number; remaining: number; batch: number; atLimit: boolean };
   aiAvailable: boolean;
+  database: "neon" | "pglite" | "none";
 };
 
 /**
@@ -246,6 +264,7 @@ export const getOutreachState = createServerFn({ method: "GET" })
     try {
       const { sql, store, settings, emails, templates } = await loadWorld(context.userId);
       const gmail = await import("@/lib/gmail/client.server.ts");
+      const { dbSource } = await import("@/lib/db");
       const config = gmail.googleConfig();
       const [account, suppression, leads] = await Promise.all([
         store.loadGmailAccount(sql, context.userId),
@@ -262,6 +281,7 @@ export const getOutreachState = createServerFn({ method: "GET" })
         leads,
         allowance: allowance(emails, settings),
         aiAvailable: Boolean(process.env.XAI_API_KEY?.trim()),
+        database: dbSource,
       };
     } catch (error) {
       console.error("[outreach] state failed:", error);
@@ -522,6 +542,14 @@ export const generateEmails = createServerFn({ method: "POST" })
           generatedBy: composed.generatedBy,
           status: "draft",
           gmailThreadId: data.kind === "initial" ? "" : (previous?.gmailThreadId ?? ""),
+        });
+        await store.recordActivity(sql, context.userId, {
+          id: newLeadId(),
+          type: "EMAIL_PREPARED",
+          leadId,
+          leadName: lead.businessName,
+          result: composed.generatedBy,
+          reason: verdict.ok ? "" : verdict.problems[0]?.message,
         });
 
         rows.push({
@@ -787,12 +815,27 @@ export const sendQueued = createServerFn({ method: "POST" })
             outreachStatus: email.kind === "initial" ? "Sent" : "Followed up",
             lastEmailedAt: new Date().toISOString(),
           });
+          await store.recordActivity(sql, context.userId, {
+            id: newLeadId(),
+            type: "EMAIL_SENT",
+            leadId: email.leadId,
+            leadName: email.businessName,
+            result: email.recipient,
+          });
           details.push({ id: email.id, businessName: email.businessName, status: "sent" });
           sent += 1;
           continue;
         }
 
         await store.setEmailStatus(sql, context.userId, email.id, "failed", { error: result.error });
+        await store.recordActivity(sql, context.userId, {
+          id: newLeadId(),
+          type: "EMAIL_FAILED",
+          leadId: email.leadId,
+          leadName: email.businessName,
+          result: email.recipient,
+          error: result.error,
+        });
         details.push({ id: email.id, businessName: email.businessName, status: "failed", error: result.error });
         failed += 1;
 
@@ -884,6 +927,13 @@ export const checkReplies = createServerFn({ method: "POST" })
         await store.markReplied(sql, context.userId, email.id);
         await store.updateLeadOutreach(sql, context.userId, email.leadId, { outreachStatus: "Replied" });
         replies += 1;
+        await store.recordActivity(sql, context.userId, {
+          id: newLeadId(),
+          type: "REPLY_RECEIVED",
+          leadId: email.leadId,
+          leadName: email.businessName,
+          result: email.recipient,
+        });
 
         const said = theirs.map((message) => message.snippet).join(" ");
         if (readsAsUnsubscribe(said)) {
@@ -996,3 +1046,320 @@ export const saveOutreachTemplate = createServerFn({ method: "POST" })
   });
 
 export { emptyContext };
+
+function isMissingTable(error: unknown): boolean {
+  if (typeof error === "object" && error !== null && "code" in error) {
+    return (error as { code?: string }).code === "42P01";
+  }
+  return /does not exist/i.test(error instanceof Error ? error.message : String(error ?? ""));
+}
+
+type AgentFail = { success: false; error: string; code: string; retryable: boolean };
+const agentFail = (error: string, code: string, retryable = false): AgentFail => ({
+  success: false,
+  error,
+  code,
+  retryable,
+});
+
+export const getCampaignStats = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }) => {
+    try {
+      const { settings, emails, suppression, store, sql } = await loadWorld(context.userId);
+      const { computeStats, decideProspect, describeBottleneck } = await salesTools();
+      const leads = await store.loadLeads(sql, context.userId);
+      const ctx = contextFrom(emails, suppression, settings);
+      const stats = computeStats(leads, emails, settings, ctx);
+      const decisions = leads.map((lead) => decideProspect(lead));
+      const room = allowance(emails, settings);
+      return {
+        success: true as const,
+        count: stats.leads,
+        qualified: stats.eligibleNow,
+        hot: stats.hot,
+        warm: stats.warm,
+        calls: stats.call,
+        skipped: decisions.filter((d) => d.level === "SKIP").length,
+        emailsFound: stats.emailsAvailable,
+        sentToday: stats.sentToday,
+        remainingToday: room.remaining,
+        replies: stats.replies,
+        errors: stats.failed,
+        bottleneck: describeBottleneck(decisions),
+      };
+    } catch (error) {
+      return agentFail(error instanceof Error ? error.message : "Could not load stats.", "STATS_FAILED", true);
+    }
+  });
+
+export const getSystemHealth = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }) => {
+    try {
+      const { store, emails, sql } = await loadWorld(context.userId);
+      const { assessHealth } = await salesTools();
+      const { dbSource } = await import("@/lib/db");
+      const gmail = await import("@/lib/gmail/client.server.ts");
+      const [account, leads] = await Promise.all([
+        store.loadGmailAccount(sql, context.userId),
+        store.loadLeads(sql, context.userId),
+      ]);
+      const report = assessHealth({
+        database: dbSource,
+        connection: store.publicConnection(account, gmail.googleConfig() !== null),
+        leads,
+        emails,
+        aiAvailable: Boolean(process.env.XAI_API_KEY?.trim()),
+      });
+      return { success: true as const, ...report };
+    } catch (error) {
+      return agentFail(error instanceof Error ? error.message : "Could not load health.", "HEALTH_FAILED", true);
+    }
+  });
+
+export const getActivityLog = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }) => {
+    try {
+      const { getSql } = await import("@/lib/db");
+      const store = await import("./store.server.ts");
+      const sql = await getSql();
+      const events = await store.loadActivity(sql, context.userId);
+      return { success: true as const, count: events.length, events };
+    } catch (error) {
+      if (isMissingTable(error)) return { success: true as const, count: 0, events: [] };
+      return agentFail(error instanceof Error ? error.message : "Could not load activity.", "ACTIVITY_FAILED", true);
+    }
+  });
+
+export const getReviewQueue = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }) => {
+    try {
+      const { store, sql } = await loadWorld(context.userId);
+      const { needsAiReview, decideProspect } = await salesTools();
+      const leads = await store.loadLeads(sql, context.userId);
+      let reviews: Awaited<ReturnType<typeof store.loadReviews>> = [];
+      try {
+        reviews = await store.loadReviews(sql, context.userId);
+      } catch (error) {
+        if (!isMissingTable(error)) throw error;
+      }
+      const decided = new Map(reviews.map((row) => [row.leadId, row]));
+      const queue = leads
+        .filter((lead) => needsAiReview(lead) && (decided.get(lead.id)?.decision ?? "pending") === "pending")
+        .sort((a, b) => decideProspect(b).score - decideProspect(a).score)
+        .map((lead) => ({
+          id: lead.id,
+          businessName: lead.businessName,
+          trade: lead.trade,
+          town: lead.town,
+          phone: lead.phone,
+          email: lead.email,
+          website: lead.website,
+          websiteStatus: lead.websiteStatus,
+          decision: decideProspect(lead),
+        }));
+      return { success: true as const, count: queue.length, queue };
+    } catch (error) {
+      return agentFail(error instanceof Error ? error.message : "Could not load the review queue.", "REVIEW_FAILED", true);
+    }
+  });
+
+export const recordLeadReview = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((input: unknown) => {
+    const data = (input ?? {}) as { leadId?: unknown; decision?: unknown; note?: unknown };
+    return {
+      leadId: str(data.leadId, 64),
+      decision: str(data.decision, 40) || "pending",
+      note: str(data.note, 400),
+    };
+  })
+  .handler(async ({ context, data }) => {
+    if (!data.leadId) return agentFail("Missing lead.", "INVALID", false);
+    if (!["approved", "skipped", "investigate", "pending"].includes(data.decision)) {
+      return agentFail("Decision must be approved, skipped or investigate.", "INVALID", false);
+    }
+    try {
+      const { getSql } = await import("@/lib/db");
+      const store = await import("./store.server.ts");
+      const sql = await getSql();
+      await store.upsertReview(sql, context.userId, data);
+      await store.recordActivity(sql, context.userId, {
+        id: newLeadId(),
+        type: data.decision === "approved" ? "LEAD_APPROVED" : data.decision === "skipped" ? "LEAD_SKIPPED" : "LEAD_REVIEW_REQUIRED",
+        leadId: data.leadId,
+        result: data.decision,
+        reason: data.note,
+      });
+      return { success: true as const, leadId: data.leadId, decision: data.decision };
+    } catch (error) {
+      if (isMissingTable(error)) {
+        return agentFail("Review tables are not on this database yet. Redeploy so migrations run.", "SCHEMA_MISSING", true);
+      }
+      return agentFail(error instanceof Error ? error.message : "Could not save the review.", "REVIEW_SAVE_FAILED", true);
+    }
+  });
+
+export const getFollowups = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }) => {
+    try {
+      const { settings, emails, suppression, store, sql } = await loadWorld(context.userId);
+      const { followUpsDue } = await import("./follow-ups.ts");
+      const leads = await store.loadLeads(sql, context.userId);
+      const due = followUpsDue(leads, emails, settings, contextFrom(emails, suppression, settings));
+      return {
+        success: true as const,
+        count: due.length,
+        followUpsOn: settings.followUpsOn,
+        due: due.map((entry) => ({ leadId: entry.lead.id, businessName: entry.lead.businessName, kind: entry.kind })),
+      };
+    } catch (error) {
+      return agentFail(error instanceof Error ? error.message : "Could not load follow-ups.", "FOLLOWUPS_FAILED", true);
+    }
+  });
+
+export const saveOutreachRun = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((input: unknown) => input as Record<string, unknown>)
+  .handler(async ({ context, data }) => {
+    const num = (key: string) => {
+      const value = Number(data[key]);
+      return Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0;
+    };
+    const run = {
+      id: str(data.id, 64) || newLeadId(),
+      startedAt: str(data.startedAt, 40),
+      finishedAt: str(data.finishedAt, 40),
+      location: str(data.location, 80),
+      businessType: str(data.businessType, 80),
+      mode: str(data.mode, 20) || "prepare",
+      found: num("found"),
+      qualified: num("qualified"),
+      hot: num("hot"),
+      warm: num("warm"),
+      callCount: num("callCount"),
+      lowCount: num("lowCount"),
+      skipped: num("skipped"),
+      emailsFound: num("emailsFound"),
+      prepared: num("prepared"),
+      sent: num("sent"),
+      replies: num("replies"),
+      errors: num("errors"),
+      bottleneck: str(data.bottleneck, 300),
+      summary: str(data.summary, 500),
+    };
+    try {
+      const { getSql } = await import("@/lib/db");
+      const store = await import("./store.server.ts");
+      const sql = await getSql();
+      await store.insertRun(sql, context.userId, run);
+      await store.recordActivity(sql, context.userId, {
+        id: newLeadId(),
+        type: "SEARCH_COMPLETED",
+        result: run.mode,
+        reason: run.summary,
+        metadata: JSON.stringify({ found: run.found, sent: run.sent, errors: run.errors }),
+      });
+      return { success: true as const, id: run.id };
+    } catch (error) {
+      if (isMissingTable(error)) return { success: true as const, id: run.id, stored: false };
+      return agentFail(error instanceof Error ? error.message : "Could not save the run.", "RUN_SAVE_FAILED", true);
+    }
+  });
+
+export const getRecentRuns = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }) => {
+    try {
+      const { getSql } = await import("@/lib/db");
+      const store = await import("./store.server.ts");
+      const sql = await getSql();
+      const runs = await store.loadRuns(sql, context.userId);
+      return { success: true as const, count: runs.length, runs };
+    } catch (error) {
+      if (isMissingTable(error)) return { success: true as const, count: 0, runs: [] };
+      return agentFail(error instanceof Error ? error.message : "Could not load runs.", "RUNS_FAILED", true);
+    }
+  });
+
+export const getLeads = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }) => {
+    try {
+      const { store, sql } = await loadWorld(context.userId);
+      const { toProspectRecord, tallyDecisions } = await salesTools();
+      const leads = await store.loadLeads(sql, context.userId);
+      const rows = leads.map((lead) => toProspectRecord(lead));
+      const tally = tallyDecisions(leads);
+      return {
+        success: true as const,
+        count: rows.length,
+        hot: tally.hot,
+        warm: tally.warm,
+        calls: tally.call,
+        skipped: tally.skip,
+        emailsFound: tally.emailsFound,
+        rows,
+      };
+    } catch (error) {
+      return agentFail(error instanceof Error ? error.message : "Could not load leads.", "LEADS_FAILED", true);
+    }
+  });
+
+export const getLead = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .validator((input: unknown) => ({ id: str((input as { id?: unknown })?.id, 64) }))
+  .handler(async ({ context, data }) => {
+    if (!data.id) return agentFail("Missing lead id.", "INVALID", false);
+    try {
+      const { store, sql } = await loadWorld(context.userId);
+      const { toProspectRecord } = await salesTools();
+      const lead = await store.loadLead(sql, context.userId, data.id);
+      if (!lead) return agentFail("Lead not found.", "NOT_FOUND", false);
+      return { success: true as const, lead: toProspectRecord(lead) };
+    } catch (error) {
+      return agentFail(error instanceof Error ? error.message : "Could not load the lead.", "LEAD_FAILED", true);
+    }
+  });
+
+export const qualifyLeads = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }) => {
+    try {
+      const { store, sql } = await loadWorld(context.userId);
+      const { decideProspect } = await salesTools();
+      const leads = await store.loadLeads(sql, context.userId);
+      const rows = leads.map((lead) => ({
+        id: lead.id,
+        businessName: lead.businessName,
+        trade: lead.trade,
+        town: lead.town,
+        phone: lead.phone,
+        email: lead.email,
+        website: lead.website,
+        websiteStatus: lead.websiteStatus,
+        decision: decideProspect(lead),
+      }));
+      const hot = rows.filter((row) => row.decision.level === "HOT").length;
+      const warm = rows.filter((row) => row.decision.level === "WARM").length;
+      const calls = rows.filter((row) => row.decision.level === "CALL").length;
+      return {
+        success: true as const,
+        count: rows.length,
+        qualified: hot + warm,
+        hot,
+        warm,
+        calls,
+        skipped: rows.filter((row) => row.decision.level === "SKIP").length,
+        emailsFound: rows.filter((row) => row.email.trim()).length,
+        errors: 0,
+        rows,
+      };
+    } catch (error) {
+      return agentFail(error instanceof Error ? error.message : "Could not qualify leads.", "QUALIFY_FAILED", true);
+    }
+  });

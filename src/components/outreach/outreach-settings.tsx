@@ -3,9 +3,12 @@ import { CheckCircle2, Link2, Loader2, Send, TriangleAlert, Unlink } from "lucid
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import type { OutreachActions } from "@/components/outreach/outreach-panel";
+import { HealthBadge } from "@/components/outreach/outreach-dashboard";
 import type { OutreachState } from "@/lib/outreach/server";
 import type { OutreachSettings, OutreachTemplate } from "@/lib/outreach/types";
 import { leftoverVariables, TEMPLATE_VARIABLES } from "@/lib/outreach/templates";
+import { assessHealth } from "@/lib/outreach/health";
+import type { OutreachLead } from "@/lib/outreach/types";
 import { cn } from "@/lib/utils";
 
 /**
@@ -43,6 +46,27 @@ export function OutreachSettingsTab({
 
   return (
     <section className="flex flex-col gap-6">
+      <div>
+        <h3 className="font-display text-lg font-medium">System health</h3>
+        <ul className="mt-3 divide-y divide-border overflow-hidden rounded-xl bg-surface shadow-(--shadow-border)">
+          {assessHealth({
+            database: state.database,
+            connection: state.connection,
+            leads: state.leads as OutreachLead[],
+            emails: state.emails,
+            aiAvailable: state.aiAvailable,
+          }).items.map((item) => (
+            <li key={item.id} className="flex items-start justify-between gap-3 px-4 py-2.5">
+              <div className="min-w-0">
+                <p className="text-sm font-medium">{item.label}</p>
+                <p className="text-xs text-subtle">{item.detail}</p>
+              </div>
+              <HealthBadge level={item.level} />
+            </li>
+          ))}
+        </ul>
+      </div>
+
       {/* ── Gmail ─────────────────────────────────────────────────────────── */}
       <div className="rounded-xl bg-surface px-4 py-4 shadow-(--shadow-border)">
         <h3 className="font-display text-lg font-medium">Email</h3>

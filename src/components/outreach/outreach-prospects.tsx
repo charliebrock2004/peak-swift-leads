@@ -1,54 +1,64 @@
-import { useMemo, useState } from "react";
-import { Loader2, Sparkles } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Loader2, Phone, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import type { OutreachActions } from "@/components/outreach/outreach-panel";
+import { REASON_LABELS, type Eligibility } from "@/lib/outreach/eligibility";
 import {
-  FILTER_LABELS,
-  OUTREACH_FILTERS,
-  matchesFilter,
-  REASON_LABELS,
-  type Eligibility,
-  type OutreachFilter,
-} from "@/lib/outreach/eligibility";
+  decideProspect,
+  matchesProspectFilter,
+  PROSPECT_FILTER_LABELS,
+  PROSPECT_FILTERS,
+  type ProspectFilter,
+} from "@/lib/decision";
+import { getReviewQueue, recordLeadReview } from "@/lib/outreach/server";
 import type { OutreachState } from "@/lib/outreach/server";
 import type { OutreachLead } from "@/lib/outreach/types";
+import { phoneHref } from "@/lib/leads";
 import { cn } from "@/lib/utils";
 
 /**
- * Who is worth writing to, and writing to them.
+ * Who is worth writing to, ringing, or looking at.
  *
- * The list is already ordered by opportunity, so the top of it is where to
- * start. Selecting is bulk by design — nobody should tick a hundred boxes — but
- * generating never sends anything: every draft goes to Review first.
+ * The list is already ordered by the sales decision, so the top of it is where
+ * to start. Selecting is bulk by design, but generating never sends anything:
+ * every draft goes to Review first.
  */
 export function OutreachProspects({
   state,
-  eligible,
+  rows,
   busy,
   actions,
+  filter,
+  onFilter,
 }: {
   state: OutreachState;
-  eligible: { lead: OutreachLead; eligibility: Eligibility }[];
+  rows: { lead: OutreachLead; eligibility: Eligibility }[];
   busy: string;
   actions: OutreachActions;
+  filter: ProspectFilter;
+  onFilter: (filter: ProspectFilter) => void;
 }) {
-  const [filter, setFilter] = useState<OutreachFilter>("all");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [mode, setMode] = useState(state.settings.defaultMode);
+  const [query, setQuery] = useState("");
+  const [reviews, setReviews] = useState<Map<string, string>>(new Map());
+  const [reviewBusy, setReviewBusy] = useState("");
+  const [reviewError, setReviewError] = useState("");
 
-  const rows = useMemo(
-    () =>
-      eligible
-        .filter((entry) => matchesFilter(entry.lead, entry.eligibility, filter))
-        .sort((a, b) => {
-          const rank = { High: 0, Medium: 1, Low: 2 };
-          const byBand = rank[a.eligibility.band] - rank[b.eligibility.band];
-          return byBand !== 0 ? byBand : b.eligibility.score - a.eligibility.score;
-        }),
-    [eligible, filter],
-  );
+  useEffect(() => {
+    let cancelled = false;
+    void getReviewQueue().then((result) => {
+      if (cancelled || !result.success) return;
+      const next = new Map<string, string>();
+      for (const row of result.queue) next.set(row.id, "pending");
+      setReviews(next);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [state.leads.length]);
 
-  /** Leads that already have a draft, so the list can say so. */
   const drafted = useMemo(() => {
     const map = new Map<string, string>();
     for (const email of state.emails) {
@@ -59,7 +69,36 @@ export function OutreachProspects({
     return map;
   }, [state.emails]);
 
-  const selectable = rows.filter((entry) => entry.eligibility.eligible);
+  const needle = query.trim().toLowerCase();
+
+  const visible = useMemo(() => {
+    const rank = { HOT: 0, WARM: 1, CALL: 2, LOW: 3, SKIP: 4 };
+    return rows
+      .filter((entry) => matchesProspectFilter(entry.lead, entry.eligibility, filter))
+      .filter((entry) => {
+        if (!needle) return true;
+        const hay = [
+          entry.lead.businessName,
+          entry.lead.trade,
+          entry.lead.town,
+          entry.lead.phone,
+          entry.lead.email,
+          entry.lead.website,
+        ]
+          .join(" ")
+          .toLowerCase();
+        return hay.includes(needle);
+      })
+      .sort((a, b) => {
+        const da = decideProspect(a.lead);
+        const db = decideProspect(b.lead);
+        const byLevel = rank[da.level] - rank[db.level];
+        if (byLevel !== 0) return byLevel;
+        return db.score - da.score;
+      });
+  }, [rows, filter, needle]);
+
+  const selectable = visible.filter((entry) => entry.eligibility.eligible);
   const chosen = [...selected].filter((id) => selectable.some((entry) => entry.lead.id === id));
 
   function toggle(id: string) {
@@ -77,47 +116,86 @@ export function OutreachProspects({
     setSelected(new Set());
   }
 
+  async function review(leadId: string, decision: "approved" | "skipped" | "investigate") {
+    setReviewBusy(leadId);
+    setReviewError("");
+    const result = await recordLeadReview({ data: { leadId, decision } });
+    setReviewBusy("");
+    if (result.success) {
+      setReviews((current) => {
+        const next = new Map(current);
+        next.set(leadId, decision);
+        return next;
+      });
+    } else {
+      setReviewError(result.error);
+    }
+  }
+
   const counts = {
-    high: eligible.filter((entry) => entry.eligibility.band === "High" && entry.eligibility.eligible).length,
-    medium: eligible.filter((entry) => entry.eligibility.band === "Medium" && entry.eligibility.eligible).length,
-    review: eligible.filter((entry) => !entry.eligibility.eligible && entry.eligibility.manualReview).length,
+    hot: rows.filter((entry) => decideProspect(entry.lead).level === "HOT").length,
+    warm: rows.filter((entry) => decideProspect(entry.lead).level === "WARM").length,
+    call: rows.filter((entry) => decideProspect(entry.lead).level === "CALL").length,
+    review: rows.filter((entry) => decideProspect(entry.lead).reviewRequired && decideProspect(entry.lead).level !== "SKIP").length,
   };
+
+  const reviewQueue = visible.filter((entry) => {
+    const decision = decideProspect(entry.lead);
+    return decision.reviewRequired && decision.level !== "SKIP" && (reviews.get(entry.lead.id) ?? "pending") === "pending";
+  });
 
   return (
     <section className="flex flex-col gap-4">
       <div>
-        <h3 className="font-display text-xl font-medium">
-          {selectable.length} ready to email
-        </h3>
+        <h3 className="font-display text-xl font-medium">{visible.length} prospects</h3>
         <p className="mt-1 text-sm text-muted">
-          {counts.high} high · {counts.medium} medium
-          {counts.review > 0 ? ` · ${counts.review} held for review` : ""}
+          {counts.hot} HOT · {counts.warm} WARM · {counts.call} CALL
+          {counts.review > 0 ? ` · ${counts.review} need a look` : ""}
         </p>
       </div>
 
+      <Input
+        className="h-11"
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+        placeholder="Search name, trade, town, phone, email"
+        aria-label="Search prospects"
+      />
+
       <div className="flex flex-wrap gap-2">
-        {OUTREACH_FILTERS.map((id) => (
+        {PROSPECT_FILTERS.map((id) => (
           <button
             key={id}
             type="button"
-            onClick={() => setFilter(id)}
+            onClick={() => onFilter(id)}
             className={cn(
               "h-9 rounded-full px-3 text-xs font-medium transition-colors duration-(--motion-quick)",
               filter === id ? "bg-accent text-accent-fg" : "bg-surface text-muted shadow-(--shadow-border) hover:text-fg",
             )}
           >
-            {FILTER_LABELS[id]}
+            {PROSPECT_FILTER_LABELS[id]}
           </button>
         ))}
       </div>
+
+      {filter === "review" || reviewQueue.length > 0 ? (
+        <div className="rounded-xl bg-surface px-4 py-4 shadow-(--shadow-border)">
+          <p className="text-sm font-medium">
+            {reviewQueue.length} prospect{reviewQueue.length === 1 ? "" : "s"} need a look
+          </p>
+          <p className="mt-1 text-sm text-muted">
+            Uncertain verdicts stay here instead of being emailed or skipped automatically.
+          </p>
+        </div>
+      ) : null}
 
       <div className="flex flex-wrap items-center gap-2">
         <Button
           variant="secondary"
           size="sm"
-          onClick={() => setSelected(new Set(selectable.filter((e) => e.eligibility.band === "High").map((e) => e.lead.id)))}
+          onClick={() => setSelected(new Set(selectable.filter((e) => decideProspect(e.lead).level === "HOT").map((e) => e.lead.id)))}
         >
-          Select high
+          Select HOT
         </Button>
         <Button variant="secondary" size="sm" onClick={() => setSelected(new Set(selectable.map((e) => e.lead.id)))}>
           Select all shown
@@ -145,26 +223,30 @@ export function OutreachProspects({
         </label>
       </div>
 
-      {rows.length === 0 ? (
+      {reviewError ? <p className="text-sm text-hot">{reviewError}</p> : null}
+
+      {visible.length === 0 ? (
         <div className="rounded-xl bg-surface px-5 py-12 text-center shadow-(--shadow-border)">
           <p className="font-medium">Nobody matches that</p>
           <p className="mx-auto mt-2 max-w-sm text-sm text-muted">
-            A lead becomes eligible once it has a public email found on the site, a real website
-            opportunity, and has not been contacted or ruled out.
+            Try another filter, or run Find leads / AI Outreach to bring more businesses in.
           </p>
         </div>
       ) : (
         <ul className="flex flex-col gap-2">
-          {rows.map(({ lead, eligibility }) => {
+          {visible.map(({ lead, eligibility }) => {
+            const decision = decideProspect(lead);
             const draft = drafted.get(lead.id);
             const held = !eligibility.eligible;
+            const reviewState = reviews.get(lead.id);
+            const tel = phoneHref(lead.phone);
             return (
               <li
                 key={lead.id}
                 className={cn(
                   "lead-card",
-                  eligibility.band === "High" && "lead-card-hot",
-                  eligibility.band === "Medium" && "lead-card-warm",
+                  decision.level === "HOT" && "lead-card-hot",
+                  decision.level === "WARM" && "lead-card-warm",
                 )}
               >
                 <label className="flex cursor-pointer items-start gap-3">
@@ -181,19 +263,24 @@ export function OutreachProspects({
                       <span
                         className={cn(
                           "rounded-full px-2 py-0.5 text-xs font-medium",
-                          eligibility.band === "High" && "bg-hot/15 text-hot",
-                          eligibility.band === "Medium" && "bg-warm-lead/15 text-warm-lead",
-                          eligibility.band === "Low" && "bg-surface-2 text-cold-lead",
+                          decision.level === "HOT" && "bg-hot/15 text-hot",
+                          decision.level === "WARM" && "bg-warm-lead/15 text-warm-lead",
+                          decision.level === "CALL" && "bg-accent/15 text-accent",
+                          decision.level === "LOW" && "bg-surface-2 text-cold-lead",
+                          decision.level === "SKIP" && "bg-surface-2 text-subtle",
                         )}
                       >
-                        {eligibility.band} {eligibility.score}
+                        {decision.level} {decision.score}
+                      </span>
+                      <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted">
+                        {decision.websiteGrade}
                       </span>
                       {draft ? (
                         <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted">
                           {draft === "draft" ? "Drafted" : draft === "approved" ? "Approved" : "Queued"}
                         </span>
                       ) : null}
-                      {held ? (
+                      {held && decision.level !== "CALL" ? (
                         <span className="rounded-full bg-warm-lead/15 px-2 py-0.5 text-xs text-warm-lead">
                           {REASON_LABELS[eligibility.reasons[0]] ?? "Held"}
                         </span>
@@ -203,17 +290,55 @@ export function OutreachProspects({
                     <p className="text-sm text-muted">
                       {[lead.trade, lead.town].filter(Boolean).join(" · ")}
                     </p>
-                    <p className="mt-1 truncate text-sm text-muted">{lead.email}</p>
+                    {lead.email ? (
+                      <p className="mt-1 truncate text-sm text-muted">{lead.email}</p>
+                    ) : tel ? (
+                      <a
+                        href={tel}
+                        className="mt-1 inline-flex items-center gap-1 text-sm font-medium text-accent underline-offset-4 hover:underline"
+                      >
+                        <Phone className="size-3.5" />
+                        {lead.phone}
+                      </a>
+                    ) : null}
                     <p className="mt-1 text-sm text-subtle">
-                      {lead.websiteStatus || "Website unknown"}
-                      {lead.websiteQuality ? ` · ${lead.websiteQuality}` : ""}
-                      {lead.emailConfidence ? ` · ${lead.emailConfidence} confidence` : ""}
+                      {decision.reasons[0]}
+                      {decision.confidence ? ` · ${decision.confidence}% confidence` : ""}
                     </p>
-                    {held ? (
-                      <p className="mt-2 text-xs text-subtle">
-                        Held because it looks like a sole trader or a personal mailbox. Check it, then email
-                        by hand if you are happy to.
-                      </p>
+                    {decision.evidence[0] ? (
+                      <p className="mt-1 text-xs text-subtle">{decision.evidence[0]}</p>
+                    ) : null}
+                    <p className="mt-1 text-xs text-muted">Next: {decision.nextAction}</p>
+
+                    {decision.reviewRequired && decision.level !== "SKIP" && reviewState !== "approved" && reviewState !== "skipped" ? (
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <Button
+                          size="sm"
+                          disabled={reviewBusy === lead.id}
+                          onClick={() => void review(lead.id, "approved")}
+                        >
+                          {reviewBusy === lead.id ? <Loader2 className="animate-spin" /> : null}
+                          Approve
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          disabled={reviewBusy === lead.id}
+                          onClick={() => void review(lead.id, "investigate")}
+                        >
+                          Investigate
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={reviewBusy === lead.id}
+                          onClick={() => void review(lead.id, "skipped")}
+                        >
+                          Skip
+                        </Button>
+                      </div>
+                    ) : reviewState && reviewState !== "pending" ? (
+                      <p className="mt-2 text-xs text-subtle">Review: {reviewState}</p>
                     ) : null}
                   </div>
                 </label>

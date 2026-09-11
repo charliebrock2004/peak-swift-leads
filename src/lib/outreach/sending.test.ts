@@ -69,7 +69,9 @@ describe("building the message Gmail sends", () => {
       subject: "A website for you",
       body: "Hello there",
     });
-    assert.match(mime, /^To: hello@example\.co\.uk\r\n/);
+    assert.match(mime, /^Date: /);
+    assert.match(mime, /Message-ID: </);
+    assert.match(mime, /\r\nTo: hello@example\.co\.uk\r\n/);
     assert.match(mime, /From: PeakSwift Studio <PeakSwiftStudio@gmail\.com>/);
     assert.match(mime, /Content-Transfer-Encoding: base64/);
     const body = mime.split("\r\n\r\n")[1];
@@ -88,7 +90,7 @@ describe("building the message Gmail sends", () => {
     // never happen is it becoming a header of its own.
     const headerBlock = mime.split("\r\n\r\n")[0];
     const headerNames = headerBlock.split("\r\n").map((line) => line.split(":")[0]);
-    assert.deepEqual(headerNames, ["To", "From", "Subject", "MIME-Version", "Content-Type", "Content-Transfer-Encoding"]);
+    assert.deepEqual(headerNames, ["Date", "Message-ID", "To", "From", "Subject", "MIME-Version", "Content-Type", "Content-Transfer-Encoding"]);
     assert.equal(headerBlock.split("\r\n").some((line) => /^Bcc:/i.test(line)), false);
     assert.equal(headerBlock.split("\r\n").some((line) => /^X-Evil:/i.test(line)), false);
     assert.equal(sanitizeHeaderValue("a\r\nb"), "a b");
@@ -103,7 +105,7 @@ describe("building the message Gmail sends", () => {
   it("round-trips through base64url", () => {
     const raw = buildRawMessage({ to: "a@b.co", from: "c@d.co", subject: "Hi", body: "Line one\nLine two" });
     assert.equal(/[+/=]/.test(raw), false, "base64url has no +, / or padding");
-    assert.match(decodeBase64Url(raw), /^To: a@b\.co/);
+    assert.match(decodeBase64Url(raw), /\r\nTo: a@b\.co/);
   });
 
   it("formats a display name only when there is one", () => {

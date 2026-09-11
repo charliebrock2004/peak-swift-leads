@@ -76,6 +76,9 @@ export type MessageInput = {
   inReplyTo?: string;
   references?: string;
   replyTo?: string;
+  /** Override the Date header. Tests pin this; production uses now. */
+  date?: Date;
+  messageId?: string;
 };
 
 /**
@@ -85,7 +88,13 @@ export type MessageInput = {
  * a stray "." at the start of a line cannot corrupt the message.
  */
 export function buildMimeMessage(input: MessageInput): string {
+  const date = input.date ?? new Date();
+  const messageId =
+    input.messageId ??
+    `<${date.getTime()}.${Math.random().toString(36).slice(2, 12)}@peakswift.leads>`;
   const headers: string[] = [
+    `Date: ${date.toUTCString().replace(/GMT$/, "+0000")}`,
+    `Message-ID: ${sanitizeHeaderValue(messageId)}`,
     `To: ${formatAddress(input.to)}`,
     `From: ${formatAddress(input.from, input.fromName)}`,
     `Subject: ${encodeHeader(input.subject)}`,

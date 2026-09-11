@@ -28,6 +28,7 @@ import {
   computePriority,
   downloadCsv,
   findDuplicate,
+  fillMissingLead,
   isFollowUpDue,
   liveLeads,
   resolveWebsiteStatus,
@@ -238,6 +239,28 @@ export function LeadApp() {
   function importProspects(prospects: Prospect[]) {
     const skipped = prospects.filter((prospect) => findDuplicate(prospect, leads)).length;
     const fresh = prospects.filter((prospect) => !findDuplicate(prospect, leads));
+    const merges: { id: string; patch: Partial<Lead> }[] = [];
+    for (const prospect of prospects) {
+      const duplicate = findDuplicate(prospect, leads);
+      if (!duplicate) continue;
+      const patch = fillMissingLead(duplicate.lead, {
+        phone: prospect.phone,
+        email: prospect.email,
+        website: prospect.website,
+        address: prospect.address,
+        mapsLink: prospect.mapsLink,
+        placeId: prospect.placeId,
+        websiteStatus: prospect.websiteStatus,
+        rating: prospect.rating,
+        reviews: prospect.reviews,
+        businessStatus: prospect.businessStatus,
+        trade: prospect.trade,
+        emailSource: prospect.email ? "Public listing" : "",
+        emailConfidence: prospect.email ? "MEDIUM" : "",
+        emailFoundAt: prospect.email ? new Date().toISOString() : "",
+      });
+      if (patch) merges.push({ id: duplicate.lead.id, patch });
+    }
     if (fresh.length > 0) {
       addLeads(
         fresh.map((prospect) => ({
@@ -264,6 +287,7 @@ export function LeadApp() {
         })),
       );
     }
+    if (merges.length > 0) updateLeads(merges);
     clearFilters();
     setFinding(false);
     setFindSummary({

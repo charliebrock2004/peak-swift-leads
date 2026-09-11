@@ -5,6 +5,9 @@ import { Input } from "@/components/ui/input";
 import type { OutreachActions } from "@/components/outreach/outreach-panel";
 import type { OutreachState } from "@/lib/outreach/server";
 import type { OutreachEmail } from "@/lib/outreach/types";
+import { leadFacts } from "@/lib/outreach/compose";
+import { decideProspect } from "@/lib/decision";
+import type { OutreachLead } from "@/lib/outreach/types";
 import { cn } from "@/lib/utils";
 
 /**
@@ -41,6 +44,11 @@ export function OutreachQueue({
     }
     return { drafts, ready, failed, sent };
   }, [state.emails]);
+
+  const leadsById = useMemo(() => {
+    const map = new Map(state.leads.map((lead) => [lead.id, lead]));
+    return map;
+  }, [state.leads]);
 
   const queued = groups.ready.filter((email) => email.status === "queued");
   const willSend = Math.min(queued.length, state.allowance.batch);
@@ -140,6 +148,26 @@ export function OutreachQueue({
                       <>
                         <p className="mt-2 text-sm font-medium">{email.subject}</p>
                         <p className="mt-1 text-sm whitespace-pre-wrap text-muted">{email.body}</p>
+                        {(() => {
+                          const lead = leadsById.get(email.leadId);
+                          if (!lead) return null;
+                          const decision = decideProspect(lead as OutreachLead);
+                          const facts = leadFacts(lead as OutreachLead);
+                          return (
+                            <div className="mt-3 rounded-md bg-surface-2 px-3 py-2.5">
+                              <p className="text-xs font-medium text-muted">
+                                {decision.level} {decision.score} · why this email was written
+                              </p>
+                              <ul className="mt-1 flex flex-col gap-0.5">
+                                {facts.slice(0, 6).map((fact) => (
+                                  <li key={fact} className="text-xs text-subtle">
+                                    {fact}
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          );
+                        })()}
                       </>
                     )}
 

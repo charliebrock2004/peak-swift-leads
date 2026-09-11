@@ -13,6 +13,7 @@ import { OutreachSettingsTab } from "@/components/outreach/outreach-settings";
 import { checkEligibility, emptyContext, type EligibilityContext } from "@/lib/outreach/eligibility";
 import { SETUP_COPY, type SetupReason } from "@/lib/outreach/setup-state";
 import type { OutreachLead } from "@/lib/outreach/types";
+import type { ProspectFilter } from "@/lib/decision";
 import { cn } from "@/lib/utils";
 
 const TABS = [
@@ -36,6 +37,7 @@ export type OutreachTab = (typeof TABS)[number]["id"];
  */
 export function OutreachPanel({ onClose }: { onClose: () => void }) {
   const [tab, setTab] = useState<OutreachTab>("dashboard");
+  const [prospectFilter, setProspectFilter] = useState<ProspectFilter>("all");
   const [mounted, setMounted] = useState(false);
   const { state, loading, busy, error, setError, setup, reload, actions } = useOutreach();
 
@@ -62,13 +64,15 @@ export function OutreachPanel({ onClose }: { onClose: () => void }) {
 
   const leads = useMemo(() => (state?.leads ?? []) as OutreachLead[], [state]);
 
-  const eligible = useMemo(
-    () =>
-      leads
-        .map((lead) => ({ lead, eligibility: checkEligibility(lead, context) }))
-        .filter((entry) => entry.eligibility.eligible || entry.eligibility.manualReview),
+  const rows = useMemo(
+    () => leads.map((lead) => ({ lead, eligibility: checkEligibility(lead, context) })),
     [leads, context],
   );
+
+  function goTo(next: OutreachTab, filter?: ProspectFilter) {
+    setTab(next);
+    if (filter) setProspectFilter(filter);
+  }
 
   const panel = (
     <div className="find-overlay flex flex-col bg-bg text-fg">
@@ -137,12 +141,19 @@ export function OutreachPanel({ onClose }: { onClose: () => void }) {
                   state={state}
                   context={context}
                   busy={busy}
-                  onGoTo={setTab}
+                  onGoTo={goTo}
                   onCheckReplies={() => void actions.checkReplies()}
                 />
               ) : null}
               {tab === "prospects" ? (
-                <OutreachProspects state={state} eligible={eligible} busy={busy} actions={actions} />
+                <OutreachProspects
+                  state={state}
+                  rows={rows}
+                  busy={busy}
+                  actions={actions}
+                  filter={prospectFilter}
+                  onFilter={setProspectFilter}
+                />
               ) : null}
               {tab === "review" ? <OutreachQueue state={state} busy={busy} actions={actions} /> : null}
               {tab === "auto" ? <OutreachAuto state={state} onReload={() => void reload()} /> : null}

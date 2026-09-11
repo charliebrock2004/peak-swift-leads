@@ -7,6 +7,7 @@ import {
   createLead,
   extractIndependentUrl,
   findDuplicate,
+  fillMissingLead,
   leadsToCsv,
   mergeWebsiteEvidence,
   migrateLead,
@@ -268,6 +269,56 @@ describe("duplicates", () => {
       sheet,
     );
     assert.equal(match?.via, "place");
+  });
+
+  it("matches on a public email", () => {
+    const sheet = [lead({ id: "a", businessName: "ECG Joinery", town: "Crieff", email: "info@ecgjoinery.co.uk" })];
+    const match = findDuplicate(
+      { businessName: "Other", town: "Perth", phone: "", mapsLink: "", email: "info@ecgjoinery.co.uk" },
+      sheet,
+    );
+    assert.equal(match?.via, "email");
+  });
+
+  it("matches on an independent website host, not a directory listing", () => {
+    const sheet = [lead({ id: "a", businessName: "ECG", town: "Crieff", website: "https://ecgjoinery.co.uk" })];
+    assert.equal(
+      findDuplicate(
+        { businessName: "Other", town: "Perth", phone: "", mapsLink: "", website: "http://www.ecgjoinery.co.uk/contact" },
+        sheet,
+      )?.via,
+      "website",
+    );
+    assert.equal(
+      findDuplicate(
+        { businessName: "Other", town: "Perth", phone: "", mapsLink: "", website: "https://www.yell.com/biz/ecg" },
+        sheet,
+      ),
+      null,
+    );
+  });
+});
+
+describe("fillMissingLead", () => {
+  it("fills empty fields and never overwrites what is already set", () => {
+    const existing = lead({
+      id: "a",
+      businessName: "ECG Joinery Ltd",
+      town: "Crieff",
+      phone: "",
+      email: "info@ecgjoinery.co.uk",
+      website: "",
+    });
+    const patch = fillMissingLead(existing, {
+      phone: "01764 652264",
+      email: "other@ecgjoinery.co.uk",
+      website: "https://ecgjoinery.co.uk",
+      outreachStatus: "sent",
+    });
+    assert.equal(patch?.phone, "01764 652264");
+    assert.equal(patch?.website, "https://ecgjoinery.co.uk");
+    assert.equal(patch?.email, undefined);
+    assert.equal((patch as { outreachStatus?: string } | null)?.outreachStatus, undefined);
   });
 });
 

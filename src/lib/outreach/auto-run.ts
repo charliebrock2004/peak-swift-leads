@@ -62,8 +62,8 @@ export type AutoRunConfig = {
   dailyLimit: number;
   radiusMiles: number;
   /**
-   * `prepare` runs everything except the send, leaving drafts in Review. It is
-   * the dry run — the same pipeline, with the last step withheld.
+   * `prepare` is the dry run — the same pipeline, with the last step withheld.
+   * Sending is an explicit second choice, never the default.
    */
   mode: "send" | "prepare";
 };
@@ -83,7 +83,7 @@ export const DEFAULT_AUTO_CONFIG: AutoRunConfig = {
   target: 20,
   dailyLimit: 10,
   radiusMiles: 25,
-  mode: "send",
+  mode: "prepare",
 };
 
 function clampInt(value: unknown, fallback: number, min: number, max: number): number {
@@ -100,7 +100,7 @@ export function clampAutoConfig(input: Partial<AutoRunConfig>): AutoRunConfig {
     target: clampInt(input.target, DEFAULT_AUTO_CONFIG.target, 1, AUTO_TARGET_MAX),
     dailyLimit: clampInt(input.dailyLimit, DEFAULT_AUTO_CONFIG.dailyLimit, 0, AUTO_DAILY_MAX),
     radiusMiles: clampInt(input.radiusMiles, DEFAULT_AUTO_CONFIG.radiusMiles, 5, 80),
-    mode: input.mode === "prepare" ? "prepare" : "send",
+    mode: input.mode === "send" ? "send" : "prepare",
   };
 }
 
@@ -114,7 +114,7 @@ export function configProblem(config: AutoRunConfig): string | null {
   return null;
 }
 
-/** The status view: seven numbers, each one a thing that actually happened. */
+/** The status view: numbers for things that actually happened. */
 export type AutoCounters = {
   found: number;
   qualified: number;
@@ -123,10 +123,28 @@ export type AutoCounters = {
   replies: number;
   skipped: number;
   errors: number;
+  hot: number;
+  warm: number;
+  call: number;
+  low: number;
+  emailsFound: number;
 };
 
 export function emptyCounters(): AutoCounters {
-  return { found: 0, qualified: 0, prepared: 0, sent: 0, replies: 0, skipped: 0, errors: 0 };
+  return {
+    found: 0,
+    qualified: 0,
+    prepared: 0,
+    sent: 0,
+    replies: 0,
+    skipped: 0,
+    errors: 0,
+    hot: 0,
+    warm: 0,
+    call: 0,
+    low: 0,
+    emailsFound: 0,
+  };
 }
 
 /**
@@ -281,19 +299,10 @@ export function planTargets(
       continue;
     }
     const reasons = verdict.reasons.map((reason) => REASON_LABELS[reason] ?? reason);
-    // `checkEligibility` stops at the first set of reasons, so a sole trader who
-    // also has no address reports only the missing address — and then does not
-    // appear on the call list either, with nothing on screen saying why. The
-    // hold is a fact about the lead, so report it alongside. The rule itself is
-    // unchanged: this is what is shown, not what is decided.
     if (verdict.manualReview && !verdict.reasons.includes("manual-review")) {
       reasons.push(REASON_LABELS["manual-review"]);
     }
-    skipped.push({
-      businessName: lead.businessName || "Unnamed business",
-      reasons: reasons.length > 0 ? reasons : ["Not eligible"],
-    });
-    // Refused, but only because there is nowhere to write to. Still a prospect.
+    // Refused only because there is nowhere to write to. That is CALL, not SKIP.
     if (isWorthRinging(lead, verdict)) {
       ringing.push({
         id: lead.id,
@@ -305,7 +314,12 @@ export function planTargets(
         band: verdict.band,
         reason: RINGING_REASON,
       });
+      continue;
     }
+    skipped.push({
+      businessName: lead.businessName || "Unnamed business",
+      reasons: reasons.length > 0 ? reasons : ["Not eligible"],
+    });
   }
 
   ringing.sort((a, b) => (rank[a.band] - rank[b.band]) || (b.score - a.score));
@@ -412,14 +426,18 @@ export function searchBreadth(target: number): number {
   return Math.min(100, Math.max(12, Math.round(target) * 4));
 }
 
-/** "20 found · 12 qualified · 8 sent" — the one-line summary of a finished run. */
+/** "20 found · 12 qualified · 8 prepared" — the one-line summary of a finished run. */
 export function summarise(counters: AutoCounters, mode: AutoRunConfig["mode"]): string {
   const parts = [
     `${counters.found} found`,
     `${counters.qualified} qualified`,
+    `${counters.hot} HOT`,
+    `${counters.warm} WARM`,
+    `${counters.call} CALL`,
     `${counters.prepared} prepared`,
   ];
   if (mode === "send") parts.push(`${counters.sent} sent`);
+  else parts.push("dry run — nothing handed to Gmail");
   if (counters.skipped > 0) parts.push(`${counters.skipped} skipped`);
   if (counters.errors > 0) parts.push(`${counters.errors} error${counters.errors === 1 ? "" : "s"}`);
   return parts.join(" · ");
