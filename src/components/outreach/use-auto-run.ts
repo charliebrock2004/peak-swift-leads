@@ -392,6 +392,9 @@ export function useAutoRun(onFinished?: () => void) {
                   // The scorer needs the name to tell a business's own Gmail
                   // from an unrelated one.
                   businessName: working.businessName,
+                  town: working.town,
+                  trade: working.trade,
+                  phone: working.phone,
                 },
               });
                 if (mail.ok) {

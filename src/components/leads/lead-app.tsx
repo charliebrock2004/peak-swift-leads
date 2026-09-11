@@ -409,6 +409,9 @@ export function LeadApp() {
           existingEmail: lead.email,
           existingSource: lead.emailSource,
           businessName: lead.businessName,
+          town: lead.town,
+          trade: lead.trade,
+          phone: lead.phone,
         },
       });
       applyEmailResult(lead, result, quiet);

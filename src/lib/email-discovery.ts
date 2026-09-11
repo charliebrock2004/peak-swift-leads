@@ -385,16 +385,25 @@ const METHOD_POINTS: Record<DiscoveryMethod, number> = {
   PAGE_TEXT: 20,
   INLINE_PAYLOAD: 16,
   DEOBFUSCATED: 16,
-  LISTING_FIELD: 8,
+  LISTING_FIELD: 14,
 };
 
 const SOURCE_POINTS: Record<SourceKind, number> = {
   OFFICIAL_CONTACT_PAGE: 40,
   OFFICIAL_WEBSITE: 34,
   STRUCTURED_DATA: 32,
-  PUBLIC_BUSINESS_PROFILE: 20,
-  PUBLIC_DIRECTORY: 16,
-  EXISTING_LISTING: 10,
+  PUBLIC_BUSINESS_PROFILE: 26,
+  PUBLIC_DIRECTORY: 22,
+  // An address a mapper or registrar recorded against this business. Weaker
+  // than reading it off the company's own site, but it is still a published
+  // address tied to this business by whoever maintains the listing.
+  //
+  // Calibrated so a bare listing address lands at exactly MEDIUM (36 + 14):
+  // that is what it is — good enough to write to, never good enough to call
+  // HIGH, and a domain match still leaves it below the HIGH threshold. Scoring
+  // it any lower silently discarded every `contact:email` OpenStreetMap
+  // supplied, which is the single commonest address the search ever sees.
+  EXISTING_LISTING: 36,
 };
 
 /** Loose token overlap between a mailbox and the business's name. */
@@ -435,7 +444,10 @@ export function scoreCandidate(candidate: EmailCandidate, context: ScoreContext)
     } else {
       notes.push("consumer mailbox on a different domain");
     }
-  } else if (siteHost) {
+  } else if (siteHost && candidate.source !== "EXISTING_LISTING") {
+    // Only a penalty when we actually read the address off a site whose domain
+    // disagrees with it. A listing address is not published on the website at
+    // all, so there is no disagreement to penalise.
     score -= 8;
     notes.push("different domain from the website");
   }

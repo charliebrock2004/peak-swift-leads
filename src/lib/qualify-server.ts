@@ -23,6 +23,15 @@ import {
   type DiscoveryResult,
   type EmailCandidate,
 } from "@/lib/email-discovery";
+
+import {
+  bestWebsite,
+  candidateDomains,
+  pageText,
+  pageTitle,
+  scoreWebsiteMatch,
+  type WebsiteMatch,
+} from "@/lib/website-discovery";
 import {
   scoreWebsitePage,
   type FoundEmail,
@@ -73,6 +82,8 @@ export type FindEmailResult =
        * keeps working unchanged.
        */
       discovery: DiscoveryResult;
+      /** Set when the website was found by us rather than carried on the listing. */
+      website?: WebsiteMatch | null;
     }
   | { ok: false; error: string };
 
@@ -156,6 +167,16 @@ async function fetchWithFallbacks(
   return null;
 }
 
+/**
+ * How many candidate domains one lead may cost.
+ *
+ * Four, fetched at once with a short timeout, so a lead with no website adds a
+ * couple of seconds rather than twenty. They are guesses; the budget is
+ * deliberately small because the corroboration check, not the breadth of the
+ * guessing, is what makes this safe.
+ */
+const WEBSITE_PROBES = 4;
+
 /** Absolute URLs for the well-known contact paths on this origin. */
 function wellKnownPaths(origin: string): string[] {
   return CANDIDATE_PATHS.map((path) => `${origin}${path}`);
@@ -170,6 +191,10 @@ export const findLeadEmail = createServerFn({ method: "POST" })
       existingEmail: asString(source.existingEmail, 160).toLowerCase(),
       existingSource: asString(source.existingSource, 80),
       businessName: asString(source.businessName, 160),
+      // Identity signals, for corroborating a website we had to go looking for.
+      town: asString(source.town, 80),
+      trade: asString(source.trade, 80),
+      phone: asString(source.phone, 40),
     };
   })
   .handler(async ({ data }): Promise<FindEmailResult> => {
@@ -211,7 +236,46 @@ export const findLeadEmail = createServerFn({ method: "POST" })
       return page;
     };
 
-    const href = websiteHref(data.website);
+    let href = websiteHref(data.website);
+    let discoveredSite: WebsiteMatch | null = null;
+
+    // No usable website on the listing? Go and find one before giving up.
+    //
+    // Eight of twelve leads in a live Perth run died here, never reaching email
+    // discovery at all. OSM and Companies House record a URL for a minority of
+    // small businesses, so an empty field is not evidence that none exists.
+    //
+    // Candidate hostnames are guesses and are treated as such: each is fetched
+    // and kept ONLY if the page carries this business's own phone number, or
+    // its name together with its town. Anything less is discarded, because a
+    // wrongly attached site yields a confident, evidenced, wrong address.
+    const socialOrDirectory =
+      href && (classifyWebsiteUrl(href) === "Social Only" || classifyWebsiteUrl(href) === "Directory Only");
+    if ((!href || socialOrDirectory) && data.businessName) {
+      const identity = {
+        businessName: data.businessName, town: data.town, trade: data.trade, phone: data.phone,
+      };
+      // Concurrently: most candidate domains do not resolve, and waiting out
+      // four DNS failures one after another would add twenty seconds to every
+      // lead that has no website — which is most of them.
+      const probes = candidateDomains(data.businessName, data.town, data.trade, WEBSITE_PROBES);
+      attempts += probes.length;
+      sourcesChecked.push(...probes.map((host) => `https://${host}`));
+      const settled = await Promise.all(
+        probes.map(async (host): Promise<WebsiteMatch | null> => {
+          const probe = `https://${host}`;
+          const page = await fetchWithFallbacks(probe, 2500);
+          if (!page?.ok || !page.html) return null;
+          return scoreWebsiteMatch(
+            { url: page.finalUrl || probe, text: pageText(page.html), title: pageTitle(page.html) },
+            identity,
+          );
+        }),
+      );
+      discoveredSite = bestWebsite(settled.filter((match): match is WebsiteMatch => match !== null));
+      if (discoveredSite) href = discoveredSite.url;
+    }
+
     const scrapable = href && classifyWebsiteUrl(href) !== "Social Only" && classifyWebsiteUrl(href) !== "Directory Only";
 
     if (!href) {
@@ -279,7 +343,14 @@ export const findLeadEmail = createServerFn({ method: "POST" })
     candidates.push(...listingCandidate());
 
     const result = decide({ candidates, context, sourcesChecked, attempts, failure, sawContactPage });
-    return { ok: true, found: toFoundEmail(result), foundAt, message: result.reason ?? "", discovery: result };
+    return {
+      ok: true,
+      found: toFoundEmail(result),
+      foundAt,
+      message: result.reason ?? "",
+      discovery: result,
+      website: discoveredSite,
+    };
   });
 
 /**
