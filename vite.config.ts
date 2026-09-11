@@ -157,6 +157,45 @@ export default defineConfig(({ command, isPreview }) => ({
     strictPort: true,
   },
   resolve: { tsconfigPaths: true },
+  /**
+   * Keep the server build in one chunk.
+   *
+   * Past roughly fifteen `createServerFn` exports across the SSR graph,
+   * rolldown splits the entry into a facade plus a content chunk and emits
+   * `export { ssr_exports as s }` from the facade without ever emitting the
+   * `var ssr_exports = …` that defines it. `vite build` stays green, the bundle
+   * cannot be linked, and every deployed route answers
+   * `{"error":true,"status":500,"unhandled":true}` with
+   * `SyntaxError: Export 'ssr_exports' is not defined in module`.
+   *
+   * That outage has now shipped twice. Splitting the server code differently
+   * only moves the threshold; one chunk removes the facade entirely. This costs
+   * nothing at runtime — Vercel loads the server as a single function anyway.
+   *
+   * `scripts/check-ssr-bundle.mjs` is the guard. If it fails, fix the bundle;
+   * do not relax the check.
+   */
+  environments: {
+    ssr: {
+      build: {
+        rollupOptions: {
+          output: {
+            // App code only. Merging node_modules too breaks better-auth's
+            // kysely adapter, which depends on its own chunk boundaries.
+            advancedChunks: {
+              groups: [
+                {
+                  name: "ssr",
+                  test: (id: string) => !id.includes("node_modules"),
+                  priority: 100,
+                },
+              ],
+            },
+          },
+        },
+      },
+    },
+  },
   plugins: [
     pgliteBootstrapPlugin(),
     // Before tanstackStart so /auth/popup never falls through to the SPA.
