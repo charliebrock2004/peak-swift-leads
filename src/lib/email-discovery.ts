@@ -40,6 +40,10 @@ export const DISCOVERY_REASONS = [
   "EMAIL_LOW_CONFIDENCE",
   "RATE_LIMITED",
   "BLOCKED_BY_SITE",
+  /** Candidates were found and every one failed identity corroboration. */
+  "WEBSITE_NOT_VERIFIED",
+  /** No search key is configured, so only the listing and guesses were tried. */
+  "SEARCH_PROVIDER_UNAVAILABLE",
 ] as const;
 export type DiscoveryReason = (typeof DISCOVERY_REASONS)[number];
 
@@ -638,6 +642,8 @@ export const REASON_LABELS: Record<DiscoveryReason, string> = {
   EMAIL_LOW_CONFIDENCE: "Only weak evidence for the address",
   RATE_LIMITED: "Site asked us to slow down",
   BLOCKED_BY_SITE: "Site blocked the request",
+  WEBSITE_NOT_VERIFIED: "Found possible sites, none provably this business",
+  SEARCH_PROVIDER_UNAVAILABLE: "No search key configured — only the listing and domain guesses were tried",
 };
 
 /** Where most of this run's addresses came from, for the one-line summary. */

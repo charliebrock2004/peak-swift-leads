@@ -25,6 +25,17 @@ import {
 } from "@/lib/email-discovery";
 
 import {
+  looksLikeOwnWebsite as looksLikeOwnWebsiteUrl,
+  buildQueries,
+  candidatesFromResults,
+  parseProvider,
+  providerRequest,
+  SEARCH_PROVIDERS,
+  type SearchProviderName,
+  type SearchResult,
+  type WebsiteLead,
+} from "@/lib/search-provider";
+import {
   bestWebsite,
   candidateDomains,
   pageText,
@@ -84,6 +95,14 @@ export type FindEmailResult =
       discovery: DiscoveryResult;
       /** Set when the website was found by us rather than carried on the listing. */
       website?: WebsiteMatch | null;
+      /** How the website was arrived at. */
+      discoveryVia?: "LISTING" | "SEARCH" | "DOMAIN_GUESS";
+      /** Which provider answered, or null when none is configured. */
+      searchProvider?: string | null;
+      searchesRun?: number;
+      searchRateLimited?: boolean;
+      /** Sites considered and turned down, so a miss can be understood. */
+      rejectedCandidates?: { url: string; why: string }[];
     }
   | { ok: false; error: string };
 
@@ -177,6 +196,46 @@ async function fetchWithFallbacks(
  */
 const WEBSITE_PROBES = 4;
 
+
+/**
+ * The configured search provider, or null.
+ *
+ * Server-only: the key is read here and never leaves. With no key the whole
+ * search layer reports itself unavailable and discovery runs exactly as it did
+ * before — search is an upgrade, not a dependency.
+ */
+function searchProvider(): { name: SearchProviderName; key: string } | null {
+  const keys: Record<SearchProviderName, string | undefined> = {
+    brave: process.env.BRAVE_SEARCH_API_KEY,
+    bing: process.env.BING_SEARCH_API_KEY,
+  };
+  for (const name of SEARCH_PROVIDERS) {
+    const key = keys[name]?.trim();
+    if (key) return { name, key };
+  }
+  return null;
+}
+
+/** One search call. Never throws; a provider that fails simply yields nothing. */
+async function runSearch(
+  provider: { name: SearchProviderName; key: string },
+  query: string,
+): Promise<{ results: SearchResult[]; rateLimited: boolean }> {
+  const { url, headers } = providerRequest(provider.name, provider.key, query);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 6000);
+  try {
+    const response = await fetch(url, { headers, signal: controller.signal });
+    if (response.status === 429) return { results: [], rateLimited: true };
+    if (!response.ok) return { results: [], rateLimited: false };
+    return { results: parseProvider(provider.name, await response.json()), rateLimited: false };
+  } catch {
+    return { results: [], rateLimited: false };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Absolute URLs for the well-known contact paths on this origin. */
 function wellKnownPaths(origin: string): string[] {
   return CANDIDATE_PATHS.map((path) => `${origin}${path}`);
@@ -195,6 +254,7 @@ export const findLeadEmail = createServerFn({ method: "POST" })
       town: asString(source.town, 80),
       trade: asString(source.trade, 80),
       phone: asString(source.phone, 40),
+      address: asString(source.address, 200),
     };
   })
   .handler(async ({ data }): Promise<FindEmailResult> => {
@@ -238,6 +298,12 @@ export const findLeadEmail = createServerFn({ method: "POST" })
 
     let href = websiteHref(data.website);
     let discoveredSite: WebsiteMatch | null = null;
+    let discoveryVia: "LISTING" | "SEARCH" | "DOMAIN_GUESS" = "LISTING";
+    let searchUsed: SearchProviderName | null = null;
+    let searchesRun = 0;
+    let searchRateLimited = false;
+    /** Candidates looked at and turned down, with the reason. */
+    const rejected: { url: string; why: string }[] = [];
 
     // No usable website on the listing? Go and find one before giving up.
     //
@@ -253,11 +319,57 @@ export const findLeadEmail = createServerFn({ method: "POST" })
       href && (classifyWebsiteUrl(href) === "Social Only" || classifyWebsiteUrl(href) === "Directory Only");
     if ((!href || socialOrDirectory) && data.businessName) {
       const identity = {
-        businessName: data.businessName, town: data.town, trade: data.trade, phone: data.phone,
+        businessName: data.businessName, town: data.town, trade: data.trade,
+        phone: data.phone, address: data.address,
       };
+
+      // ── Search first ────────────────────────────────────────────────────
+      //
+      // Domain guessing only reaches businesses whose domain resembles their
+      // name, which is a minority. Search finds the rest — a salon trading as
+      // "Salon T.Elle" at perthhairstudio.co.uk is invisible to a guess and
+      // obvious to a query. Results are candidates, never truth: each is
+      // fetched and put through the same corroboration as a guessed domain.
+      const provider = searchProvider();
+      const searchLeads: WebsiteLead[] = [];
+      if (provider) {
+        searchUsed = provider.name;
+        const collected: SearchResult[] = [];
+        for (const query of buildQueries(identity)) {
+          searchesRun += 1;
+          sourcesChecked.push(`search:${query.text}`);
+          const answer = await runSearch(provider, query.text);
+          if (answer.rateLimited) { searchRateLimited = true; break; }
+          collected.push(...answer.results);
+          // The first query usually settles it; stop paying for the rest.
+          if (collected.some((result) => looksLikeOwnWebsiteUrl(result.url))) break;
+        }
+        searchLeads.push(...candidatesFromResults(collected));
+      }
+
+      const probeMatches: WebsiteMatch[] = [];
+      for (const lead of searchLeads) {
+        if (attempts >= MAX_PAGES) break;
+        attempts += 1;
+        sourcesChecked.push(lead.origin);
+        const page = await fetchWithFallbacks(lead.origin, 3000);
+        if (!page?.ok || !page.html) { rejected.push({ url: lead.origin, why: "unreachable" }); continue; }
+        const match = scoreWebsiteMatch(
+          { url: page.finalUrl || lead.origin, text: pageText(page.html), title: pageTitle(page.html) },
+          identity,
+        );
+        if (match.score >= 75) probeMatches.push(match);
+        else rejected.push({ url: lead.origin, why: match.evidence.join("; ") || "identity not corroborated" });
+      }
+      discoveredSite = bestWebsite(probeMatches);
+      if (discoveredSite) {
+        href = discoveredSite.url;
+        discoveryVia = "SEARCH";
+      }
       // Concurrently: most candidate domains do not resolve, and waiting out
       // four DNS failures one after another would add twenty seconds to every
       // lead that has no website — which is most of them.
+      if (!discoveredSite) {
       const probes = candidateDomains(data.businessName, data.town, data.trade, WEBSITE_PROBES);
       attempts += probes.length;
       sourcesChecked.push(...probes.map((host) => `https://${host}`));
@@ -272,18 +384,36 @@ export const findLeadEmail = createServerFn({ method: "POST" })
           );
         }),
       );
-      discoveredSite = bestWebsite(settled.filter((match): match is WebsiteMatch => match !== null));
-      if (discoveredSite) href = discoveredSite.url;
+      const guessed = settled.filter((match): match is WebsiteMatch => match !== null);
+      for (const match of guessed) {
+        if (match.score < 75) rejected.push({ url: match.url, why: match.evidence.join("; ") || "identity not corroborated" });
+      }
+      discoveredSite = bestWebsite(guessed);
+      if (discoveredSite) { href = discoveredSite.url; discoveryVia = "DOMAIN_GUESS"; }
+      }
     }
 
     const scrapable = href && classifyWebsiteUrl(href) !== "Social Only" && classifyWebsiteUrl(href) !== "Directory Only";
 
     if (!href) {
       const ranked = listingCandidate();
+      // Say WHICH kind of nothing this is. "No website" when we never had a
+      // candidate; "not verified" when we had some and none proved itself;
+      // "no search key" when the one source that would have found it is off.
+      const noSiteReason: DiscoveryReason =
+        rejected.length > 0
+          ? "WEBSITE_NOT_VERIFIED"
+          : searchUsed === null
+            ? "SEARCH_PROVIDER_UNAVAILABLE"
+            : "NO_WEBSITE";
       const result = ranked.length
-        ? decide({ candidates: ranked, context, sourcesChecked: [], attempts: 0 })
-        : noWebsiteResult();
-      return { ok: true, found: toFoundEmail(result), foundAt, message: result.reason ?? "", discovery: result };
+        ? decide({ candidates: ranked, context, sourcesChecked, attempts })
+        : { ...noWebsiteResult(), reason: noSiteReason, sourcesChecked, attempts };
+      return {
+        ok: true, found: toFoundEmail(result), foundAt, message: result.reason ?? "", discovery: result,
+        website: null, discoveryVia, searchProvider: searchUsed, searchesRun,
+        searchRateLimited, rejectedCandidates: rejected,
+      };
     }
 
     if (scrapable) {
@@ -350,6 +480,11 @@ export const findLeadEmail = createServerFn({ method: "POST" })
       message: result.reason ?? "",
       discovery: result,
       website: discoveredSite,
+      discoveryVia,
+      searchProvider: searchUsed,
+      searchesRun,
+      searchRateLimited,
+      rejectedCandidates: rejected,
     };
   });
 

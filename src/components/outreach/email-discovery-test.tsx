@@ -19,21 +19,33 @@ import { cn } from "@/lib/utils";
 export function EmailDiscoveryTest() {
   const [website, setWebsite] = useState("");
   const [businessName, setBusinessName] = useState("");
+  const [town, setTown] = useState("");
+  const [trade, setTrade] = useState("");
+  const [phone, setPhone] = useState("");
+  const [address, setAddress] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState<DiscoveryResult | null>(null);
+  const [report, setReport] = useState<Awaited<ReturnType<typeof findLeadEmail>> | null>(null);
 
   async function run() {
-    if (busy || website.trim().length < 4) return;
+    if (busy || (website.trim().length < 4 && businessName.trim().length < 3)) return;
     setBusy(true);
     setError("");
     setResult(null);
     try {
       const answer = await findLeadEmail({
-        data: { website: website.trim(), businessName: businessName.trim(), existingEmail: "", existingSource: "" },
+        data: {
+          website: website.trim(), businessName: businessName.trim(),
+          town: town.trim(), trade: trade.trim(), phone: phone.trim(), address: address.trim(),
+          existingEmail: "", existingSource: "",
+        },
       });
       if (!answer.ok) setError(answer.error);
-      else setResult(answer.discovery);
+      else {
+        setResult(answer.discovery);
+        setReport(answer);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "That did not work.");
     } finally {
@@ -52,21 +64,23 @@ export function EmailDiscoveryTest() {
       </p>
 
       <div className="mt-3 grid gap-2 sm:grid-cols-2">
-        <Input
-          className="h-11"
-          value={website}
-          onChange={(event) => setWebsite(event.target.value)}
-          placeholder="example.co.uk"
-          aria-label="Website to test"
-        />
-        <Input
-          className="h-11"
-          value={businessName}
-          onChange={(event) => setBusinessName(event.target.value)}
-          placeholder="Business name (optional)"
-          aria-label="Business name"
-        />
+        <Input className="h-11" value={businessName} onChange={(e) => setBusinessName(e.target.value)}
+          placeholder="Business name" aria-label="Business name" />
+        <Input className="h-11" value={town} onChange={(e) => setTown(e.target.value)}
+          placeholder="Town" aria-label="Town" />
+        <Input className="h-11" value={trade} onChange={(e) => setTrade(e.target.value)}
+          placeholder="Trade" aria-label="Trade" />
+        <Input className="h-11" value={phone} onChange={(e) => setPhone(e.target.value)}
+          placeholder="Phone" aria-label="Phone" />
+        <Input className="h-11" value={address} onChange={(e) => setAddress(e.target.value)}
+          placeholder="Address incl. postcode" aria-label="Address" />
+        <Input className="h-11" value={website} onChange={(e) => setWebsite(e.target.value)}
+          placeholder="Website (leave blank to discover)" aria-label="Website to test" />
       </div>
+      <p className="mt-2 text-xs text-subtle">
+        Leave the website blank to watch the full waterfall: search, then domain candidates, then
+        the crawl. Phone and postcode are what prove a discovered site is the right business.
+      </p>
       <Button className="mt-3 h-11" disabled={busy || website.trim().length < 4} onClick={() => void run()}>
         {busy ? <Loader2 className="animate-spin" /> : <Search />}
         Run discovery
@@ -97,6 +111,44 @@ export function EmailDiscoveryTest() {
           <p className="text-subtle">
             {result.attempts} page{result.attempts === 1 ? "" : "s"} fetched · next action {result.nextAction}
           </p>
+
+          {report?.ok ? (
+            <div className="border-t border-border pt-2">
+              <p className="text-muted">
+                Website:{" "}
+                {report.website
+                  ? `${report.website.url} — identity ${report.website.score}/100 via ${report.discoveryVia?.toLowerCase().replace(/_/g, " ")}`
+                  : "not discovered"}
+              </p>
+              {report.website?.evidence.length ? (
+                <ul className="mt-1 flex flex-col gap-0.5">
+                  {report.website.evidence.map((line) => (
+                    <li key={line} className="text-xs text-subtle">✓ {line}</li>
+                  ))}
+                </ul>
+              ) : null}
+              <p className="mt-1 text-muted">
+                Search:{" "}
+                {report.searchProvider
+                  ? `${report.searchProvider}, ${report.searchesRun ?? 0} quer${(report.searchesRun ?? 0) === 1 ? "y" : "ies"}${report.searchRateLimited ? " (rate limited)" : ""}`
+                  : "no provider configured"}
+              </p>
+              {report.rejectedCandidates?.length ? (
+                <details className="mt-1">
+                  <summary className="cursor-pointer text-xs text-muted">
+                    {report.rejectedCandidates.length} candidate site(s) rejected
+                  </summary>
+                  <ul className="mt-1 flex flex-col gap-0.5">
+                    {report.rejectedCandidates.map((row) => (
+                      <li key={row.url} className="text-xs break-all text-subtle">
+                        {row.url} — {row.why}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              ) : null}
+            </div>
+          ) : null}
           {result.alternatives.length > 0 ? (
             <div>
               <p className="text-muted">Other addresses found:</p>

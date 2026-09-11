@@ -110,7 +110,35 @@ export type BusinessIdentity = {
   town: string;
   trade: string;
   phone: string;
+  /** Street address as the listing recorded it; usually carries the postcode. */
+  address?: string;
 };
+
+/**
+ * A UK postcode out of a free-text address.
+ *
+ * Worth isolating because it is the most specific identity signal there is: two
+ * businesses sharing a name, a town and a trade will not share a postcode.
+ */
+export function extractPostcode(address: string): string {
+  const match = address
+    .toUpperCase()
+    .match(/\b([A-Z]{1,2}\d[A-Z\d]?)\s*(\d[A-Z]{2})\b/);
+  return match ? `${match[1]} ${match[2]}` : "";
+}
+
+/** Postcodes compare without spacing, since pages write them both ways. */
+export function samePostcode(a: string, b: string): boolean {
+  const norm = (value: string) => value.toUpperCase().replace(/\s+/g, "");
+  return norm(a) !== "" && norm(a) === norm(b);
+}
+
+/** Does the page carry this postcode, however it is spaced? */
+export function pageHasPostcode(text: string, postcode: string): boolean {
+  if (!postcode) return false;
+  const wanted = postcode.toUpperCase().replace(/\s+/g, "");
+  return text.toUpperCase().replace(/\s+/g, "").includes(wanted);
+}
 
 export type WebsiteMatch = {
   url: string;
@@ -165,6 +193,14 @@ export function scoreWebsiteMatch(evidence: SiteEvidence, identity: BusinessIden
   if (identity.phone && pageHasPhone(haystack, identity.phone)) {
     score += 55;
     notes.push("the listing's phone number is printed on the page");
+  }
+
+  // The postcode is the most specific signal available: two businesses sharing
+  // a name, a town and a trade will not share one.
+  const postcode = extractPostcode(identity.address ?? "");
+  if (postcode && pageHasPostcode(haystack, postcode)) {
+    score += 45;
+    notes.push(`the listing's postcode (${postcode}) is on the page`);
   }
   if (titleHasName) {
     // The site is *about* this business, not merely mentioning it.

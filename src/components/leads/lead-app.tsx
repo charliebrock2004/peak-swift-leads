@@ -412,6 +412,7 @@ export function LeadApp() {
           town: lead.town,
           trade: lead.trade,
           phone: lead.phone,
+          address: lead.address,
         },
       });
       applyEmailResult(lead, result, quiet);

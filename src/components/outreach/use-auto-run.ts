@@ -395,6 +395,7 @@ export function useAutoRun(onFinished?: () => void) {
                   town: working.town,
                   trade: working.trade,
                   phone: working.phone,
+                  address: working.address,
                 },
               });
                 if (mail.ok) {
