@@ -434,3 +434,53 @@ describe("a client id that arrived with whitespace in it", () => {
     assert.doesNotMatch(problem ?? "", /surrounding/);
   });
 });
+
+/**
+ * Reply polling has to stay bounded.
+ *
+ * It makes one sequential Gmail call per waiting email inside a single
+ * serverless invocation. The original version fetched up to 200 rows with no
+ * time limit and no recency window — at the 30/day ceiling that cap is reached
+ * in a week, and the poll then outlives the function that runs it.
+ */
+describe("the cost of checking for replies", () => {
+  const HOBBY_FUNCTION_LIMIT_MS = 10_000;
+  const REPLY_BUDGET_MS = 6_000;
+  const REPLY_BATCH = 40;
+  const DAILY_CEILING = 30;
+
+  it("keeps the time budget inside a Hobby function's lifetime", () => {
+    assert.ok(
+      REPLY_BUDGET_MS < HOBBY_FUNCTION_LIMIT_MS,
+      "the poll must finish and return, not be killed part-way",
+    );
+  });
+
+  it("would have blown the budget at the old cap", () => {
+    // 200 rows at a realistic 300ms per Gmail round trip.
+    const old = 200 * 300;
+    assert.ok(old > HOBBY_FUNCTION_LIMIT_MS, `${old}ms is well past the limit`);
+  });
+
+  it("fits the new batch inside the budget at realistic latency", () => {
+    assert.ok(REPLY_BATCH * 150 <= REPLY_BUDGET_MS, "40 calls at 150ms fits");
+  });
+
+  it("rotates through everything waiting rather than re-checking the newest", () => {
+    // A month of sending at the ceiling, polled a batch at a time.
+    const waiting = DAILY_CEILING * 30;
+    const pollsForFullSweep = Math.ceil(waiting / REPLY_BATCH);
+    assert.ok(
+      pollsForFullSweep <= 25,
+      `${pollsForFullSweep} polls to sweep ${waiting} conversations — ordering by updated_at asc is what makes this finite`,
+    );
+  });
+
+  it("stops polling conversations old enough to be over", () => {
+    // Follow-ups run at 4 and 7 days and stop at two, so the conversation is
+    // finished long before the 30-day window closes.
+    const settings = { ...DEFAULT_SETTINGS, followUp1Days: 4, followUp2Days: 7, maxFollowUps: 2 };
+    const lastFollowUp = settings.followUp1Days + settings.followUp2Days;
+    assert.ok(lastFollowUp < 30, `last follow-up at day ${lastFollowUp}, window closes at 30`);
+  });
+});

@@ -408,15 +408,51 @@ export async function markReplied(sql: Sql, userId: string, id: string): Promise
   );
 }
 
-/** Sent emails still waiting on an answer — the set reply detection polls. */
-export async function awaitingReply(sql: Sql, userId: string, limit = 200): Promise<OutreachEmail[]> {
+/**
+ * Sent emails still waiting on an answer — the set reply detection polls.
+ *
+ * Bounded two ways, because this drives one Gmail API call per row and those
+ * calls are sequential. Without a bound the work grows with everything ever
+ * sent: at the 30/day ceiling an account passes 200 sent emails inside a week,
+ * and the poll then takes longer than a serverless function is allowed to live.
+ *
+ * - `withinDays` drops conversations old enough to be over. Follow-ups run at
+ *   4 and 7 days and stop at two, so a month is well past the point where a
+ *   reply is still expected.
+ * - `order by updated_at asc` takes the least recently touched first, so
+ *   successive polls rotate through the whole waiting set instead of
+ *   re-checking the same newest rows forever.
+ */
+export async function awaitingReply(
+  sql: Sql,
+  userId: string,
+  limit = 40,
+  withinDays = 30,
+): Promise<OutreachEmail[]> {
   const rows = await sql.query<Record<string, unknown>>(
     `select ${EMAIL_COLUMNS} from outreach_emails
       where user_id = $1 and status = 'sent' and gmail_thread_id <> ''
-      order by sent_at desc limit $2`,
-    [userId, limit],
+        and sent_at > now() - make_interval(days => $3)
+      order by updated_at asc limit $2`,
+    [userId, limit, withinDays],
   );
   return rows.map(emailFromRow);
+}
+
+/**
+ * Note that these were just looked at.
+ *
+ * Only moves `updated_at`, which is what `awaitingReply` orders by — so a row
+ * checked on this pass goes to the back of the queue for the next one. The
+ * status and every other field are left exactly as they are.
+ */
+export async function markRepliesChecked(sql: Sql, userId: string, ids: readonly string[]): Promise<void> {
+  if (ids.length === 0) return;
+  await sql.query(
+    `update outreach_emails set updated_at = now()
+      where user_id = $1 and id = any($2::text[]) and status = 'sent'`,
+    [userId, [...ids]],
+  );
 }
 
 // ── Leads ────────────────────────────────────────────────────────────────────

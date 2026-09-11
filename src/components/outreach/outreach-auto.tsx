@@ -183,6 +183,18 @@ export function OutreachAuto({
             </p>
           </Field>
 
+          {/* The whole promise of this tab is a personalised email. Without an AI
+              key every one is a template, and the only place that showed was a
+              note per email after the fact. Say it before the run starts. */}
+          {!state.aiAvailable ? (
+            <p className="text-sm text-warm-lead">
+              AI personalisation is not configured, so emails will be written from your templates
+              instead. They are still honest and specific to each business&apos;s website situation —
+              but they are not individually written. Add <code>XAI_API_KEY</code> to the deployment to
+              turn personalisation on.
+            </p>
+          ) : null}
+
           {blocked ? (
             <p className="text-sm text-warm-lead">
               Gmail is not connected, so nothing can be sent. Connect it in Settings, or choose

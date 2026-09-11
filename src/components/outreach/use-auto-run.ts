@@ -514,7 +514,21 @@ export function useAutoRun(onFinished?: () => void) {
         if (!shouldStop()) {
           phase("replies", "Checking for replies…");
           const replies = await checkReplies();
-          if (replies.ok) count({ replies: replies.replies });
+          if (replies.ok) {
+            count({ replies: replies.replies });
+            if (replies.replies > 0) {
+              log(`${replies.replies} replied — follow-ups stop for them.`, "good");
+            }
+            // The poll is bounded so it always returns; say when it did not get
+            // through everything, rather than implying nobody replied.
+            if (replies.more) {
+              log(
+                `Checked ${replies.checked} conversations — more are still waiting. ` +
+                  `Run “Check for replies” on the Overview tab to continue.`,
+                "warn",
+              );
+            }
+          }
         }
 
         finish("done", "Run finished.", "good");

@@ -821,9 +821,30 @@ export const sendQueued = createServerFn({ method: "POST" })
  * follow-ups, moves the lead to Replied, and — if the reply asks us to stop —
  * suppresses the address permanently.
  */
+/**
+ * How long one reply poll may spend talking to Gmail.
+ *
+ * Comfortably inside a Vercel Hobby function's 10 second ceiling, with room for
+ * the database round trips either side. Anything left over is picked up by the
+ * next poll.
+ */
+const REPLY_BUDGET_MS = 6_000;
+/** Rows per poll. Matches the default in `awaitingReply`. */
+const REPLY_BATCH = 40;
+
+export type ReplyReport = {
+  ok: true;
+  replies: number;
+  unsubscribes: number;
+  /** How many threads this pass actually looked at. */
+  checked: number;
+  /** True when more were waiting than this pass could reach. */
+  more: boolean;
+};
+
 export const checkReplies = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .handler(async ({ context }): Promise<{ ok: true; replies: number; unsubscribes: number; checked: number } | Fail> => {
+  .handler(async ({ context }): Promise<ReplyReport | Fail> => {
     try {
       const token = await usableToken(context.userId);
       if (!token.ok) return token;
@@ -832,11 +853,23 @@ export const checkReplies = createServerFn({ method: "POST" })
       const gmail = await import("@/lib/gmail/client.server.ts");
       const sql = await getSql();
 
+      // One Gmail call per email, sequentially, inside one serverless
+      // invocation. `awaitingReply` bounds how many rows come back; this bounds
+      // how long we spend on them, so the poll always returns an answer instead
+      // of being killed mid-way and losing the replies it had already found.
+      const deadline = Date.now() + REPLY_BUDGET_MS;
       const waiting = await store.awaitingReply(sql, context.userId);
+      const checkedIds: string[] = [];
       let replies = 0;
       let unsubscribes = 0;
+      let ranOut = false;
 
       for (const email of waiting) {
+        if (Date.now() > deadline) {
+          ranOut = true;
+          break;
+        }
+        checkedIds.push(email.id);
         const thread = await gmail.getThread(token.accessToken, email.gmailThreadId, token.email);
         if (!thread.ok) {
           if (thread.fatal) {
@@ -867,7 +900,16 @@ export const checkReplies = createServerFn({ method: "POST" })
           unsubscribes += 1;
         }
       }
-      return { ok: true, replies, unsubscribes, checked: waiting.length };
+      // Rotate what was looked at to the back of the queue, so the next pass
+      // picks up where this one stopped rather than repeating it.
+      await store.markRepliesChecked(sql, context.userId, checkedIds);
+      return {
+        ok: true,
+        replies,
+        unsubscribes,
+        checked: checkedIds.length,
+        more: ranOut || waiting.length === REPLY_BATCH,
+      };
     } catch (error) {
       console.error("[outreach] reply check failed:", error);
       return { ok: false, error: "Could not check for replies." };
