@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { findLeadEmail } from "@/lib/qualify-server";
 import { REASON_LABELS, type DiscoveryResult } from "@/lib/email-discovery";
+import { SEARCH_FAILURE_LABELS } from "@/lib/search-provider";
 import { cn } from "@/lib/utils";
 
 /**
@@ -130,9 +131,14 @@ export function EmailDiscoveryTest() {
               <p className="mt-1 text-muted">
                 Search:{" "}
                 {report.searchProvider
-                  ? `${report.searchProvider}, ${report.searchesRun ?? 0} quer${(report.searchesRun ?? 0) === 1 ? "y" : "ies"}${report.searchRateLimited ? " (rate limited)" : ""}`
+                  ? `${report.searchProvider}, ${report.searchesRun ?? 0} quer${(report.searchesRun ?? 0) === 1 ? "y" : "ies"}`
                   : "no provider configured"}
               </p>
+              {report.searchFailure ? (
+                <p className="mt-1 text-hot">
+                  Search failed: {SEARCH_FAILURE_LABELS[report.searchFailure] ?? report.searchFailure}
+                </p>
+              ) : null}
               {report.rejectedCandidates?.length ? (
                 <details className="mt-1">
                   <summary className="cursor-pointer text-xs text-muted">

@@ -235,3 +235,102 @@ export function providerRequest(
 export function parseProvider(provider: SearchProviderName, payload: unknown): SearchResult[] {
   return provider === "brave" ? parseBrave(payload) : parseBing(payload);
 }
+
+
+// ── Failure classification ───────────────────────────────────────────────────
+
+/**
+ * Why a search call did not return results.
+ *
+ * The distinction that matters most is AUTH. A rejected key returns no results,
+ * exactly like a business that genuinely has no website — and without naming
+ * it, a mistyped key looks like months of poor discovery rather than a
+ * five-second fix. Every other kind exists so a failure can be acted on rather
+ * than absorbed.
+ */
+export const SEARCH_FAILURES = [
+  "AUTH",
+  "QUOTA",
+  "RATE_LIMIT",
+  "TIMEOUT",
+  "BAD_RESPONSE",
+  "SERVER",
+  "NETWORK",
+] as const;
+export type SearchFailureKind = (typeof SEARCH_FAILURES)[number];
+
+export type SearchOutcome =
+  | { ok: true; results: SearchResult[] }
+  | { ok: false; kind: SearchFailureKind; detail: string; retryAfterMs?: number };
+
+/** Worth trying once more: transient by nature. Auth and quota are not. */
+export function isRetryable(kind: SearchFailureKind): boolean {
+  return kind === "TIMEOUT" || kind === "SERVER" || kind === "NETWORK";
+}
+
+export const SEARCH_FAILURE_LABELS: Record<SearchFailureKind, string> = {
+  AUTH: "The search API key was rejected. Check it in the deployment's environment variables.",
+  QUOTA: "The search plan's quota is used up. Discovery fell back to domain candidates.",
+  RATE_LIMIT: "The search provider asked us to slow down.",
+  TIMEOUT: "The search provider did not answer in time.",
+  BAD_RESPONSE: "The search provider returned something this app could not read.",
+  SERVER: "The search provider returned an error.",
+  NETWORK: "The search provider could not be reached.",
+};
+
+/**
+ * What an HTTP status and body mean.
+ *
+ * Both providers signal quota exhaustion differently and neither is a clean
+ * status code: Brave uses 429 with a quota message, Azure a 403. Reading the
+ * body is what separates "you are going too fast" from "you have run out",
+ * which are a wait and a bill respectively.
+ */
+export function classifySearchFailure(status: number, body = ""): { kind: SearchFailureKind; detail: string } {
+  const text = body.slice(0, 400);
+  // "exceeded" alone is not a quota signal: "Rate limit exceeded" is a request
+  // to slow down, and reporting it as an exhausted plan sends someone to their
+  // billing page over a problem that clears itself in a second.
+  const quotaish =
+    /\bquota\b|out of credits|call volume|plan limit|subscription (?:has )?(?:expired|inactive|is inactive)/i.test(text);
+
+  if (status === 401) return { kind: "AUTH", detail: "401 — key rejected" };
+  if (status === 403) {
+    return quotaish
+      ? { kind: "QUOTA", detail: "403 — quota or subscription exhausted" }
+      : { kind: "AUTH", detail: "403 — key not accepted for this endpoint" };
+  }
+  if (status === 429) {
+    return quotaish
+      ? { kind: "QUOTA", detail: "429 — quota exhausted" }
+      : { kind: "RATE_LIMIT", detail: "429 — rate limited" };
+  }
+  if (status === 422) return { kind: "BAD_RESPONSE", detail: "422 — the query was rejected" };
+  if (status >= 500) return { kind: "SERVER", detail: `${status} — provider error` };
+  return { kind: "BAD_RESPONSE", detail: `${status} — unexpected response` };
+}
+
+/** `Retry-After` in seconds or as a date, in milliseconds. Bounded. */
+export function parseRetryAfter(header: string | null, now: Date = new Date()): number | undefined {
+  if (!header) return undefined;
+  const seconds = Number(header.trim());
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.min(60_000, seconds * 1000);
+  const at = Date.parse(header);
+  if (Number.isNaN(at)) return undefined;
+  return Math.min(60_000, Math.max(0, at - now.getTime()));
+}
+
+/**
+ * Is this actually a search payload?
+ *
+ * A WAF or an error page answers 200 with HTML often enough that trusting the
+ * status alone is how a parser starts throwing in production.
+ */
+export function looksLikeJson(contentType: string | null, body: string): boolean {
+  if (contentType && /json/i.test(contentType)) return true;
+  const head = body.trimStart().slice(0, 1);
+  return head === "{" || head === "[";
+}
+
+/** Cap on a response body. A provider should never send more than this. */
+export const MAX_SEARCH_BYTES = 512 * 1024;

@@ -27,6 +27,13 @@ import {
 import {
   looksLikeOwnWebsite as looksLikeOwnWebsiteUrl,
   buildQueries,
+  classifySearchFailure,
+  isRetryable,
+  looksLikeJson,
+  MAX_SEARCH_BYTES,
+  parseRetryAfter,
+  type SearchFailureKind,
+  type SearchOutcome,
   candidatesFromResults,
   parseProvider,
   providerRequest,
@@ -100,7 +107,8 @@ export type FindEmailResult =
       /** Which provider answered, or null when none is configured. */
       searchProvider?: string | null;
       searchesRun?: number;
-      searchRateLimited?: boolean;
+      /** Named reason the search layer produced nothing, when it failed. */
+      searchFailure?: SearchFailureKind | null;
       /** Sites considered and turned down, so a miss can be understood. */
       rejectedCandidates?: { url: string; why: string }[];
     }
@@ -216,24 +224,57 @@ function searchProvider(): { name: SearchProviderName; key: string } | null {
   return null;
 }
 
-/** One search call. Never throws; a provider that fails simply yields nothing. */
+/**
+ * One search call, hardened for a live API.
+ *
+ * Never throws. Returns either results or a named failure, because the two
+ * things a caller must be able to tell apart are "this business has no website"
+ * and "your key is wrong" — which look identical if every failure is an empty
+ * array. Retries once on a transient fault and gives up on anything structural.
+ */
 async function runSearch(
   provider: { name: SearchProviderName; key: string },
   query: string,
-): Promise<{ results: SearchResult[]; rateLimited: boolean }> {
+): Promise<SearchOutcome> {
   const { url, headers } = providerRequest(provider.name, provider.key, query);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 6000);
-  try {
-    const response = await fetch(url, { headers, signal: controller.signal });
-    if (response.status === 429) return { results: [], rateLimited: true };
-    if (!response.ok) return { results: [], rateLimited: false };
-    return { results: parseProvider(provider.name, await response.json()), rateLimited: false };
-  } catch {
-    return { results: [], rateLimited: false };
-  } finally {
-    clearTimeout(timer);
-  }
+
+  const once = async (): Promise<SearchOutcome> => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 6000);
+    try {
+      const response = await fetch(url, { headers, signal: controller.signal });
+      const body = (await response.text()).slice(0, MAX_SEARCH_BYTES);
+
+      if (!response.ok) {
+        const { kind, detail } = classifySearchFailure(response.status, body);
+        return {
+          ok: false, kind, detail,
+          retryAfterMs: parseRetryAfter(response.headers.get("retry-after")) ?? undefined,
+        };
+      }
+      // A WAF or error page answering 200 with HTML is common enough that the
+      // status alone cannot be trusted.
+      if (!looksLikeJson(response.headers.get("content-type"), body)) {
+        return { ok: false, kind: "BAD_RESPONSE", detail: "200 but the body was not JSON" };
+      }
+      try {
+        return { ok: true, results: parseProvider(provider.name, JSON.parse(body)) };
+      } catch {
+        return { ok: false, kind: "BAD_RESPONSE", detail: "the JSON body could not be parsed" };
+      }
+    } catch (error) {
+      const aborted = error instanceof Error && error.name === "AbortError";
+      return aborted
+        ? { ok: false, kind: "TIMEOUT", detail: "no answer within 6s" }
+        : { ok: false, kind: "NETWORK", detail: error instanceof Error ? error.message : "request failed" };
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  const first = await once();
+  if (first.ok || !isRetryable(first.kind)) return first;
+  return once();
 }
 
 /** Absolute URLs for the well-known contact paths on this origin. */
@@ -301,7 +342,7 @@ export const findLeadEmail = createServerFn({ method: "POST" })
     let discoveryVia: "LISTING" | "SEARCH" | "DOMAIN_GUESS" = "LISTING";
     let searchUsed: SearchProviderName | null = null;
     let searchesRun = 0;
-    let searchRateLimited = false;
+    let searchFailure: SearchFailureKind | null = null;
     /** Candidates looked at and turned down, with the reason. */
     const rejected: { url: string; why: string }[] = [];
 
@@ -339,7 +380,12 @@ export const findLeadEmail = createServerFn({ method: "POST" })
           searchesRun += 1;
           sourcesChecked.push(`search:${query.text}`);
           const answer = await runSearch(provider, query.text);
-          if (answer.rateLimited) { searchRateLimited = true; break; }
+          if (!answer.ok) {
+            searchFailure = answer.kind;
+            // Auth and quota will fail identically on every remaining query.
+            if (answer.kind === "AUTH" || answer.kind === "QUOTA" || answer.kind === "RATE_LIMIT") break;
+            continue;
+          }
           collected.push(...answer.results);
           // The first query usually settles it; stop paying for the rest.
           if (collected.some((result) => looksLikeOwnWebsiteUrl(result.url))) break;
@@ -412,7 +458,7 @@ export const findLeadEmail = createServerFn({ method: "POST" })
       return {
         ok: true, found: toFoundEmail(result), foundAt, message: result.reason ?? "", discovery: result,
         website: null, discoveryVia, searchProvider: searchUsed, searchesRun,
-        searchRateLimited, rejectedCandidates: rejected,
+        searchFailure, rejectedCandidates: rejected,
       };
     }
 
@@ -483,7 +529,7 @@ export const findLeadEmail = createServerFn({ method: "POST" })
       discoveryVia,
       searchProvider: searchUsed,
       searchesRun,
-      searchRateLimited,
+      searchFailure,
       rejectedCandidates: rejected,
     };
   });
