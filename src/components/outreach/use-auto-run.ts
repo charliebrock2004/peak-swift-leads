@@ -26,6 +26,8 @@ import {
   batchDelayMs,
   clampAutoConfig,
   configProblem,
+  parseTrades,
+  tradeBreadth,
   DEFAULT_AUTO_CONFIG,
   emptyCounters,
   initialRunState,
@@ -266,48 +268,82 @@ export function useAutoRun(onFinished?: () => void) {
         // keeps going until it has enough. Most businesses found will have no
         // public email — that is the whole reason they are worth writing to —
         // so the run looks at several times the number it expects to contact.
+        //
+        // One search per trade, sharing the run's breadth rather than
+        // multiplying it, so covering four trades costs about what covering one
+        // costs. Prospects are merged across trades and de-duplicated on the
+        // same place id the single-trade path uses, because one business can
+        // be listed under two trades and must not become two leads.
+        const trades = parseTrades(config.businessType);
         const searchFor = searchBreadth(config.target);
-        const search = await runPlannedSearch({
-          location: config.location,
-          businessType: config.businessType,
-          limit: searchFor,
-          shouldCancel: shouldStop,
-          concurrency: 2,
-          onProgress: (progress) => {
-            if (progress.phase === "done") return;
-            detail(
-              `Searching ${progress.area} (${progress.index} of ${progress.total}) — ` +
-                `${progress.found} of ${progress.target} found`,
+        const perTrade = tradeBreadth(searchFor, trades.length);
+
+        const prospects: Prospect[] = [];
+        const seenProspect = new Set<string>();
+        const searchErrors: string[] = [];
+        let areaCount = 0;
+        let planLabel = config.location;
+
+        for (const [tradeIndex, trade] of trades.entries()) {
+          if (shouldStop()) break;
+          const search = await runPlannedSearch({
+            location: config.location,
+            businessType: trade,
+            limit: perTrade,
+            shouldCancel: shouldStop,
+            concurrency: 2,
+            onProgress: (progress) => {
+              if (progress.phase === "done") return;
+              const which = trades.length > 1 ? `${trade} — ` : "";
+              detail(
+                `${which}Searching ${progress.area} (${progress.index} of ${progress.total}) — ` +
+                  `${progress.found} of ${progress.target} found`,
+              );
+            },
+            research: async (input) => {
+              const result = await researchProspects({
+                data: {
+                  location: input.location,
+                  businessType: input.businessType,
+                  limit: input.limit,
+                  radiusMiles: config.radiusMiles,
+                },
+              });
+              return result;
+            },
+          });
+          searchErrors.push(...search.errors);
+          areaCount += search.plan.areas.length;
+          planLabel = search.plan.label;
+          for (const prospect of search.prospects) {
+            const key = (prospect.placeId || `${prospect.businessName}|${prospect.town}`).toLowerCase();
+            if (seenProspect.has(key)) continue;
+            seenProspect.add(key);
+            prospects.push(prospect);
+          }
+          if (trades.length > 1) {
+            log(
+              `${trade}: ${search.prospects.length} found (${tradeIndex + 1} of ${trades.length}).`,
             );
-          },
-          research: async (input) => {
-            const result = await researchProspects({
-              data: {
-                location: input.location,
-                businessType: input.businessType,
-                limit: input.limit,
-                radiusMiles: config.radiusMiles,
-              },
-            });
-            return result;
-          },
-        });
+          }
+        }
+
         if (shouldStop()) return finish("stopped", "Stopped before anything was written.", "warn");
-        for (const problem of search.errors.slice(0, 4)) log(problem, "warn");
-        if (search.prospects.length === 0) {
+        for (const problem of searchErrors.slice(0, 4)) log(problem, "warn");
+        if (prospects.length === 0) {
           finish(
             "failed",
-            search.errors[0] ??
+            searchErrors[0] ??
               `No ${config.businessType.toLowerCase()} businesses found near ${config.location}.`,
             "bad",
           );
           return;
         }
-        const found = { prospects: search.prospects, location: search.plan.label };
+        const found = { prospects, location: planLabel };
         count({ found: found.prospects.length });
         log(
-          `Found ${found.prospects.length} businesses across ${search.plan.areas.length} ` +
-            `area${search.plan.areas.length === 1 ? "" : "s"} near ${found.location}.`,
+          `Found ${found.prospects.length} businesses across ${areaCount} ` +
+            `area${areaCount === 1 ? "" : "s"} near ${found.location}.`,
           "good",
         );
 

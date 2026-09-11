@@ -20,6 +20,9 @@ import {
   isFinished,
   isRunning,
   LOG_LIMIT,
+  MAX_TRADES,
+  parseTrades,
+  tradeBreadth,
   planTargets,
   SKIP_LIMIT,
   summarise,
@@ -594,5 +597,74 @@ describe("businesses worth ringing instead", () => {
     );
     assert.deepEqual([...fromFilter].sort(), [...fromPlan].sort());
     assert.deepEqual([...fromPlan], ["ring"]);
+  });
+});
+
+describe("parseTrades", () => {
+  it("keeps a single trade exactly as one trade", () => {
+    assert.deepEqual(parseTrades("Joiner"), ["Joiner"]);
+    assert.deepEqual(parseTrades("  Joiner  "), ["Joiner"]);
+  });
+
+  it("splits a comma list into separate trades", () => {
+    assert.deepEqual(parseTrades("Joiner, Plumber, Roofer"), ["Joiner", "Plumber", "Roofer"]);
+  });
+
+  it("does not charge twice for the same trade typed twice", () => {
+    assert.deepEqual(parseTrades("Joiner, joiner, JOINER"), ["Joiner"]);
+  });
+
+  it("drops blanks and stray commas rather than searching for nothing", () => {
+    assert.deepEqual(parseTrades("Joiner, , ,Plumber,"), ["Joiner", "Plumber"]);
+    assert.deepEqual(parseTrades(""), []);
+    assert.deepEqual(parseTrades(",,,"), []);
+    assert.deepEqual(parseTrades("a"), [], "one letter is not a trade");
+  });
+
+  it("refuses to fan out past the cap, so one run's cost stays predictable", () => {
+    const many = parseTrades("Joiner, Plumber, Roofer, Builder, Plasterer, Electrician");
+    assert.equal(many.length, MAX_TRADES);
+    assert.deepEqual(many, ["Joiner", "Plumber", "Roofer", "Builder"]);
+  });
+});
+
+describe("tradeBreadth", () => {
+  it("gives a single trade the whole breadth", () => {
+    assert.equal(tradeBreadth(48, 1), 48);
+  });
+
+  it("splits the breadth between trades rather than repeating it", () => {
+    const total = 48;
+    for (const count of [2, 3, 4]) {
+      const each = tradeBreadth(total, count);
+      assert.ok(each * count <= total + count, `${count} trades must not multiply the cost`);
+    }
+  });
+
+  it("never asks for so few that a trade returns nothing", () => {
+    assert.ok(tradeBreadth(12, 4) >= 6);
+  });
+
+  it("keeps the floor even when it costs more than an even split", () => {
+    // searchBreadth never returns less than 12, so this is the smallest real
+    // run: four trades of six rather than four trades of three that find nothing.
+    assert.equal(tradeBreadth(12, 4), 6);
+  });
+
+  it("treats no trades as one trade rather than dividing by zero", () => {
+    assert.equal(tradeBreadth(20, 0), tradeBreadth(20, 1));
+  });
+});
+
+describe("configProblem with several trades", () => {
+  const base = { ...DEFAULT_AUTO_CONFIG, location: "Perth", mode: "prepare" as const };
+
+  it("accepts a comma list of trades", () => {
+    assert.equal(configProblem({ ...base, businessType: "Joiner, Plumber" }), null);
+  });
+
+  it("still refuses a run with no usable trade", () => {
+    assert.equal(configProblem({ ...base, businessType: "" }), "Choose a business type.");
+    assert.equal(configProblem({ ...base, businessType: " , , " }), "Choose a business type.");
   });
 });

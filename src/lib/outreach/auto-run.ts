@@ -95,8 +95,8 @@ function clampInt(value: unknown, fallback: number, min: number, max: number): n
 /** What a person typed, reduced to something that cannot ask for harm. */
 export function clampAutoConfig(input: Partial<AutoRunConfig>): AutoRunConfig {
   return {
-    location: String(input.location ?? "").trim().slice(0, 80),
-    businessType: String(input.businessType ?? "").trim().slice(0, 80),
+    location: String(input.location ?? "").trim().slice(0, 160),
+    businessType: String(input.businessType ?? "").trim().slice(0, 160),
     target: clampInt(input.target, DEFAULT_AUTO_CONFIG.target, 1, AUTO_TARGET_MAX),
     dailyLimit: clampInt(input.dailyLimit, DEFAULT_AUTO_CONFIG.dailyLimit, 0, AUTO_DAILY_MAX),
     radiusMiles: clampInt(input.radiusMiles, DEFAULT_AUTO_CONFIG.radiusMiles, 5, 80),
@@ -104,10 +104,58 @@ export function clampAutoConfig(input: Partial<AutoRunConfig>): AutoRunConfig {
   };
 }
 
+/**
+ * At most this many trades in one run.
+ *
+ * Not a UI nicety: every extra trade is another round of searches, and a run
+ * that quietly fans out to a dozen trades is a bill the user did not agree to.
+ * Four is enough to cover a related group — joiner, builder, roofer, plasterer
+ * — while keeping one run's cost predictable.
+ */
+export const MAX_TRADES = 4;
+
+/**
+ * The trades a run should search, from what the user typed.
+ *
+ * Commas separate trades, so "Joiner, Plumber" is two searches and "Joiner"
+ * stays exactly one. Case-insensitive de-duplication, because typing a trade
+ * twice should not double what the run costs.
+ */
+export function parseTrades(input: string): string[] {
+  const seen = new Set<string>();
+  const trades: string[] = [];
+  for (const part of input.split(",")) {
+    const trade = part.trim().slice(0, 60);
+    if (trade.length < 2) continue;
+    const key = trade.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    trades.push(trade);
+    if (trades.length === MAX_TRADES) break;
+  }
+  return trades;
+}
+
+/**
+ * How wide to search for one trade, when the run covers several.
+ *
+ * The whole run's breadth is divided between the trades rather than repeated
+ * for each, so searching four trades costs about what searching one costs.
+ *
+ * The floor is the exception and it is deliberate: below six, one unlucky area
+ * returns nothing and the trade contributes no leads at all, so a very small
+ * target spread across four trades does cost more than the same target on one.
+ * Paying a little more beats running a search too thin to return anything.
+ */
+export function tradeBreadth(total: number, tradeCount: number): number {
+  const each = Math.ceil(total / Math.max(1, tradeCount));
+  return Math.max(6, Math.min(total, each));
+}
+
 /** Why a run cannot start. Null means it can. */
 export function configProblem(config: AutoRunConfig): string | null {
   if (config.location.length < 2) return "Choose a town or area.";
-  if (config.businessType.length < 2) return "Choose a business type.";
+  if (parseTrades(config.businessType).length === 0) return "Choose a business type.";
   if (config.mode === "send" && config.dailyLimit === 0) {
     return "The daily limit is 0, so nothing could be sent. Raise it, or choose Prepare only.";
   }

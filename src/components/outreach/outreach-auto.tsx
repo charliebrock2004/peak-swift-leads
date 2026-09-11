@@ -14,6 +14,8 @@ import {
   PHASE_LABELS,
   RINGING_REASON,
   SKIP_ADVICE,
+  MAX_TRADES,
+  parseTrades,
   type AutoRunConfig,
   type RingingLead,
 } from "@/lib/outreach/auto-run";
@@ -141,7 +143,7 @@ export function OutreachAuto({
           </Field>
 
           <Field label="Business type">
-            <Chips
+            <TradeChips
               options={TRADE_SUGGESTIONS}
               value={form.businessType}
               onChange={(value) => set("businessType", value)}
@@ -150,7 +152,7 @@ export function OutreachAuto({
               className="mt-3 h-11"
               value={form.businessType}
               onChange={(event) => set("businessType", event.target.value)}
-              placeholder="Or type a trade"
+              placeholder="Or type trades, separated by commas"
               aria-label="Business type"
             />
           </Field>
@@ -491,6 +493,47 @@ function Chips({
         <Chip key={option} label={option} active={value === option} onClick={() => onChange(option)} />
       ))}
     </div>
+  );
+}
+
+/**
+ * Trades toggle instead of replacing each other, because one run can cover
+ * several. Tapping a selected trade removes it, so the chips and the text field
+ * always describe the same list and neither can contradict the other. Past
+ * `MAX_TRADES` the extra chips stop responding rather than silently costing
+ * searches the run would not admit to.
+ */
+function TradeChips({
+  options,
+  value,
+  onChange,
+}: {
+  options: readonly string[];
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const chosen = parseTrades(value);
+  const has = (option: string) => chosen.some((trade) => trade.toLowerCase() === option.toLowerCase());
+  const toggle = (option: string) => {
+    const next = has(option)
+      ? chosen.filter((trade) => trade.toLowerCase() !== option.toLowerCase())
+      : [...chosen, option].slice(0, MAX_TRADES);
+    onChange(next.join(", "));
+  };
+  return (
+    <>
+      <div className="mt-2 flex flex-wrap gap-2">
+        {options.map((option) => (
+          <Chip key={option} label={option} active={has(option)} onClick={() => toggle(option)} />
+        ))}
+      </div>
+      {chosen.length > 1 ? (
+        <p className="mt-2 text-xs text-subtle">
+          {chosen.length} trades in one run. The search is split between them, so this costs about
+          what one trade costs — it does not look {chosen.length} times as hard at each.
+        </p>
+      ) : null}
+    </>
   );
 }
 
