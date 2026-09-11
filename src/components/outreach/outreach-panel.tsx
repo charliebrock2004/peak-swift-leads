@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { useOutreach } from "@/components/outreach/use-outreach";
 import { OutreachDashboard } from "@/components/outreach/outreach-dashboard";
 import { OutreachProspects } from "@/components/outreach/outreach-prospects";
+import { OutreachAuto } from "@/components/outreach/outreach-auto";
 import { OutreachQueue } from "@/components/outreach/outreach-queue";
 import { OutreachLists } from "@/components/outreach/outreach-lists";
 import { OutreachSettingsTab } from "@/components/outreach/outreach-settings";
@@ -18,6 +19,9 @@ const TABS = [
   { id: "dashboard", label: "Overview" },
   { id: "prospects", label: "Prospects" },
   { id: "review", label: "Review" },
+  // Automation sits beside the manual workflow, never in front of it: the
+  // Prospects → Review → Send path is unchanged and is still the default.
+  { id: "auto", label: "AI Outreach" },
   { id: "replies", label: "Replies" },
   { id: "settings", label: "Settings" },
 ] as const;
@@ -27,14 +31,13 @@ export type OutreachTab = (typeof TABS)[number]["id"];
  * Outreach, as a full-screen overlay over the lead sheet.
  *
  * Same shape as Find leads and Import: the sheet stays exactly as it was, and
- * this is a place you go and come back from. Five tabs, because six was one too
- * many to read on a phone — suppression lives with Replies, and templates with
- * Settings.
+ * this is a place you go and come back from. Suppression lives with Replies and
+ * templates with Settings, so the tab strip stays readable on a phone.
  */
 export function OutreachPanel({ onClose }: { onClose: () => void }) {
   const [tab, setTab] = useState<OutreachTab>("dashboard");
   const [mounted, setMounted] = useState(false);
-  const { state, loading, busy, error, setError, setup, actions } = useOutreach();
+  const { state, loading, busy, error, setError, setup, reload, actions } = useOutreach();
 
   useEffect(() => setMounted(true), []);
 
@@ -142,6 +145,7 @@ export function OutreachPanel({ onClose }: { onClose: () => void }) {
                 <OutreachProspects state={state} eligible={eligible} busy={busy} actions={actions} />
               ) : null}
               {tab === "review" ? <OutreachQueue state={state} busy={busy} actions={actions} /> : null}
+              {tab === "auto" ? <OutreachAuto state={state} onReload={() => void reload()} /> : null}
               {tab === "replies" ? <OutreachLists state={state} busy={busy} actions={actions} /> : null}
               {tab === "settings" ? <OutreachSettingsTab state={state} busy={busy} actions={actions} /> : null}
             </>

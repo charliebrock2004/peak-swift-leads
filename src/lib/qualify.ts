@@ -7,9 +7,11 @@
  */
 import {
   classifyWebsiteUrl,
+  computeOpportunity,
   hasWebsite,
   hostnameOf,
   type EmailConfidence,
+  type Lead,
   type WebsiteQuality,
   type WebsiteStatus,
 } from "./leads.ts";
@@ -345,4 +347,44 @@ export function inventingEmailWouldBe(domain: string): string {
 
 export function hasWebsiteToCheck(website: string): boolean {
   return hasWebsite(website) && Boolean(hostnameOf(website));
+}
+
+/**
+ * Turning a check result into a lead patch.
+ *
+ * Extracted so the lead sheet's buttons and the AI Outreach run apply *exactly*
+ * the same fields in the same way. Two copies of this mapping would eventually
+ * disagree, and the one that drifts would be the one deciding who gets emailed.
+ */
+export function websitePatch(
+  lead: Pick<Lead, "website" | "websiteStatus" | "websiteQuality" | "email" | "emailConfidence" | "reviews" | "rating" | "businessStatus">,
+  check: WebsiteCheck,
+  checkedAt: string,
+): Partial<Lead> {
+  const patch: Partial<Lead> = {
+    websiteQuality: check.quality,
+    websiteScore: check.score,
+    websiteAnalysis: check.analysis,
+    websiteCheckedAt: checkedAt,
+  };
+  if (check.websiteStatus) patch.websiteStatus = check.websiteStatus;
+  patch.opportunityScore = computeOpportunity({ ...lead, ...patch } as Lead);
+  return patch;
+}
+
+/** The same, for an email lookup. `null` means looked and found nothing. */
+export function emailPatch(
+  lead: Pick<Lead, "website" | "websiteStatus" | "websiteQuality" | "email" | "emailConfidence" | "reviews" | "rating" | "businessStatus">,
+  found: FoundEmail | null,
+  foundAt: string,
+): Partial<Lead> {
+  if (!found) return { emailFoundAt: foundAt };
+  const patch: Partial<Lead> = {
+    email: found.email,
+    emailSource: found.source,
+    emailConfidence: found.confidence,
+    emailFoundAt: foundAt,
+  };
+  patch.opportunityScore = computeOpportunity({ ...lead, ...patch } as Lead);
+  return patch;
 }

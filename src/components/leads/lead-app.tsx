@@ -45,6 +45,7 @@ import {
   type WebsiteStatus,
 } from "@/lib/leads";
 import { checkLeadWebsite, findLeadEmail } from "@/lib/qualify-server";
+import { emailPatch, websitePatch } from "@/lib/qualify";
 import type { Prospect } from "@/lib/research";
 import { useLeadSync } from "@/lib/use-lead-sync";
 import { cn } from "@/lib/utils";
@@ -329,15 +330,7 @@ export function LeadApp() {
       if (!quiet) toast(result.error);
       return false;
     }
-    const patch: Partial<Lead> = {
-      websiteQuality: result.check.quality,
-      websiteScore: result.check.score,
-      websiteAnalysis: result.check.analysis,
-      websiteCheckedAt: result.checkedAt,
-    };
-    if (result.check.websiteStatus) patch.websiteStatus = result.check.websiteStatus;
-    patch.opportunityScore = computeOpportunity({ ...lead, ...patch });
-    updateLead(lead.id, patch);
+    updateLead(lead.id, websitePatch(lead, result.check, result.checkedAt));
     if (!quiet) {
       const quality = result.check.quality;
       const label = quality ? WEBSITE_QUALITY_LABEL[quality] : "Checked";
@@ -356,19 +349,11 @@ export function LeadApp() {
       if (!quiet) toast(result.error);
       return false;
     }
+    updateLead(lead.id, emailPatch(lead, result.found, result.foundAt));
     if (!result.found) {
-      updateLead(lead.id, { emailFoundAt: result.foundAt });
       if (!quiet) toast("No public email found");
       return true;
     }
-    const patch: Partial<Lead> = {
-      email: result.found.email,
-      emailSource: result.found.source,
-      emailConfidence: result.found.confidence,
-      emailFoundAt: result.foundAt,
-    };
-    patch.opportunityScore = computeOpportunity({ ...lead, ...patch });
-    updateLead(lead.id, patch);
     if (!quiet) toast(`Found ${result.found.email}`);
     return true;
   }
