@@ -18,7 +18,12 @@
  * honest, not the client being trusted.
  */
 import type { Lead } from "../leads.ts";
-import { checkEligibility, REASON_LABELS, type EligibilityContext } from "./eligibility.ts";
+import {
+  checkEligibility,
+  isWorthRinging,
+  REASON_LABELS,
+  type EligibilityContext,
+} from "./eligibility.ts";
 import type { OutreachEmail, OutreachLead, OutreachSettings } from "./types.ts";
 
 /** Where a run has got to. `stopped` is you pressing Stop; `failed` is a fault. */
@@ -141,6 +146,8 @@ export type AutoRunState = {
   config: AutoRunConfig;
   counters: AutoCounters;
   skips: AutoSkip[];
+  /** Good prospects with no public address — the call list, not a failure list. */
+  ringing: RingingLead[];
   log: AutoEvent[];
   /** What is happening right now, for the line under the phase. */
   detail: string;
@@ -154,6 +161,7 @@ export function initialRunState(config: AutoRunConfig): AutoRunState {
     config,
     counters: emptyCounters(),
     skips: [],
+    ringing: [],
     log: [],
     detail: "",
     startedAt: "",
@@ -213,6 +221,28 @@ export function autoContext(
   };
 }
 
+/**
+ * A business worth ringing: a real opportunity that simply cannot be emailed.
+ *
+ * Everything a phone call needs, carried over from the lead as it stands. The
+ * lead itself is untouched and still in the sheet — this is a view of it, not a
+ * copy, so it can never drift from the row it came from.
+ */
+export type RingingLead = {
+  id: string;
+  businessName: string;
+  phone: string;
+  town: string;
+  websiteStatus: string;
+  score: number;
+  band: "High" | "Medium" | "Low";
+  /** Why it could not be emailed, in the words the screen shows. */
+  reason: string;
+};
+
+/** The sentence shown against every worth-ringing business. */
+export const RINGING_REASON = "Good prospect, but no public email found — call this business instead.";
+
 export type TargetPlan = {
   /** Lead ids to write to, best opportunity first, never more than `room`. */
   leadIds: string[];
@@ -220,6 +250,8 @@ export type TargetPlan = {
   skipped: AutoSkip[];
   /** Leads that were eligible but did not fit in today's remaining allowance. */
   heldForTomorrow: number;
+  /** Good prospects that cannot be emailed, best opportunity first. */
+  ringing: RingingLead[];
 };
 
 /**
@@ -239,6 +271,7 @@ export function planTargets(
   const rank = { High: 0, Medium: 1, Low: 2 };
   const eligible: { lead: OutreachLead; band: "High" | "Medium" | "Low"; score: number }[] = [];
   const skipped: AutoSkip[] = [];
+  const ringing: RingingLead[] = [];
 
   for (const lead of leads) {
     if (onlyIds && !onlyIds.has(lead.id)) continue;
@@ -248,11 +281,34 @@ export function planTargets(
       continue;
     }
     const reasons = verdict.reasons.map((reason) => REASON_LABELS[reason] ?? reason);
+    // `checkEligibility` stops at the first set of reasons, so a sole trader who
+    // also has no address reports only the missing address — and then does not
+    // appear on the call list either, with nothing on screen saying why. The
+    // hold is a fact about the lead, so report it alongside. The rule itself is
+    // unchanged: this is what is shown, not what is decided.
+    if (verdict.manualReview && !verdict.reasons.includes("manual-review")) {
+      reasons.push(REASON_LABELS["manual-review"]);
+    }
     skipped.push({
       businessName: lead.businessName || "Unnamed business",
       reasons: reasons.length > 0 ? reasons : ["Not eligible"],
     });
+    // Refused, but only because there is nowhere to write to. Still a prospect.
+    if (isWorthRinging(lead, verdict)) {
+      ringing.push({
+        id: lead.id,
+        businessName: lead.businessName || "Unnamed business",
+        phone: lead.phone,
+        town: lead.town,
+        websiteStatus: lead.websiteStatus || "Website unknown",
+        score: verdict.score,
+        band: verdict.band,
+        reason: RINGING_REASON,
+      });
+    }
   }
+
+  ringing.sort((a, b) => (rank[a.band] - rank[b.band]) || (b.score - a.score));
 
   eligible.sort((a, b) => {
     const byBand = rank[a.band] - rank[b.band];
@@ -264,6 +320,7 @@ export function planTargets(
     leadIds: eligible.slice(0, allowed).map((entry) => entry.lead.id),
     skipped,
     heldForTomorrow: Math.max(0, eligible.length - allowed),
+    ringing,
   };
 }
 

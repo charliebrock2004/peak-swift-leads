@@ -33,6 +33,7 @@ import {
   type AutoRunState,
   type AutoSkip,
   type AutoTone,
+  type RingingLead,
 } from "@/lib/outreach/auto-run";
 import type { OutreachLead } from "@/lib/outreach/types";
 import { useLeadsStore } from "@/store/leads-store";
@@ -137,6 +138,11 @@ export function useAutoRun(onFinished?: () => void) {
       }
       return { ...current, counters };
     });
+  }, []);
+
+  /** The call list from this run's plan. Replaced wholesale, never appended. */
+  const setRinging = useCallback((ringing: readonly RingingLead[]) => {
+    setRun((current) => ({ ...current, ringing: [...ringing] }));
   }, []);
 
   const skip = useCallback((added: readonly AutoSkip[]) => {
@@ -383,6 +389,13 @@ export function useAutoRun(onFinished?: () => void) {
             : config.target;
         const plan = planTargets(state.leads as OutreachLead[], context, room, runLeadIds);
         skip(plan.skipped);
+        setRinging(plan.ringing);
+        if (plan.ringing.length > 0) {
+          log(
+            `${plan.ringing.length} worth ringing — good prospects with no public email.`,
+            "warn",
+          );
+        }
         count({ qualified: plan.leadIds.length + plan.heldForTomorrow });
         log(
           `${plan.leadIds.length + plan.heldForTomorrow} qualified · ${plan.skipped.length} skipped` +
@@ -390,7 +403,13 @@ export function useAutoRun(onFinished?: () => void) {
           plan.leadIds.length > 0 ? "good" : "warn",
         );
         if (plan.leadIds.length === 0) {
-          finish("done", "Nothing left that can be contacted.", "warn");
+          finish(
+            "done",
+            plan.ringing.length > 0
+              ? `Nothing left to email — but ${plan.ringing.length} are worth ringing.`
+              : "Nothing left that can be contacted.",
+            "warn",
+          );
           return;
         }
 
@@ -513,7 +532,7 @@ export function useAutoRun(onFinished?: () => void) {
         onFinished?.();
       }
     },
-    [count, detail, log, onFinished, phase, pushSheet, shouldStop, skip],
+    [count, detail, log, onFinished, phase, pushSheet, setRinging, shouldStop, skip],
   );
 
   const reset = useCallback(() => {

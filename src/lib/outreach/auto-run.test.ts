@@ -25,6 +25,7 @@ import {
   summarise,
   type AutoSkip,
 } from "./auto-run.ts";
+import { checkEligibility, matchesFilter } from "./eligibility.ts";
 import { DEFAULT_SETTINGS, type OutreachEmail, type OutreachLead } from "./types.ts";
 
 /** A lead the shared gate lets through, so each test breaks exactly one thing. */
@@ -295,6 +296,13 @@ describe("a search that turns up nothing contactable", () => {
     const companiesHouse = plan.skipped.find((s) => s.businessName === "Stirling Joinery Services Ltd");
     assert.ok(companiesHouse);
     assert.deepEqual(companiesHouse.reasons, ["No public email found", "Low opportunity"]);
+    // And a hold that checkEligibility short-circuited past is still reported.
+    const soleTrader = planTargets(
+      [{ ...stirling[0], id: "st", businessName: "J Smith Joinery", phone: "01786 9" }],
+      context(),
+      10,
+    ).skipped[0];
+    assert.ok(soleTrader.reasons.includes("Manual review required"));
   });
 
   it("explains the dominant reason rather than leaving it as a bare count", () => {
@@ -433,5 +441,139 @@ describe("how wide a run searches", () => {
   it("stays within what the search itself accepts", () => {
     assert.equal(searchBreadth(50), 100);
     assert.equal(searchBreadth(9999), 100);
+  });
+});
+
+/**
+ * The call list: good prospects with nowhere to write to.
+ *
+ * The boundary matters more than the feature. "Cannot email them" must never be
+ * confused with "must not contact them", so every rule that means the latter is
+ * checked here by name.
+ */
+describe("businesses worth ringing instead", () => {
+  function noEmail(partial: Partial<Lead> = {}): OutreachLead {
+    return createLead({
+      businessName: "Raploch Joinery Ltd",
+      trade: "Joiner",
+      town: "Stirling",
+      phone: "01786 450002",
+      email: "",
+      emailConfidence: "",
+      emailSource: "",
+      websiteStatus: "No Website Found",
+      businessStatus: "Active",
+      called: "Not Called",
+      ...partial,
+    }) as OutreachLead;
+  }
+
+  it("keeps a strong prospect that simply has no published address", () => {
+    const plan = planTargets([noEmail({ id: "a" })], context(), 10);
+    assert.deepEqual(plan.leadIds, [], "it is still not emailed");
+    assert.equal(plan.ringing.length, 1);
+    assert.equal(plan.ringing[0].businessName, "Raploch Joinery Ltd");
+    assert.equal(plan.ringing[0].band, "High");
+  });
+
+  it("carries everything a call actually needs", () => {
+    const plan = planTargets([noEmail({ id: "a" })], context(), 10);
+    const row = plan.ringing[0];
+    assert.equal(row.phone, "01786 450002");
+    assert.equal(row.town, "Stirling");
+    assert.equal(row.websiteStatus, "No Website Found");
+    assert.ok(row.score > 0);
+    assert.match(row.reason, /no public email found — call this business instead/i);
+  });
+
+  it("still lists them among the skipped, so no count goes missing", () => {
+    const plan = planTargets([noEmail({ id: "a" })], context(), 10);
+    assert.equal(plan.skipped.length, 1);
+  });
+
+  it("NEVER lists someone who asked not to be contacted", () => {
+    for (const patch of [
+      { unsubscribed: "2026-01-01" },
+      { outreachStatus: "Unsubscribed" },
+      { outreachStatus: "Replied" },
+      { callResult: "Not Interested" as const },
+      { callResult: "Booked" as const },
+      { callResult: "Won" as const },
+    ]) {
+      const plan = planTargets([noEmail({ id: "a", ...patch })], context(), 10);
+      assert.deepEqual(plan.ringing, [], `${JSON.stringify(patch)} must never be offered as a call`);
+    }
+  });
+
+  it("NEVER lists a business already emailed", () => {
+    const lead = noEmail({ id: "a", lastEmailedAt: "2026-01-01T00:00:00.000Z" });
+    assert.deepEqual(planTargets([lead], context(), 10).ringing, []);
+  });
+
+  it("NEVER lists a manual-review hold — those stay protected under their own filter", () => {
+    const soleTrader = noEmail({ id: "a", businessName: "J Smith Joinery" });
+    const plan = planTargets([soleTrader], context(), 10);
+    assert.deepEqual(plan.leadIds, []);
+    assert.deepEqual(plan.ringing, []);
+    assert.ok(plan.skipped[0].reasons.some((r) => /manual review/i.test(r)));
+  });
+
+  it("NEVER lists a business whose website is already good", () => {
+    const plan = planTargets([noEmail({ id: "a", websiteQuality: "good" })], context(), 10);
+    assert.deepEqual(plan.ringing, []);
+  });
+
+  it("NEVER lists one with no number to ring", () => {
+    assert.deepEqual(planTargets([noEmail({ id: "a", phone: "" })], context(), 10).ringing, []);
+  });
+
+  it("NEVER lists a weak opportunity — the list is prospects, not leftovers", () => {
+    // A Companies House row with an unconfirmed website scores Low.
+    const weak = noEmail({ id: "a", websiteStatus: "Unclear", phone: "" });
+    assert.deepEqual(planTargets([weak], context(), 10).ringing, []);
+  });
+
+  it("does not list anyone who could simply be emailed", () => {
+    const sendable = noEmail({
+      id: "a",
+      email: "hello@raploch.test",
+      emailConfidence: "HIGH",
+      emailSource: "Business contact page",
+    });
+    const plan = planTargets([sendable], context(), 10);
+    assert.deepEqual(plan.leadIds, ["a"]);
+    assert.deepEqual(plan.ringing, []);
+  });
+
+  it("puts the best opportunity at the top of the call list", () => {
+    const strong = noEmail({ id: "strong", websiteStatus: "No Website Found", phone: "01786 1" });
+    const weaker = noEmail({
+      id: "weaker",
+      businessName: "Cornton Carpentry Ltd",
+      website: "https://cornton.test",
+      websiteStatus: "Social Only",
+      phone: "01786 2",
+    });
+    const plan = planTargets([weaker, strong], context(), 10);
+    assert.equal(plan.ringing[0].id, "strong");
+    assert.equal(plan.ringing.length, 2);
+  });
+
+  it("the Prospects filter and the call list agree, always", () => {
+    const leads = [
+      noEmail({ id: "ring" }),
+      noEmail({ id: "sole", businessName: "J Smith Joinery" }),
+      noEmail({ id: "nophone", phone: "" }),
+      noEmail({ id: "gone", unsubscribed: "2026-01-01" }),
+      noEmail({ id: "sendable", email: "a@b.test", emailConfidence: "HIGH", emailSource: "site" }),
+    ];
+    const fromPlan = new Set(planTargets(leads, context(), 10).ringing.map((r) => r.id));
+    const fromFilter = new Set(
+      leads
+        .filter((lead) => matchesFilter(lead, checkEligibility(lead, context(), "initial"), "worth-ringing"))
+        .map((lead) => lead.id),
+    );
+    assert.deepEqual([...fromFilter].sort(), [...fromPlan].sort());
+    assert.deepEqual([...fromPlan], ["ring"]);
   });
 });

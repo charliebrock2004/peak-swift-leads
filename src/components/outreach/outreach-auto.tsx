@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Bot, CircleStop, Loader2, Play, RotateCcw } from "lucide-react";
+import { Bot, CircleStop, Loader2, Phone, Play, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useAutoRun } from "@/components/outreach/use-auto-run";
@@ -12,8 +12,10 @@ import {
   groupSkips,
   isFinished,
   PHASE_LABELS,
+  RINGING_REASON,
   SKIP_ADVICE,
   type AutoRunConfig,
+  type RingingLead,
 } from "@/lib/outreach/auto-run";
 import type { OutreachState } from "@/lib/outreach/server";
 import { RADIUS_MILES, TOWN_SUGGESTIONS, TRADE_SUGGESTIONS } from "@/lib/leads";
@@ -280,6 +282,8 @@ function RunView({
         )}
       </div>
 
+      {run.ringing.length > 0 ? <WorthRinging leads={run.ringing} /> : null}
+
       {run.skips.length > 0 ? <SkippedWhy skips={run.skips} /> : null}
 
       {run.log.length > 0 ? (
@@ -309,6 +313,61 @@ function RunView({
           </ul>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * The businesses worth ringing.
+ *
+ * These are not failures. They are the prospects with the clearest problem to
+ * solve — usually no website at all — who simply have no address to write to.
+ * The run keeps them in the sheet with everything a call needs, and this is the
+ * list to work down. Tapping a number dials it.
+ *
+ * Deliberately plain: a name, a number, where they are, and what is wrong with
+ * their web presence. Nothing here is a task, a stage or a pipeline.
+ */
+function WorthRinging({ leads }: { leads: RingingLead[] }) {
+  return (
+    <div className="rounded-xl bg-surface px-4 py-4 shadow-(--shadow-border)">
+      <div className="flex items-center gap-2">
+        <Phone className="size-4 text-accent" />
+        <p className="text-sm font-medium">{leads.length} worth ringing</p>
+      </div>
+      <p className="mt-1 text-sm text-muted">{RINGING_REASON}</p>
+      <ul className="mt-3 flex flex-col gap-2">
+        {leads.map((lead) => (
+          <li key={lead.id} className="rounded-md bg-surface-2 px-3 py-2.5">
+            <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+              <span className="min-w-0 font-medium">{lead.businessName}</span>
+              <span
+                className={cn(
+                  "shrink-0 rounded-full px-2 py-0.5 text-xs font-medium",
+                  lead.band === "High" ? "bg-hot/15 text-hot" : "bg-warm-lead/15 text-warm-lead",
+                )}
+              >
+                {lead.band} {lead.score}
+              </span>
+            </div>
+            <p className="mt-0.5 text-sm text-muted">
+              {[lead.town, lead.websiteStatus].filter(Boolean).join(" · ")}
+            </p>
+            {lead.phone ? (
+              <a
+                href={`tel:${lead.phone.replace(/\s+/g, "")}`}
+                className="mt-1 inline-block text-sm font-medium text-accent underline-offset-4 hover:underline"
+              >
+                {lead.phone}
+              </a>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+      <p className="mt-3 text-xs text-subtle">
+        They stay on your lead sheet with everything above. Prospects → “Worth ringing” shows the
+        same list any time.
+      </p>
     </div>
   );
 }

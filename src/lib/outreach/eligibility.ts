@@ -219,6 +219,48 @@ export function rankEligible<T extends OutreachLead>(
     });
 }
 
+/**
+ * The refusals that mean "we have no way to write to them", as opposed to
+ * "do not write to them".
+ *
+ * The difference is the whole point of the worth-ringing list. A business with
+ * no published address has done nothing to disqualify itself; a business that
+ * unsubscribed, replied, or was already contacted has, and must never appear on
+ * a list suggesting you ring them.
+ */
+const NO_WAY_TO_WRITE = new Set<IneligibleReason>([
+  "no-email",
+  "low-confidence",
+  "guessed-email",
+  "invalid-email",
+]);
+
+/**
+ * Is this refusal "cannot email them" rather than "must not contact them"?
+ *
+ * Deliberately narrow, and it never overrides a rule. A lead qualifies only if
+ * *every* reason it was refused is about the address, it is not held for manual
+ * review, there is a number to ring, and the opportunity is real. Anything
+ * suppressed, unsubscribed, already contacted, replied, booked, won, marked Not
+ * Interested, or with a website that is already good fails the first test and
+ * is simply not on the list.
+ *
+ * Manual-review holds are excluded too. They are protected from automation, and
+ * they stay under their own filter where the reason for the hold is spelled
+ * out — not folded into a list that reads like a to-do.
+ *
+ * This lives here, beside the rules it reads, because both the AI Outreach call
+ * list and the Prospects filter ask it. Two copies would eventually disagree.
+ */
+export function isWorthRinging(lead: Pick<OutreachLead, "phone">, verdict: Eligibility): boolean {
+  if (verdict.eligible) return false;
+  if (verdict.manualReview) return false;
+  if (verdict.reasons.length === 0) return false;
+  if (!verdict.reasons.every((reason) => NO_WAY_TO_WRITE.has(reason))) return false;
+  if (!lead.phone.trim()) return false;
+  return verdict.band !== "Low";
+}
+
 /** The filters offered above the outreach list. */
 export const OUTREACH_FILTERS = [
   "all",
@@ -230,6 +272,7 @@ export const OUTREACH_FILTERS = [
   "email-found",
   "never-contacted",
   "manual-review",
+  "worth-ringing",
 ] as const;
 export type OutreachFilter = (typeof OUTREACH_FILTERS)[number];
 
@@ -243,6 +286,7 @@ export const FILTER_LABELS: Record<OutreachFilter, string> = {
   "email-found": "Email found",
   "never-contacted": "Never contacted",
   "manual-review": "Manual review",
+  "worth-ringing": "Worth ringing",
 };
 
 export function matchesFilter(
@@ -269,6 +313,8 @@ export function matchesFilter(
       return !lead.lastEmailedAt.trim();
     case "manual-review":
       return eligibility.manualReview;
+    case "worth-ringing":
+      return isWorthRinging(lead, eligibility);
     default:
       return true;
   }
