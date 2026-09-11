@@ -3,6 +3,13 @@ import { Loader2, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ACTIVITY_LABELS, computeStats, nextMove } from "@/lib/outreach/dashboard";
 import { assessHealth, type HealthLevel } from "@/lib/outreach/health";
+import {
+  formatRate,
+  segmentsByTown,
+  segmentsByTrade,
+  whereToSearchNext,
+  type Segment,
+} from "@/lib/outreach/analytics";
 import type { EligibilityContext } from "@/lib/outreach/eligibility";
 import { getActivityLog, type OutreachState } from "@/lib/outreach/server";
 import type { OutreachLead } from "@/lib/outreach/types";
@@ -62,6 +69,13 @@ export function OutreachDashboard({
       cancelled = true;
     };
   }, [state.emails.length, state.leads.length]);
+
+  const towns = useMemo(() => segmentsByTown(state.leads, state.emails), [state.leads, state.emails]);
+  const trades = useMemo(
+    () => segmentsByTrade(state.leads, state.emails),
+    [state.leads, state.emails],
+  );
+  const searchNext = whereToSearchNext(towns, trades);
 
   const move = nextMove(stats, state.connection.status);
 
@@ -137,6 +151,21 @@ export function OutreachDashboard({
         <Tile label="Won" value={stats.won} />
         <Tile label="Unsubscribed" value={stats.unsubscribed} onClick={() => onGoTo("replies")} />
       </Group>
+
+      {towns.length > 0 ? (
+        <div>
+          <h3 className="text-xs font-medium tracking-wide text-muted uppercase">What is working</h3>
+          {searchNext ? <p className="mt-1 text-sm text-subtle">{searchNext}</p> : null}
+          <div className="mt-2 grid gap-3 md:grid-cols-2">
+            <SegmentTable title="Towns" segments={towns} />
+            <SegmentTable title="Trades" segments={trades} />
+          </div>
+          <p className="mt-2 text-xs text-subtle">
+            Reply rate is only shown once a town or trade has had enough emails for the number to
+            mean anything. Everything here counts real sent emails and real replies.
+          </p>
+        </div>
+      ) : null}
 
       <div>
         <h3 className="text-xs font-medium tracking-wide text-muted uppercase">System health</h3>
@@ -249,5 +278,39 @@ function Tile({
     <button type="button" onClick={onClick} className="bg-surface px-3 py-3 text-left hover:bg-surface-2 md:px-4">
       {content}
     </button>
+  );
+}
+
+/**
+ * A league table of towns or trades.
+ *
+ * Capped at eight rows: this is a signal about where to search next, not a
+ * report, and a long tail of one-prospect towns hides the answer.
+ */
+function SegmentTable({ title, segments }: { title: string; segments: readonly Segment[] }) {
+  const rows = segments.slice(0, 8);
+  return (
+    <div className="overflow-hidden rounded-xl bg-surface shadow-(--shadow-border)">
+      <div className="flex items-center justify-between gap-3 px-4 py-2.5">
+        <p className="text-sm font-medium">{title}</p>
+        <p className="text-xs text-subtle">sent · replies · rate</p>
+      </div>
+      <ul className="divide-y divide-border border-t border-border">
+        {rows.map((segment) => (
+          <li key={segment.name} className="flex items-center justify-between gap-3 px-4 py-2">
+            <div className="min-w-0">
+              <p className="truncate text-sm">{segment.name}</p>
+              <p className="text-xs text-subtle">
+                {segment.prospects} {segment.prospects === 1 ? "prospect" : "prospects"} ·{" "}
+                {segment.withEmail} with an email
+              </p>
+            </div>
+            <p className="shrink-0 text-sm tabular-nums text-muted">
+              {segment.sent} · {segment.replies} · {formatRate(segment.replyRate)}
+            </p>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }

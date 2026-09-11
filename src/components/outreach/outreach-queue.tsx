@@ -1,11 +1,12 @@
 import { useMemo, useState } from "react";
-import { Check, Loader2, Pencil, RotateCcw, Send, X } from "lucide-react";
+import { Check, ChevronDown, Loader2, Pencil, RotateCcw, Send, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import type { OutreachActions } from "@/components/outreach/outreach-panel";
 import type { OutreachState } from "@/lib/outreach/server";
 import type { OutreachEmail } from "@/lib/outreach/types";
 import { leadFacts } from "@/lib/outreach/compose";
+import { parseEvidenceSummary } from "@/lib/outreach/evidence";
 import { decideProspect } from "@/lib/decision";
 import type { OutreachLead } from "@/lib/outreach/types";
 import { cn } from "@/lib/utils";
@@ -148,26 +149,7 @@ export function OutreachQueue({
                       <>
                         <p className="mt-2 text-sm font-medium">{email.subject}</p>
                         <p className="mt-1 text-sm whitespace-pre-wrap text-muted">{email.body}</p>
-                        {(() => {
-                          const lead = leadsById.get(email.leadId);
-                          if (!lead) return null;
-                          const decision = decideProspect(lead as OutreachLead);
-                          const facts = leadFacts(lead as OutreachLead);
-                          return (
-                            <div className="mt-3 rounded-md bg-surface-2 px-3 py-2.5">
-                              <p className="text-xs font-medium text-muted">
-                                {decision.level} {decision.score} · why this email was written
-                              </p>
-                              <ul className="mt-1 flex flex-col gap-0.5">
-                                {facts.slice(0, 6).map((fact) => (
-                                  <li key={fact} className="text-xs text-subtle">
-                                    {fact}
-                                  </li>
-                                ))}
-                              </ul>
-                            </div>
-                          );
-                        })()}
+                        <WhyThisEmail email={email} lead={leadsById.get(email.leadId)} />
                       </>
                     )}
 
@@ -274,24 +256,32 @@ export function OutreachQueue({
           <h3 className="font-display text-lg font-medium">Sent</h3>
           <ul className="mt-3 flex flex-col gap-1.5">
             {groups.sent.slice(0, 50).map((email) => (
-              <li
-                key={email.id}
-                className="flex items-center gap-3 rounded-md bg-surface px-3 py-2 shadow-(--shadow-border)"
-              >
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium">{email.businessName}</p>
-                  <p className="truncate text-xs text-muted">
-                    {email.recipient} · {email.sentAt ? new Date(email.sentAt).toLocaleDateString("en-GB") : ""}
-                  </p>
-                </div>
-                <span
-                  className={cn(
-                    "shrink-0 rounded-full px-2 py-0.5 text-xs",
-                    email.status === "replied" ? "bg-accent text-accent-fg" : "bg-surface-2 text-muted",
-                  )}
-                >
-                  {email.status === "replied" ? "Replied" : "Sent"}
-                </span>
+              <li key={email.id} className="rounded-md bg-surface shadow-(--shadow-border)">
+                <details className="group">
+                  <summary className="flex cursor-pointer list-none items-center gap-3 px-3 py-2">
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium">{email.businessName}</p>
+                      <p className="truncate text-xs text-muted">
+                        {email.recipient} ·{" "}
+                        {email.sentAt ? new Date(email.sentAt).toLocaleDateString("en-GB") : ""}
+                      </p>
+                    </div>
+                    <span
+                      className={cn(
+                        "shrink-0 rounded-full px-2 py-0.5 text-xs",
+                        email.status === "replied" ? "bg-accent text-accent-fg" : "bg-surface-2 text-muted",
+                      )}
+                    >
+                      {email.status === "replied" ? "Replied" : "Sent"}
+                    </span>
+                    <ChevronDown className="size-4 shrink-0 text-muted group-open:rotate-180" />
+                  </summary>
+                  <div className="px-3 pb-3">
+                    <p className="text-sm font-medium">{email.subject}</p>
+                    <p className="mt-1 text-sm whitespace-pre-wrap text-muted">{email.body}</p>
+                    <WhyThisEmail email={email} lead={leadsById.get(email.leadId)} />
+                  </div>
+                </details>
               </li>
             ))}
           </ul>
@@ -307,5 +297,51 @@ export function OutreachQueue({
         </div>
       ) : null}
     </section>
+  );
+}
+
+/**
+ * Why this email says what it says.
+ *
+ * Prefers the evidence stored with the email over anything recomputed from the
+ * lead. The lead row moves — a website appears, a review count changes — and a
+ * sent email must still be explainable by what was true when it was written.
+ * Emails written before the evidence column exists fall back to the live facts,
+ * which is the best answer available for them and is labelled as such.
+ */
+function WhyThisEmail({ email, lead }: { email: OutreachEmail; lead: OutreachLead | undefined }) {
+  const stored = parseEvidenceSummary(email.personalisationEvidence);
+  if (stored.length > 0) {
+    return (
+      <div className="mt-3 rounded-md bg-surface-2 px-3 py-2.5">
+        <p className="text-xs font-medium text-muted">Why this email was written</p>
+        <ul className="mt-1 flex flex-col gap-0.5">
+          {stored.slice(0, 6).map((item) => (
+            <li key={`${item.kind}-${item.text}`} className="text-xs text-subtle">
+              {item.text}
+              {item.source ? <span className="text-subtle/70"> · {item.source}</span> : null}
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
+  }
+  if (!lead) return null;
+  const decision = decideProspect(lead);
+  const facts = leadFacts(lead);
+  if (facts.length === 0) return null;
+  return (
+    <div className="mt-3 rounded-md bg-surface-2 px-3 py-2.5">
+      <p className="text-xs font-medium text-muted">
+        {decision.level} {decision.score} · what this lead looks like now
+      </p>
+      <ul className="mt-1 flex flex-col gap-0.5">
+        {facts.slice(0, 6).map((fact) => (
+          <li key={fact} className="text-xs text-subtle">
+            {fact}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
