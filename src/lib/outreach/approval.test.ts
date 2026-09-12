@@ -251,3 +251,148 @@ describe("the ready-to-send count the Send button uses", () => {
     assert.equal(readyCount(emails as never), 2);
   });
 });
+
+describe("identifying the sender — every spelling of the studio's own name", () => {
+  /** The sign-off the model actually writes, from a real Review screen. */
+  const REAL_SIGNOFF = "PeakSwift Studio";
+
+  function signedAs(studio: string): OutreachEmail {
+    return email({
+      body: [
+        "Hi,",
+        "",
+        "I came across Strathearn Joinery Ltd while looking at joiners around Crieff",
+        "and it doesn't look like you have a website yet.",
+        "",
+        `I'm Charlie — I run ${studio} and build small, fast sites for trades.`,
+        "",
+        "If you'd rather I didn't contact you again, just let me know and I won't.",
+        "",
+        "Charlie",
+        studio,
+      ].join("\n"),
+    });
+  }
+
+  it("APPROVES the exact sign-off from the screenshot", () => {
+    // "Charlie / PeakSwift Studio" was being refused as unidentified, because
+    // "peakswift studio" does not contain the substring "peakswiftstudio".
+    const outcome = approve({ email: signedAs(REAL_SIGNOFF) });
+    assert.equal(
+      outcome.action,
+      "store",
+      outcome.action === "refuse" ? outcome.reason : "",
+    );
+    assert.equal(outcome.action === "store" && outcome.status, "queued");
+  });
+
+  it("the screenshot email is genuinely ready to send once approved", () => {
+    const outcome = approve({ email: signedAs(REAL_SIGNOFF) });
+    assert.ok(outcome.action === "store");
+    assert.ok(isReadyToSend({ status: outcome.status }));
+    assert.equal(readyCount([{ status: outcome.status }]), 1);
+  });
+
+  it("accepts every harmless spelling of the studio", () => {
+    for (const studio of [
+      "PeakSwiftStudio",
+      "PeakSwift Studio",
+      "Peak Swift Studio",
+      "Peak-Swift Studio",
+      "peakswift studio",
+      "PEAKSWIFT STUDIO",
+      "PeakSwiftStudios",
+    ]) {
+      const outcome = approve({ email: signedAs(studio) });
+      assert.equal(
+        outcome.action,
+        "store",
+        `"${studio}" should identify the sender: ${outcome.action === "refuse" ? outcome.reason : ""}`,
+      );
+    }
+  });
+
+  it("STILL REFUSES an email that names somebody else instead", () => {
+    for (const impostor of [
+      "Acme Web Design",
+      "Google",
+      "Peak Studio",
+      "Swift Studio",
+      "Peak Mountain Studio",
+      "Peak Digital Swift Studio",
+      "Speak Swift Studio",
+    ]) {
+      const outcome = approve({ email: signedAs(impostor) });
+      assert.equal(
+        outcome.action,
+        "refuse",
+        `"${impostor}" is not this studio and must not identify it`,
+      );
+      assert.match(outcome.action === "refuse" ? outcome.reason : "", /does not identify/i);
+    }
+  });
+
+  it("STILL REFUSES an email that identifies nobody at all", () => {
+    const outcome = approve({
+      email: email({
+        body:
+          "Hi, I build websites for trades around Crieff and thought Strathearn " +
+          "Joinery Ltd might want one. If you'd rather I didn't contact you again, " +
+          "just let me know and I won't.\n\nCharlie",
+      }),
+    });
+    assert.equal(outcome.action, "refuse");
+  });
+
+  it("does not let a tolerant brand check smuggle a fabricated claim through", () => {
+    // The identification fix must not become a way around the other rules.
+    const outcome = approve({
+      email: signedAs(REAL_SIGNOFF),
+    });
+    assert.equal(outcome.action, "store");
+    const fabricated = approve({
+      email: email({
+        body: signedAs(REAL_SIGNOFF).body.replace(
+          "it doesn't look like you have a website yet.",
+          "your website is quite slow to load.",
+        ),
+      }),
+    });
+    assert.equal(fabricated.action, "refuse", "a fabricated speed claim is still refused");
+    assert.match(
+      fabricated.action === "refuse" ? fabricated.reason : "",
+      /load speed/i,
+      "and refused for the right reason",
+    );
+  });
+});
+
+describe("one Approve and a bulk Approve take the same path", () => {
+  it("decides a single email and a batch by the identical function", () => {
+    // The Review card's Approve and the bulk Approve both call
+    // actions.decide(ids, "queue") -> setEmailDecision -> decideApproval, and
+    // the card's own "cannot approve" note calls decideApproval too. Same
+    // inputs must therefore give the same answer every way round.
+    const one = email({ id: "a" });
+    const single = approve({ email: one });
+    const asBatch = [one, email({ id: "b" }), email({ id: "c" })].map((entry) =>
+      approve({ email: entry }),
+    );
+    assert.equal(single.action, "store");
+    for (const outcome of asBatch) {
+      assert.equal(outcome.action, single.action);
+      assert.equal(
+        outcome.action === "store" && outcome.status,
+        single.action === "store" && single.status,
+      );
+    }
+  });
+
+  it("a refusal in a batch matches what the card would have said", () => {
+    const bad = email({ id: "x", status: "sent" });
+    const inBatch = approve({ email: bad });
+    const onCard = approve({ email: bad });
+    assert.equal(inBatch.action, "refuse");
+    assert.deepEqual(inBatch, onCard);
+  });
+});

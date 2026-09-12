@@ -10,7 +10,7 @@
  * A failure here is never a retry. It is a stop.
  */
 import { looksLikeEmail } from "./eligibility.ts";
-import { leftoverVariables, SENDER_STUDIO } from "./templates.ts";
+import { identifiesSender, leftoverVariables, SENDER_STUDIO } from "./templates.ts";
 import type { OutreachLead } from "./types.ts";
 
 export type QualityProblem = {
@@ -162,8 +162,10 @@ export function checkEmailQuality(input: QualityInput): QualityVerdict {
     add("not-personalised", "The email never mentions the business by name.");
   }
 
-  // Whoever receives this has to be able to tell who sent it.
-  if (!body.toLowerCase().includes(SENDER_STUDIO.toLowerCase())) {
+  // Whoever receives this has to be able to tell who sent it. Any spelling of
+  // the studio's own name counts — see `identifiesSender`, which exists because
+  // an exact match refused the signature the model actually writes.
+  if (!identifiesSender(body)) {
     add("unidentified", `The email does not identify ${SENDER_STUDIO}.`);
   }
 

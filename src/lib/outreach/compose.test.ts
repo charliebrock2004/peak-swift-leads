@@ -10,6 +10,7 @@ import {
   renderTemplate,
   templateForLead,
   variablesFor,
+  identifiesSender,
 } from "./templates.ts";
 import type { OutreachLead } from "./types.ts";
 
@@ -359,5 +360,41 @@ describe("the gate refuses claims nothing measured", () => {
         `refused an honest line: ${verdict.ok ? "" : verdict.problems.map((p) => p.message).join("; ")}`,
       );
     }
+  });
+});
+
+describe("identifiesSender", () => {
+  it("accepts the studio name however it is spaced", () => {
+    for (const studio of [
+      "PeakSwiftStudio", "PeakSwift Studio", "Peak Swift Studio",
+      "Peak-Swift Studio", "peakswift studio", "PEAKSWIFT STUDIO",
+      "Peak  Swift  Studio", "PeakSwiftStudios",
+    ]) {
+      assert.ok(identifiesSender(`Charlie\n${studio}`), studio);
+    }
+  });
+
+  it("refuses a different studio, however similar", () => {
+    for (const other of [
+      "Acme Web Design", "Peak Studio", "Swift Studio", "Peak Swift",
+      "Peak Mountain Studio", "Peak Digital Swift Studio", "Studio Peak Swift",
+      "Google", "",
+    ]) {
+      assert.equal(identifiesSender(`Charlie\n${other}`), false, other);
+    }
+  });
+
+  it("is not fooled by the name appearing inside another word", () => {
+    assert.equal(identifiesSender("Speak Swift Studio"), false);
+    assert.equal(identifiesSender("bespeakswiftstudio"), false);
+  });
+
+  it("finds the name anywhere in the text, not only at the end", () => {
+    assert.ok(identifiesSender("I'm Charlie from PeakSwift Studio and I build sites."));
+    assert.ok(identifiesSender("PeakSwift Studio — websites for trades."));
+  });
+
+  it("treats a studio with no letters as identifying nothing to check", () => {
+    assert.ok(identifiesSender("anything", "   "));
   });
 });

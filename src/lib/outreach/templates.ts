@@ -45,6 +45,46 @@ export const DEFAULT_SIGNATURE = [SENDER_NAME, SENDER_STUDIO, SENDER_WEBSITE]
   .filter(Boolean)
   .join("\n");
 
+/**
+ * The studio name split into the words a person would read.
+ *
+ * "PeakSwiftStudio" is written as one word in the signature, but nobody —
+ * including the model — types it that way consistently, and "PeakSwift Studio"
+ * is the same name. Splitting on the capitals is what lets the check below
+ * accept every spacing of it without accepting a different name.
+ */
+function studioWords(studio: string): string[] {
+  return studio
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .split(/[^A-Za-z0-9]+/)
+    .filter(Boolean)
+    .map((word) => word.toLowerCase());
+}
+
+/**
+ * Does this text identify the studio that is sending it?
+ *
+ * An exact substring match on `SENDER_STUDIO` was refusing real emails: the
+ * signature the model actually writes is "Charlie / PeakSwift Studio", and
+ * "peakswift studio" does not contain "peakswiftstudio". A refused draft never
+ * reaches the send queue, so a brand-name spelling was silently blocking
+ * approval.
+ *
+ * The separator between the studio's own words may be anything punctuational —
+ * a space, a hyphen, nothing at all — but NOT another word. "Peak Swift Studio"
+ * is the same studio; "Peak Mountain Studio" is somebody else, and still fails.
+ * The leading word boundary keeps "speak swift studio" from counting.
+ */
+export function identifiesSender(text: string, studio: string = SENDER_STUDIO): boolean {
+  const words = studioWords(studio);
+  if (words.length === 0) return true;
+  const escaped = words.map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  // At most four characters between words: enough for ", " or " - ", not enough
+  // to hide a different name in the gap.
+  const pattern = new RegExp(`\\b${escaped.join("[^A-Za-z0-9]{0,4}")}`, "i");
+  return pattern.test(text);
+}
+
 /** Plain-English website state, safe to put in front of the business owner. */
 export function websiteStatusPhrase(lead: OutreachLead): string {
   if (lead.websiteStatus === "No Website Found") return "no website";
