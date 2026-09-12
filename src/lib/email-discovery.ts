@@ -240,31 +240,60 @@ function hostMatches(host: string, list: readonly string[]): boolean {
   return list.some((bad) => host === bad || host.endsWith(`.${bad}`));
 }
 
-/** Is this a plausible business mailbox at all? Cheap structural rejection. */
-export function looksUsable(email: string): boolean {
+/**
+ * Why an address is not a plausible business mailbox, or "" when it is.
+ *
+ * Returns the reason rather than a bare boolean because a dropped address is
+ * exactly the thing that has to be explainable later: "we found three addresses
+ * and used none of them" is only useful if you can see that two were tracking
+ * pixels and one was noreply@.
+ */
+export function mailboxRejection(email: string): string {
   const at = email.lastIndexOf("@");
-  if (at < 1) return false;
+  if (at < 1) return "not an address";
   const local = localOf(email);
   const host = hostOf(email);
-  if (!local || local.length > 64 || host.length > 80) return false;
-  if (!host.includes(".") || host.startsWith(".") || host.endsWith(".")) return false;
-  if (/\.\./.test(host) || host.startsWith("-")) return false;
-  if (SKIP_LOCAL.test(local)) return false;
-  if (BAD_TLD.test(host.split(".").pop() ?? "")) return false;
-  if (hostMatches(host, SKIP_HOSTS)) return false;
-  if (hostMatches(host, DISPOSABLE)) return false;
-  if (/^[a-z0-9._%+-]+$/i.test(local) === false) return false;
-  return /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(host);
+  if (!local) return "no mailbox before the @";
+  if (local.length > 64) return "mailbox name implausibly long";
+  if (host.length > 80) return "domain implausibly long";
+  if (!host.includes(".") || host.startsWith(".") || host.endsWith(".")) return "malformed domain";
+  if (/\.\./.test(host) || host.startsWith("-")) return "malformed domain";
+  if (SKIP_LOCAL.test(local)) return `${local}@ is never a contactable mailbox`;
+  if (BAD_TLD.test(host.split(".").pop() ?? "")) return "the domain is a file extension, not a real domain";
+  if (hostMatches(host, SKIP_HOSTS)) return "belongs to a platform or analytics vendor, not the business";
+  if (hostMatches(host, DISPOSABLE)) return "disposable mailbox provider";
+  if (/^[a-z0-9._%+-]+$/i.test(local) === false) return "illegal characters in the mailbox name";
+  if (/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(host) === false) return "malformed domain";
+  return "";
 }
+
+/** Is this a plausible business mailbox at all? Cheap structural rejection. */
+export function looksUsable(email: string): boolean {
+  return mailboxRejection(email) === "";
+}
+
+/** An address that was seen on a page and then discarded, with the reason. */
+export type RejectedEmail = { email: string; why: string; sourceUrl: string };
 
 function push(
   out: EmailCandidate[],
   seen: Set<string>,
   email: string,
   candidate: Omit<EmailCandidate, "email">,
+  rejected?: RejectedEmail[],
 ): void {
   const clean = cleanEmail(email);
-  if (!looksUsable(clean) || seen.has(clean)) return;
+  if (seen.has(clean)) return;
+  const why = mailboxRejection(clean);
+  if (why) {
+    seen.add(clean);
+    // Recorded, not silently dropped: an unexplained miss is the failure mode
+    // this whole diagnostic exists to prevent.
+    if (rejected && !rejected.some((entry) => entry.email === clean)) {
+      rejected.push({ email: clean, why, sourceUrl: candidate.sourceUrl });
+    }
+    return;
+  }
   seen.add(clean);
   out.push({ email: clean, ...candidate });
 }
@@ -282,6 +311,8 @@ export function extractCandidates(
   html: string,
   pageUrl: string,
   source: SourceKind,
+  /** Collects addresses seen and discarded, with why. Optional and additive. */
+  rejected?: RejectedEmail[],
 ): EmailCandidate[] {
   const out: EmailCandidate[] = [];
   const seen = new Set<string>();
@@ -292,7 +323,7 @@ export function extractCandidates(
     push(out, seen, decodeURIComponent(m[1] ?? ""), {
       source, sourceUrl: pageUrl, method: "MAILTO_LINK",
       evidence: "Published as a mailto: link on the page",
-    });
+    }, rejected);
   }
 
   // 2. JSON-LD / structured data.
@@ -302,7 +333,7 @@ export function extractCandidates(
         source: source === "OFFICIAL_WEBSITE" ? "STRUCTURED_DATA" : source,
         sourceUrl: pageUrl, method: "JSON_LD",
         evidence: "Listed in the page's structured business data",
-      });
+      }, rejected);
     }
   }
 
@@ -312,7 +343,7 @@ export function extractCandidates(
       push(out, seen, m[0], {
         source, sourceUrl: pageUrl, method: "META_TAG",
         evidence: "Declared in a page meta tag",
-      });
+      }, rejected);
     }
   }
 
@@ -324,7 +355,7 @@ export function extractCandidates(
       push(out, seen, m[0], {
         source, sourceUrl: pageUrl, method: "INLINE_PAYLOAD",
         evidence: "Found in the page's inline data payload",
-      });
+      }, rejected);
     }
   }
 
@@ -334,7 +365,7 @@ export function extractCandidates(
     push(out, seen, m[0], {
       source, sourceUrl: pageUrl, method: "PAGE_TEXT",
       evidence: "Written out on the page",
-    });
+    }, rejected);
   }
 
   // 6. Obfuscated forms, last — only what the earlier passes did not already find.
@@ -343,7 +374,7 @@ export function extractCandidates(
     push(out, seen, m[0], {
       source, sourceUrl: pageUrl, method: "DEOBFUSCATED",
       evidence: "Written with [at]/[dot] separators on the page",
-    });
+    }, rejected);
   }
 
   // 7. Addresses assembled from adjacent string literals in a script. The whole
@@ -354,7 +385,7 @@ export function extractCandidates(
     push(out, seen, m[0], {
       source, sourceUrl: pageUrl, method: "DEOBFUSCATED",
       evidence: "Built from adjacent string literals in the page's own script",
-    });
+    }, rejected);
   }
 
   return out;

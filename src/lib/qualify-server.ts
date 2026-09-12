@@ -13,6 +13,7 @@ import {
   contactLinks,
   decide,
   extractCandidates,
+  type RejectedEmail,
   GOOD_ENOUGH_SCORE,
   MAX_PAGES,
   noWebsiteResult,
@@ -134,6 +135,8 @@ export type FindEmailResult =
       }[];
       /** Wall-clock milliseconds for the whole discovery, including every fetch. */
       elapsedMs?: number;
+      /** Addresses found on a page and discarded, with the reason for each. */
+      rejectedEmails?: { email: string; why: string; sourceUrl: string }[];
     }
   | { ok: false; error: string };
 
@@ -358,7 +361,7 @@ export const findLeadEmail = createServerFn({ method: "POST" })
       if (!page.html) return;
       if (isContact) sawContactPage = true;
       candidates.push(
-        ...extractCandidates(page.html, page.finalUrl || url, isContact ? "OFFICIAL_CONTACT_PAGE" : "OFFICIAL_WEBSITE"),
+        ...extractCandidates(page.html, page.finalUrl || url, isContact ? "OFFICIAL_CONTACT_PAGE" : "OFFICIAL_WEBSITE", rejectedEmails),
       );
       return page;
     };
@@ -387,6 +390,8 @@ export const findLeadEmail = createServerFn({ method: "POST" })
     }[] = [];
     /** Origins already fetched, so the waterfall never pays for one twice. */
     const probedOrigins = new Set<string>();
+    /** Addresses seen on a page and discarded, with why. Never silently dropped. */
+    const rejectedEmails: RejectedEmail[] = [];
     const startedAt = Date.now();
 
     // No usable website on the listing? Go and find one before giving up.
@@ -528,7 +533,7 @@ export const findLeadEmail = createServerFn({ method: "POST" })
             if (!sameSite) continue;
             providerExtracts += 1;
             candidates.push(
-              ...extractCandidates(result.rawContent, result.url, "OFFICIAL_WEBSITE"),
+              ...extractCandidates(result.rawContent, result.url, "OFFICIAL_WEBSITE", rejectedEmails),
             );
           }
         }
@@ -593,6 +598,7 @@ export const findLeadEmail = createServerFn({ method: "POST" })
         website: null, discoveryVia, searchProvider: searchUsed, searchesRun,
         searchFailure, providerExtracts, rejectedCandidates: rejected,
         queriesUsed, candidates: siteCandidates, elapsedMs: Date.now() - startedAt,
+        rejectedEmails,
         searchResults: collectedResults.slice(0, 20).map((result) => ({
           title: result.title, url: result.url,
         })),
@@ -669,6 +675,7 @@ export const findLeadEmail = createServerFn({ method: "POST" })
       queriesUsed,
       candidates: siteCandidates,
       elapsedMs: Date.now() - startedAt,
+      rejectedEmails,
       searchResults: collectedResults.slice(0, 20).map((result) => ({
         title: result.title,
         url: result.url,

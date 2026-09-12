@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { ClipboardCopy, Loader2, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -6,6 +6,17 @@ import { findLeadEmail } from "@/lib/qualify-server";
 import { REASON_LABELS, type DiscoveryResult } from "@/lib/email-discovery";
 import { SEARCH_FAILURE_LABELS } from "@/lib/search-provider";
 import { cn } from "@/lib/utils";
+import {
+  BATCH_TEMPLATE,
+  batchReport,
+  blankRow,
+  parseBatch,
+  rate,
+  summariseBatch,
+  VERDICTS,
+  type BatchRow,
+  type Verdict,
+} from "@/lib/validation-batch";
 
 /**
  * Run email discovery against one business and show exactly what happened.
@@ -182,7 +193,12 @@ export function EmailDiscoveryTest() {
                       </p>
                       <ul className="mt-0.5 flex flex-col gap-0.5 pl-4">
                         {candidate.signals.map((signal) => (
-                          <li key={signal} className="text-subtle">· {signal}</li>
+                          <li
+                            key={signal}
+                            className={isNegative(signal) ? "text-hot" : "text-subtle"}
+                          >
+                            {isNegative(signal) ? "−" : "+"} {signal}
+                          </li>
                         ))}
                       </ul>
                     </li>
@@ -231,23 +247,45 @@ export function EmailDiscoveryTest() {
               done={Boolean(result.email) || result.alternatives.length > 0}
               summary={
                 result.email
-                  ? `${result.email} (+${result.alternatives.length} other)`
+                  ? `${result.email} (+${result.alternatives.length} other, ${report?.rejectedEmails?.length ?? 0} rejected)`
                   : result.alternatives.length > 0
                     ? `${result.alternatives.length} found, none usable`
-                    : "none published on any page read"
+                    : `none usable${report?.rejectedEmails?.length ? `, ${report.rejectedEmails.length} rejected` : ""}`
               }
             >
+              {result.email ? (
+                <p className="break-all">
+                  <span className="text-accent">{result.email}</span> · {result.confidence}{" "}
+                  {result.score} · {result.source?.toLowerCase().replace(/_/g, " ")} ·{" "}
+                  {result.sourceUrl || "no source page"}
+                </p>
+              ) : null}
               {result.alternatives.length > 0 ? (
                 <ul className="flex flex-col gap-0.5">
                   {result.alternatives.map((alt) => (
                     <li key={alt.email} className="break-all">
-                      {alt.email} · {alt.confidence} {alt.score}
+                      {alt.email} · {alt.confidence} {alt.score} · {alt.method} ·{" "}
+                      {alt.sourceUrl || "no source page"}
                     </li>
                   ))}
                 </ul>
-              ) : (
+              ) : null}
+              {report?.rejectedEmails?.length ? (
+                <div>
+                  <p className="text-hot">Rejected addresses</p>
+                  <ul className="flex flex-col gap-0.5">
+                    {report.rejectedEmails.map((entry) => (
+                      <li key={entry.email} className="break-all text-subtle">
+                        {entry.email} — {entry.why}
+                        {entry.sourceUrl ? ` (${entry.sourceUrl})` : ""}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+              {!result.email && result.alternatives.length === 0 && !report?.rejectedEmails?.length ? (
                 <p>No address was published on any page that was read.</p>
-              )}
+              ) : null}
             </Step>
 
             <Step
@@ -366,7 +404,9 @@ function plainReport(
   if (!report?.candidates?.length) add("  (no candidate site was fetched)");
   for (const candidate of report?.candidates ?? []) {
     add(`  [${candidate.accepted ? "PASS" : "FAIL"}] ${candidate.score}/100 ${candidate.character ?? ""} ${candidate.url}`);
-    for (const signal of candidate.signals) add(`      · ${signal}`);
+    for (const signal of candidate.signals) {
+      add(`      ${isNegative(signal) ? "NEGATIVE" : "positive"}: ${signal}`);
+    }
   }
   add();
 
@@ -381,9 +421,22 @@ function plainReport(
   add();
 
   add("6. EMAILS FOUND");
-  if (!result.email && result.alternatives.length === 0) add("  (none published on any page read)");
-  if (result.email) add(`  chosen: ${result.email}`);
-  for (const alt of result.alternatives) add(`  other:  ${alt.email} (${alt.confidence} ${alt.score})`);
+  if (!result.email && result.alternatives.length === 0 && !report?.rejectedEmails?.length) {
+    add("  (none published on any page read)");
+  }
+  if (result.email) {
+    add(`  chosen: ${result.email}`);
+    add(`          confidence ${result.confidence} score ${result.score}`);
+    add(`          source ${result.source} :: ${result.sourceUrl || "(no page)"}`);
+    add(`          evidence: ${result.evidence}`);
+  }
+  for (const alt of result.alternatives) {
+    add(`  other:  ${alt.email} (${alt.confidence} ${alt.score}, ${alt.method}) :: ${alt.sourceUrl || "(no page)"}`);
+    for (const note of alt.notes) add(`            - ${note}`);
+  }
+  for (const entry of report?.rejectedEmails ?? []) {
+    add(`  REJECTED: ${entry.email} — ${entry.why}${entry.sourceUrl ? ` :: ${entry.sourceUrl}` : ""}`);
+  }
   add();
 
   add("7. FINAL DECISION");
@@ -396,4 +449,232 @@ function plainReport(
   if (typeof report?.elapsedMs === "number") add(`  elapsed: ${(report.elapsedMs / 1000).toFixed(1)}s`);
 
   return lines.join("\n");
+}
+
+/**
+ * Is this signal evidence against the match rather than for it?
+ *
+ * The scorer emits one list, and a reader scanning a failed candidate needs to
+ * see at a glance which lines were the reason. Keyed on the phrases the scorer
+ * actually produces for a penalty or a disqualification.
+ */
+function isNegative(signal: string): boolean {
+  return /counted against|held back|not a trading website|not the business's own website|not corroborated|unreachable|no identity signals/i.test(
+    signal,
+  );
+}
+
+/**
+ * Run a list of real businesses in one pass.
+ *
+ * Real-world validation is the only thing that can tell you how this performs,
+ * and testing twenty businesses one form at a time is enough friction that it
+ * does not get done. Each row goes through the same `findLeadEmail` server
+ * function the live pipeline uses — no separate code path, so what is measured
+ * here is what actually runs.
+ *
+ * Read-only, one at a time, and nothing is written to the sheet or sent to
+ * anyone. The correctness columns stay UNKNOWN until a person marks them: the
+ * run can say it found an address, but only you can say it was the right one.
+ */
+export function ValidationBatch() {
+  const [text, setText] = useState(BATCH_TEMPLATE);
+  const [rows, setRows] = useState<BatchRow[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [at, setAt] = useState(0);
+  const [copied, setCopied] = useState(false);
+  const cancelled = useRef(false);
+
+  const inputs = useMemo(() => parseBatch(text), [text]);
+
+  async function run() {
+    const batch = parseBatch(text);
+    if (batch.length === 0 || busy) return;
+    setBusy(true);
+    setCopied(false);
+    cancelled.current = false;
+    const results: BatchRow[] = [];
+    setRows([]);
+    for (const [index, entry] of batch.entries()) {
+      if (cancelled.current) break;
+      setAt(index + 1);
+      const next = blankRow(entry);
+      try {
+        const answer = await findLeadEmail({
+          data: {
+            website: entry.website,
+            businessName: entry.businessName,
+            town: entry.town,
+            trade: entry.trade,
+            phone: entry.phone,
+            address: entry.address,
+            existingEmail: "",
+            existingSource: "",
+          },
+        });
+        if (!answer.ok) {
+          next.error = answer.error;
+        } else {
+          next.website = answer.website?.url ?? "";
+          next.identityScore = answer.website?.score ?? null;
+          next.email = answer.discovery.email ?? "";
+          next.confidence = answer.discovery.confidence ?? "";
+          next.reason = answer.discovery.reason ?? "";
+          next.pagesFetched = answer.discovery.attempts;
+          next.elapsedMs = answer.elapsedMs ?? 0;
+        }
+      } catch (err) {
+        next.error = err instanceof Error ? err.message : "request failed";
+      }
+      results.push(next);
+      setRows([...results]);
+    }
+    setBusy(false);
+  }
+
+  function mark(index: number, field: "websiteCorrect" | "emailCorrect", value: Verdict) {
+    setRows((current) =>
+      current.map((row, i) => (i === index ? { ...row, [field]: value } : row)),
+    );
+  }
+
+  const summary = rows.length > 0 ? summariseBatch(rows) : null;
+
+  return (
+    <div className="mt-4 rounded-xl bg-surface px-4 py-4 shadow-(--shadow-border)">
+      <h3 className="font-display text-lg font-medium">Real-world validation batch</h3>
+      <p className="mt-1 text-sm text-muted">
+        Paste real businesses, one per line. Each runs through the same discovery the live pipeline
+        uses. Nothing is saved and nothing is sent.
+      </p>
+
+      <textarea
+        className="mt-3 h-40 w-full rounded-md bg-surface-2 px-3 py-2 font-mono text-xs"
+        value={text}
+        onChange={(event) => setText(event.target.value)}
+        aria-label="Businesses to test"
+        spellCheck={false}
+      />
+      <p className="mt-1 text-xs text-subtle">
+        {inputs.length} business{inputs.length === 1 ? "" : "es"} parsed. Phone and postcode are the
+        strongest identity signals — include them wherever you have them.
+      </p>
+
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <Button className="h-11" disabled={busy || inputs.length === 0} onClick={() => void run()}>
+          {busy ? <Loader2 className="animate-spin" /> : <Search />}
+          {busy ? `Running ${at} of ${inputs.length}…` : `Run ${inputs.length}`}
+        </Button>
+        {busy ? (
+          <Button variant="ghost" className="h-11" onClick={() => (cancelled.current = true)}>
+            Stop
+          </Button>
+        ) : null}
+        {rows.length > 0 && !busy ? (
+          <Button
+            variant="secondary"
+            className="h-11"
+            onClick={() => {
+              void navigator.clipboard
+                ?.writeText(batchReport(rows))
+                .then(() => setCopied(true))
+                .catch(() => setCopied(false));
+            }}
+          >
+            <ClipboardCopy />
+            {copied ? "Copied" : "Copy batch report"}
+          </Button>
+        ) : null}
+      </div>
+
+      {rows.length > 0 ? (
+        <div className="mt-4 overflow-x-auto">
+          <table className="w-full min-w-[42rem] text-left text-xs">
+            <thead className="text-muted">
+              <tr>
+                <th className="py-1 pr-2 font-medium">Business</th>
+                <th className="py-1 pr-2 font-medium">Website found</th>
+                <th className="py-1 pr-2 font-medium">Right site?</th>
+                <th className="py-1 pr-2 font-medium">Email found</th>
+                <th className="py-1 pr-2 font-medium">Right email?</th>
+                <th className="py-1 pr-2 font-medium">Reason</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, index) => (
+                <tr key={`${row.input.businessName}-${index}`} className="border-t border-border align-top">
+                  <td className="py-1.5 pr-2">{row.input.businessName}</td>
+                  <td className="py-1.5 pr-2 break-all">
+                    {row.error ? <span className="text-hot">error</span> : row.website || "—"}
+                    {row.identityScore !== null ? (
+                      <span className="text-subtle"> ({row.identityScore})</span>
+                    ) : null}
+                  </td>
+                  <td className="py-1.5 pr-2">
+                    <Mark value={row.websiteCorrect} onChange={(v) => mark(index, "websiteCorrect", v)} />
+                  </td>
+                  <td className="py-1.5 pr-2 break-all">
+                    {row.email || "—"}
+                    {row.confidence ? <span className="text-subtle"> {row.confidence}</span> : null}
+                  </td>
+                  <td className="py-1.5 pr-2">
+                    <Mark value={row.emailCorrect} onChange={(v) => mark(index, "emailCorrect", v)} />
+                  </td>
+                  <td className="py-1.5 pr-2 text-subtle">{row.error || row.reason || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          {summary ? (
+            <div className="mt-3 flex flex-col gap-0.5 text-xs text-muted">
+              <p>
+                Measured by the run: {rate(summary.websitesVerified, summary.completed)} websites
+                verified · {rate(summary.emailsFound, summary.completed)} emails found ·{" "}
+                {(summary.averageMs / 1000).toFixed(1)}s average
+              </p>
+              <p>
+                Confirmed by you: {summary.websitesChecked} of {summary.websitesVerified} sites and{" "}
+                {summary.emailsChecked} of {summary.emailsFound} emails checked
+                {summary.falsePositiveWebsites + summary.falsePositiveEmails > 0 ? (
+                  <span className="text-hot">
+                    {" "}
+                    · {summary.falsePositiveWebsites} wrong site(s),{" "}
+                    {summary.falsePositiveEmails} wrong email(s)
+                  </span>
+                ) : null}
+              </p>
+              <p className="text-subtle">
+                Accuracy is only meaningful once every found row is marked. Mark a row WRONG if the
+                site or address is not genuinely that business's — those are the results worth
+                sending back.
+              </p>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function Mark({ value, onChange }: { value: Verdict; onChange: (value: Verdict) => void }) {
+  return (
+    <select
+      value={value}
+      onChange={(event) => onChange(event.target.value as Verdict)}
+      aria-label="Is this correct?"
+      className={cn(
+        "rounded-full border-0 px-2 py-0.5 text-xs",
+        value === "CORRECT" && "bg-accent text-accent-fg",
+        value === "WRONG" && "bg-hot/15 text-hot",
+        value === "UNKNOWN" && "bg-surface-2 text-muted",
+      )}
+    >
+      {VERDICTS.map((verdict) => (
+        <option key={verdict} value={verdict}>
+          {verdict === "UNKNOWN" ? "?" : verdict === "CORRECT" ? "Yes" : "No"}
+        </option>
+      ))}
+    </select>
+  );
 }
