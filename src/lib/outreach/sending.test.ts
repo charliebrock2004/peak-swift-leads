@@ -19,6 +19,7 @@ import { DEFAULT_SETTINGS, type OutreachEmail, type OutreachLead, type OutreachS
 function email(partial: Partial<OutreachEmail> = {}): OutreachEmail {
   return {
     personalisationEvidence: "",
+    campaignId: "",
     id: "e1",
     leadId: "l1",
     businessName: "Strathearn Joinery Ltd",

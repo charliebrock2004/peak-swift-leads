@@ -7,6 +7,7 @@ import type { OutreachState } from "@/lib/outreach/server";
 import type { OutreachEmail } from "@/lib/outreach/types";
 import { leadFacts } from "@/lib/outreach/compose";
 import { parseEvidenceSummary } from "@/lib/outreach/evidence";
+import type { Campaign } from "@/lib/outreach/campaigns";
 import { decideProspect } from "@/lib/decision";
 import type { OutreachLead } from "@/lib/outreach/types";
 import { cn } from "@/lib/utils";
@@ -113,6 +114,7 @@ export function OutreachQueue({
                       <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted">
                         {email.generatedBy === "ai" ? "AI" : email.generatedBy === "manual" ? "Edited" : "Template"}
                       </span>
+                      <CampaignTag email={email} campaigns={state.campaigns} />
                       {email.kind !== "initial" ? (
                         <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted">
                           {email.kind === "follow-up-1" ? "Follow-up 1" : "Follow-up 2"}
@@ -274,6 +276,7 @@ export function OutreachQueue({
                     >
                       {email.status === "replied" ? "Replied" : "Sent"}
                     </span>
+                    <CampaignTag email={email} campaigns={state.campaigns} />
                     <ChevronDown className="size-4 shrink-0 text-muted group-open:rotate-180" />
                   </summary>
                   <div className="px-3 pb-3">
@@ -309,6 +312,24 @@ export function OutreachQueue({
  * Emails written before the evidence column exists fall back to the live facts,
  * which is the best answer available for them and is labelled as such.
  */
+/**
+ * Which campaign an outreach event belongs to.
+ *
+ * Empty for every email written outside a campaign, and for everything written
+ * before campaigns existed — shown as nothing rather than as "no campaign",
+ * which would read as a fault on perfectly good history.
+ */
+function CampaignTag({ email, campaigns }: { email: OutreachEmail; campaigns: Campaign[] }) {
+  if (!email.campaignId) return null;
+  const campaign = campaigns.find((entry) => entry.id === email.campaignId);
+  if (!campaign) return null;
+  return (
+    <span className="shrink-0 rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted">
+      {campaign.name || "Campaign"}
+    </span>
+  );
+}
+
 function WhyThisEmail({ email, lead }: { email: OutreachEmail; lead: OutreachLead | undefined }) {
   const stored = parseEvidenceSummary(email.personalisationEvidence);
   if (stored.length > 0) {

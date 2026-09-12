@@ -7,6 +7,7 @@ import { useOutreach } from "@/components/outreach/use-outreach";
 import { OutreachDashboard } from "@/components/outreach/outreach-dashboard";
 import { OutreachProspects } from "@/components/outreach/outreach-prospects";
 import { OutreachAuto } from "@/components/outreach/outreach-auto";
+import { OutreachCampaigns } from "@/components/outreach/outreach-campaigns";
 import { OutreachQueue } from "@/components/outreach/outreach-queue";
 import { OutreachLists } from "@/components/outreach/outreach-lists";
 import { OutreachSettingsTab } from "@/components/outreach/outreach-settings";
@@ -14,11 +15,15 @@ import { checkEligibility, emptyContext, type EligibilityContext } from "@/lib/o
 import { SETUP_COPY, type SetupReason } from "@/lib/outreach/setup-state";
 import type { OutreachLead } from "@/lib/outreach/types";
 import type { ProspectFilter } from "@/lib/decision";
+import type { Campaign } from "@/lib/outreach/campaigns";
 import { cn } from "@/lib/utils";
 
 const TABS = [
   { id: "dashboard", label: "Overview" },
   { id: "prospects", label: "Prospects" },
+  // Campaigns group the work and keep the score. They reuse every screen
+  // below rather than adding a second route to sending.
+  { id: "campaigns", label: "Campaigns" },
   { id: "review", label: "Review" },
   // Automation sits beside the manual workflow, never in front of it: the
   // Prospects → Review → Send path is unchanged and is still the default.
@@ -38,6 +43,8 @@ export type OutreachTab = (typeof TABS)[number]["id"];
 export function OutreachPanel({ onClose }: { onClose: () => void }) {
   const [tab, setTab] = useState<OutreachTab>("dashboard");
   const [prospectFilter, setProspectFilter] = useState<ProspectFilter>("all");
+  /** The campaign a run should be recorded against, chosen from its detail page. */
+  const [runCampaign, setRunCampaign] = useState<Campaign | null>(null);
   const [mounted, setMounted] = useState(false);
   const { state, loading, busy, error, setError, setup, reload, actions } = useOutreach();
 
@@ -156,7 +163,24 @@ export function OutreachPanel({ onClose }: { onClose: () => void }) {
                 />
               ) : null}
               {tab === "review" ? <OutreachQueue state={state} busy={busy} actions={actions} /> : null}
-              {tab === "auto" ? <OutreachAuto state={state} onReload={() => void reload()} /> : null}
+              {tab === "campaigns" ? (
+                <OutreachCampaigns
+                  state={state}
+                  onReload={() => void reload()}
+                  onRun={(campaign) => {
+                    setRunCampaign(campaign);
+                    setTab("auto");
+                  }}
+                />
+              ) : null}
+              {tab === "auto" ? (
+                <OutreachAuto
+                  state={state}
+                  campaign={runCampaign}
+                  onReload={() => void reload()}
+                  onClearCampaign={() => setRunCampaign(null)}
+                />
+              ) : null}
               {tab === "replies" ? <OutreachLists state={state} busy={busy} actions={actions} /> : null}
               {tab === "settings" ? <OutreachSettingsTab state={state} busy={busy} actions={actions} /> : null}
             </>

@@ -8,6 +8,7 @@ import {
   checkReplies,
   generateEmails,
   getOutreachState,
+  saveCampaign,
   saveOutreachRun,
   saveOutreachSettings,
   sendQueued,
@@ -17,8 +18,10 @@ import {
   discoveryIsFresh,
   emptyTally,
   tallyDiscovery,
+  REASON_LABELS as DISCOVERY_REASON_LABELS,
   type DiscoveryTally,
 } from "@/lib/email-discovery";
+import { SEARCH_FAILURE_LABELS } from "@/lib/search-provider";
 import {
   appendLog,
   appendSkips,
@@ -121,7 +124,13 @@ function leadFromProspect(prospect: Prospect): Partial<Lead> {
   };
 }
 
-export function useAutoRun(onFinished?: () => void) {
+/**
+ * @param campaignId Records the run against a campaign: prospects it finds join
+ *   the campaign, and drafts it writes carry its label. It is a label only —
+ *   eligibility, suppression, duplicate protection and the daily limit are the
+ *   same server-side checks whether or not a campaign asked for the run.
+ */
+export function useAutoRun(onFinished?: () => void, campaignId = "") {
   const [run, setRun] = useState<AutoRunState>(() => initialRunState(clampAutoConfig(DEFAULT_AUTO_CONFIG)));
   const stopping = useRef(false);
   const active = useRef(false);
@@ -384,6 +393,18 @@ export function useAutoRun(onFinished?: () => void) {
         }
         if (shouldStop()) return finish("stopped", "Stopped after saving the new leads.", "warn");
 
+        // Campaign membership, once the leads are definitely on the server.
+        // Idempotent by primary key, so re-running a campaign re-adds nothing —
+        // and this writes membership only, never outreach state, which is why a
+        // second discovery run cannot reset where a prospect had got to.
+        if (campaignId) {
+          const joined = await saveCampaign({
+            data: { action: "prospects", id: campaignId, leadIds: [...runLeadIds] },
+          }).catch(() => null);
+          if (joined && !joined.success) log(joined.error, "warn");
+          else if (joined) log(`${joined.added} prospect(s) added to the campaign.`);
+        }
+
         // ── 3. QUALIFY — the sheet's own website check and email lookup ──────
         phase("qualifying", "Checking websites and looking for public emails…");
         const toQualify = liveLeads(useLeadsStore.getState().leads).filter((lead) =>
@@ -393,6 +414,14 @@ export function useAutoRun(onFinished?: () => void) {
         let done = 0;
         const patches: { id: string; patch: Partial<Lead> }[] = [];
         const discovery: DiscoveryTally & { cached: number } = emptyTally();
+        /**
+         * Why discovery came back empty, per lead.
+         *
+         * Kept so a skipped lead can say "no search key configured" or "found
+         * possible sites, none provably this business" instead of the bare
+         * "no public email found", which names a symptom and no cause.
+         */
+        const whyNoEmail = new Map<string, string>();
 
         const worker = async () => {
           while (true) {
@@ -438,6 +467,15 @@ export function useAutoRun(onFinished?: () => void) {
                 const patch = emailPatch(working, mail.found, mail.foundAt);
                 patches.push({ id: lead.id, patch });
                 tallyDiscovery(discovery, mail.discovery);
+                if (!mail.found && mail.discovery.reason) {
+                  const searchNote = mail.searchFailure
+                    ? ` (search: ${SEARCH_FAILURE_LABELS[mail.searchFailure] ?? mail.searchFailure})`
+                    : "";
+                  whyNoEmail.set(
+                    lead.id,
+                    `${DISCOVERY_REASON_LABELS[mail.discovery.reason] ?? mail.discovery.reason}${searchNote}`,
+                  );
+                }
               }
             } catch (error) {
               count({ errors: 1 });
@@ -462,7 +500,7 @@ export function useAutoRun(onFinished?: () => void) {
         // Say what email discovery actually achieved, and where it got stuck.
         // "No public email found" on its own tells nobody what to fix.
         {
-          const { bestSource, biggestBottleneck, REASON_LABELS } = await import("@/lib/email-discovery");
+          const { bestSource, biggestBottleneck } = await import("@/lib/email-discovery");
           const top = bestSource(discovery);
           const stuck = biggestBottleneck(discovery);
           log(
@@ -474,7 +512,7 @@ export function useAutoRun(onFinished?: () => void) {
           if (top) log(`Best source: ${top.source.toLowerCase().replace(/_/g, " ")} (${top.count}).`);
           if (stuck) {
             log(
-              `Biggest blocker: ${REASON_LABELS[stuck.reason as keyof typeof REASON_LABELS] ?? stuck.reason} (${stuck.count}).`,
+              `Biggest blocker: ${DISCOVERY_REASON_LABELS[stuck.reason as keyof typeof DISCOVERY_REASON_LABELS] ?? stuck.reason} (${stuck.count}).`,
               "warn",
             );
           }
@@ -503,7 +541,7 @@ export function useAutoRun(onFinished?: () => void) {
           config.mode === "send"
             ? Math.min(state.allowance.remaining, config.target)
             : config.target;
-        const plan = planTargets(state.leads as OutreachLead[], context, room, runLeadIds);
+        const plan = planTargets(state.leads as OutreachLead[], context, room, runLeadIds, whyNoEmail);
         skip(plan.skipped);
         setRinging(plan.ringing);
         const runLeads = liveLeads(useLeadsStore.getState().leads).filter((lead) => runLeadIds.has(lead.id));
@@ -547,7 +585,12 @@ export function useAutoRun(onFinished?: () => void) {
           if (shouldStop()) break;
           const chunk = plan.leadIds.slice(at, at + GENERATE_CHUNK);
           const written = await generateEmails({
-            data: { leadIds: chunk, mode: state.settings.defaultMode || "ai", kind: "initial" },
+            data: {
+              leadIds: chunk,
+              mode: state.settings.defaultMode || "ai",
+              kind: "initial",
+              campaignId,
+            },
           });
           if (!written.ok) {
             count({ errors: 1 });
@@ -671,7 +714,7 @@ export function useAutoRun(onFinished?: () => void) {
         onFinished?.();
       }
     },
-    [count, detail, log, onFinished, phase, pushSheet, setRinging, shouldStop, skip],
+    [campaignId, count, detail, log, onFinished, phase, pushSheet, setRinging, shouldStop, skip],
   );
 
   const reset = useCallback(() => {

@@ -80,9 +80,14 @@ export function EmailDiscoveryTest() {
       </div>
       <p className="mt-2 text-xs text-subtle">
         Leave the website blank to watch the full waterfall: search, then domain candidates, then
-        the crawl. Phone and postcode are what prove a discovered site is the right business.
+        the crawl. Phone and postcode are what prove a discovered site is the right business — a
+        lead with neither is the hardest case and the one worth testing.
       </p>
-      <Button className="mt-3 h-11" disabled={busy || website.trim().length < 4} onClick={() => void run()}>
+      <Button
+        className="mt-3 h-11"
+        disabled={busy || (website.trim().length < 4 && businessName.trim().length < 3)}
+        onClick={() => void run()}
+      >
         {busy ? <Loader2 className="animate-spin" /> : <Search />}
         Run discovery
       </Button>
@@ -138,6 +143,67 @@ export function EmailDiscoveryTest() {
                 <p className="mt-1 text-hot">
                   Search failed: {SEARCH_FAILURE_LABELS[report.searchFailure] ?? report.searchFailure}
                 </p>
+              ) : null}
+              <p className="mt-1 text-muted">
+                What we asked for: {businessName || "—"} · {town || "—"} · {trade || "—"} ·{" "}
+                {phone || "no phone"} · {address || "no address"}
+              </p>
+              {typeof report.elapsedMs === "number" ? (
+                <p className="mt-1 text-subtle">
+                  Discovery took {(report.elapsedMs / 1000).toFixed(1)}s · {result.attempts} page
+                  {result.attempts === 1 ? "" : "s"} fetched
+                </p>
+              ) : null}
+              {report.queriesUsed?.length ? (
+                <details className="mt-1">
+                  <summary className="cursor-pointer text-xs text-muted">
+                    {report.queriesUsed.length} search quer
+                    {report.queriesUsed.length === 1 ? "y" : "ies"} sent
+                  </summary>
+                  <ol className="mt-1 flex list-inside list-decimal flex-col gap-0.5">
+                    {report.queriesUsed.map((query) => (
+                      <li key={query} className="text-xs break-all text-subtle">
+                        {query}
+                      </li>
+                    ))}
+                  </ol>
+                </details>
+              ) : null}
+              {report.searchResults?.length ? (
+                <details className="mt-1">
+                  <summary className="cursor-pointer text-xs text-muted">
+                    {report.searchResults.length} search result(s) returned
+                  </summary>
+                  <ul className="mt-1 flex flex-col gap-0.5">
+                    {report.searchResults.map((entry) => (
+                      <li key={entry.url} className="text-xs break-all text-subtle">
+                        {entry.title || "(no title)"} — {entry.url}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              ) : null}
+              {report.candidates?.length ? (
+                <details className="mt-1" open>
+                  <summary className="cursor-pointer text-xs text-muted">
+                    {report.candidates.length} candidate site(s) scored for identity
+                  </summary>
+                  <ul className="mt-1 flex flex-col gap-1">
+                    {report.candidates.map((candidate) => (
+                      <li key={candidate.url} className="text-xs">
+                        <p className={cn("break-all", candidate.accepted ? "text-accent" : "text-subtle")}>
+                          {candidate.accepted ? "✓" : "✕"} {candidate.url} — identity{" "}
+                          {candidate.score}/100
+                        </p>
+                        {candidate.signals.length > 0 ? (
+                          <p className="text-subtle">{candidate.signals.join("; ")}</p>
+                        ) : (
+                          <p className="text-subtle">no identity signals matched</p>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
               ) : null}
               {report.rejectedCandidates?.length ? (
                 <details className="mt-1">

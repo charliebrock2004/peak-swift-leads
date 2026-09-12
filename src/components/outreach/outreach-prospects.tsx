@@ -16,6 +16,18 @@ import type { OutreachState } from "@/lib/outreach/server";
 import type { OutreachLead } from "@/lib/outreach/types";
 import { phoneHref } from "@/lib/leads";
 import { cn } from "@/lib/utils";
+import {
+  ANY,
+  NO_REFINEMENT,
+  campaignsByLead,
+  isRefined,
+  matchesRefinement,
+  refinementCount,
+  refinementOptions,
+  stagesByLead,
+  type Refinement,
+} from "@/lib/outreach/prospect-filters";
+import { STAGE_LABELS } from "@/lib/outreach/lifecycle";
 
 /**
  * Who is worth writing to, ringing, or looking at.
@@ -45,6 +57,7 @@ export function OutreachProspects({
   const [reviews, setReviews] = useState<Map<string, string>>(new Map());
   const [reviewBusy, setReviewBusy] = useState("");
   const [reviewError, setReviewError] = useState("");
+  const [refinement, setRefinement] = useState<Refinement>(NO_REFINEMENT);
 
   useEffect(() => {
     let cancelled = false;
@@ -71,10 +84,40 @@ export function OutreachProspects({
 
   const needle = query.trim().toLowerCase();
 
+  /**
+   * Stages and campaign membership for the whole list, computed once.
+   *
+   * Doing this per row inside the filter would re-scan every email for every
+   * prospect on every keystroke.
+   */
+  const context = useMemo(() => {
+    const decisions = new Map(
+      state.leads.map((lead) => {
+        const decision = decideProspect(lead as OutreachLead);
+        return [lead.id, { level: decision.level, reviewRequired: decision.reviewRequired }] as const;
+      }),
+    );
+    return {
+      stages: stagesByLead(state.leads, state.emails, decisions),
+      campaigns: campaignsByLead(state.campaignMembers),
+    };
+  }, [state.leads, state.emails, state.campaignMembers]);
+
+  const options = useMemo(
+    () => refinementOptions(state.leads, (lead) => context.stages.get(lead.id) ?? "DISCOVERED"),
+    [state.leads, context.stages],
+  );
+
   const visible = useMemo(() => {
     const rank = { HOT: 0, WARM: 1, CALL: 2, LOW: 3, SKIP: 4 };
     return rows
       .filter((entry) => matchesProspectFilter(entry.lead, entry.eligibility, filter))
+      .filter((entry) =>
+        matchesRefinement(entry.lead, refinement, {
+          stage: context.stages.get(entry.lead.id) ?? "DISCOVERED",
+          campaigns: context.campaigns.get(entry.lead.id) ?? EMPTY_SET,
+        }),
+      )
       .filter((entry) => {
         if (!needle) return true;
         const hay = [
@@ -96,7 +139,7 @@ export function OutreachProspects({
         if (byLevel !== 0) return byLevel;
         return db.score - da.score;
       });
-  }, [rows, filter, needle]);
+  }, [rows, filter, needle, refinement, context]);
 
   const selectable = visible.filter((entry) => entry.eligibility.eligible);
   const chosen = [...selected].filter((id) => selectable.some((entry) => entry.lead.id === id));
@@ -176,6 +219,66 @@ export function OutreachProspects({
             {PROSPECT_FILTER_LABELS[id]}
           </button>
         ))}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <Refine
+          label="Campaign"
+          value={refinement.campaign}
+          onChange={(value) => setRefinement((current) => ({ ...current, campaign: value }))}
+          options={state.campaigns.map((campaign) => ({
+            value: campaign.id,
+            label: campaign.name || "Untitled",
+          }))}
+        />
+        <Refine
+          label="Stage"
+          value={refinement.stage}
+          onChange={(value) => setRefinement((current) => ({ ...current, stage: value }))}
+          options={options.stages.map((stage) => ({ value: stage, label: STAGE_LABELS[stage] }))}
+        />
+        <Refine
+          label="Town"
+          value={refinement.town}
+          onChange={(value) => setRefinement((current) => ({ ...current, town: value }))}
+          options={options.towns.map((town) => ({ value: town, label: town }))}
+        />
+        <Refine
+          label="Trade"
+          value={refinement.trade}
+          onChange={(value) => setRefinement((current) => ({ ...current, trade: value }))}
+          options={options.trades.map((trade) => ({ value: trade, label: trade }))}
+        />
+        <Refine
+          label="Score"
+          value={refinement.band}
+          onChange={(value) => setRefinement((current) => ({ ...current, band: value }))}
+          options={["High", "Medium", "Low"].map((band) => ({ value: band, label: band }))}
+        />
+        <Refine
+          label="Website"
+          value={refinement.websiteStatus}
+          onChange={(value) => setRefinement((current) => ({ ...current, websiteStatus: value }))}
+          options={options.websiteStatuses.map((status) => ({ value: status, label: status }))}
+        />
+        <Refine
+          label="Email"
+          value={refinement.emailConfidence}
+          onChange={(value) => setRefinement((current) => ({ ...current, emailConfidence: value }))}
+          options={options.confidences.map((level) => ({
+            value: level,
+            label: level === "none" ? "No email" : level,
+          }))}
+        />
+        {isRefined(refinement) ? (
+          <button
+            type="button"
+            className="h-9 text-xs text-muted underline hover:text-fg"
+            onClick={() => setRefinement(NO_REFINEMENT)}
+          >
+            Clear {refinementCount(refinement)}
+          </button>
+        ) : null}
       </div>
 
       {filter === "review" || reviewQueue.length > 0 ? (
@@ -362,5 +465,50 @@ export function OutreachProspects({
         </div>
       ) : null}
     </section>
+  );
+}
+
+/** Nothing, shared so an unmembered prospect does not allocate a set per render. */
+const EMPTY_SET: ReadonlySet<string> = new Set<string>();
+
+/**
+ * One narrowing control.
+ *
+ * A native select rather than another row of chips: seven of these as chips
+ * would bury the HOT / WARM / CALL row that people actually reach for, and a
+ * select stays one line however many towns the sheet has.
+ */
+function Refine({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: { value: string; label: string }[];
+  onChange: (value: string) => void;
+}) {
+  if (options.length === 0) return null;
+  return (
+    <label className="flex items-center gap-1.5">
+      <span className="sr-only">{label}</span>
+      <select
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className={cn(
+          "h-9 rounded-full border-0 px-3 text-xs font-medium",
+          value === ANY ? "bg-surface text-muted shadow-(--shadow-border)" : "bg-accent text-accent-fg",
+        )}
+        aria-label={label}
+      >
+        <option value={ANY}>{label}</option>
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }

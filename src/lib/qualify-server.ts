@@ -113,6 +113,20 @@ export type FindEmailResult =
       providerExtracts?: number;
       /** Sites considered and turned down, so a miss can be understood. */
       rejectedCandidates?: { url: string; why: string }[];
+      /**
+       * The full diagnostic trail, for the test panel.
+       *
+       * Present on every call because the cost is a handful of strings, and a
+       * real failed lead has to be diagnosable without anyone attaching a
+       * debugger to production. Nothing here is inferred: the queries are the
+       * ones actually sent, the results the ones actually returned, and the
+       * candidate scores the ones the identity check actually produced.
+       */
+      queriesUsed?: string[];
+      searchResults?: { title: string; url: string }[];
+      candidates?: { url: string; score: number; accepted: boolean; signals: string[] }[];
+      /** Wall-clock milliseconds for the whole discovery, including every fetch. */
+      elapsedMs?: number;
     }
   | { ok: false; error: string };
 
@@ -354,6 +368,11 @@ export const findLeadEmail = createServerFn({ method: "POST" })
     let providerExtracts = 0;
     /** Candidates looked at and turned down, with the reason. */
     const rejected: { url: string; why: string }[] = [];
+    /** Every query actually sent, in order, for the test panel. */
+    const queriesUsed: string[] = [];
+    /** Every candidate site scored, kept or not, with the signals behind it. */
+    const siteCandidates: { url: string; score: number; accepted: boolean; signals: string[] }[] = [];
+    const startedAt = Date.now();
 
     // No usable website on the listing? Go and find one before giving up.
     //
@@ -387,6 +406,7 @@ export const findLeadEmail = createServerFn({ method: "POST" })
         const collected: SearchResult[] = collectedResults;
         for (const query of buildQueries(identity)) {
           searchesRun += 1;
+          queriesUsed.push(query.text);
           sourcesChecked.push(`search:${query.text}`);
           const answer = await runSearch(provider, query.text);
           if (!answer.ok) {
@@ -413,7 +433,14 @@ export const findLeadEmail = createServerFn({ method: "POST" })
           { url: page.finalUrl || lead.origin, text: pageText(page.html), title: pageTitle(page.html) },
           identity,
         );
-        if (match.score >= 75) probeMatches.push(match);
+        const accepted = match.score >= 75;
+        siteCandidates.push({
+          url: page.finalUrl || lead.origin,
+          score: match.score,
+          accepted,
+          signals: match.evidence,
+        });
+        if (accepted) probeMatches.push(match);
         else rejected.push({ url: lead.origin, why: match.evidence.join("; ") || "identity not corroborated" });
       }
       discoveredSite = bestWebsite(probeMatches);
@@ -500,6 +527,10 @@ export const findLeadEmail = createServerFn({ method: "POST" })
         ok: true, found: toFoundEmail(result), foundAt, message: result.reason ?? "", discovery: result,
         website: null, discoveryVia, searchProvider: searchUsed, searchesRun,
         searchFailure, providerExtracts, rejectedCandidates: rejected,
+        queriesUsed, candidates: siteCandidates, elapsedMs: Date.now() - startedAt,
+        searchResults: collectedResults.slice(0, 20).map((result) => ({
+          title: result.title, url: result.url,
+        })),
       };
     }
 
@@ -570,6 +601,13 @@ export const findLeadEmail = createServerFn({ method: "POST" })
       discoveryVia,
       searchProvider: searchUsed,
       searchesRun,
+      queriesUsed,
+      candidates: siteCandidates,
+      elapsedMs: Date.now() - startedAt,
+      searchResults: collectedResults.slice(0, 20).map((result) => ({
+        title: result.title,
+        url: result.url,
+      })),
       searchFailure,
       providerExtracts,
       rejectedCandidates: rejected,

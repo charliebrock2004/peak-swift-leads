@@ -333,6 +333,16 @@ export function planTargets(
   room: number,
   /** Only consider these leads, when a run wants to stay within what it found. */
   onlyIds?: ReadonlySet<string>,
+  /**
+   * Why email discovery came back empty for a lead, by lead id.
+   *
+   * Eligibility can only say "no public email found", which is true and
+   * useless: the actionable answer is whether no search key is configured,
+   * whether a site was found but could not be proved to be this business, or
+   * whether the contact page simply publishes no address. Those need different
+   * responses, so when discovery recorded one it replaces the generic line.
+   */
+  whyNoEmail?: ReadonlyMap<string, string>,
 ): TargetPlan {
   const rank = { High: 0, Medium: 1, Low: 2 };
   const eligible: { lead: OutreachLead; band: "High" | "Medium" | "Low"; score: number }[] = [];
@@ -346,7 +356,10 @@ export function planTargets(
       eligible.push({ lead, band: verdict.band, score: verdict.score });
       continue;
     }
-    const reasons = verdict.reasons.map((reason) => REASON_LABELS[reason] ?? reason);
+    const detail = whyNoEmail?.get(lead.id) ?? "";
+    const reasons = verdict.reasons.map((reason) =>
+      reason === "no-email" && detail ? detail : (REASON_LABELS[reason] ?? reason),
+    );
     if (verdict.manualReview && !verdict.reasons.includes("manual-review")) {
       reasons.push(REASON_LABELS["manual-review"]);
     }

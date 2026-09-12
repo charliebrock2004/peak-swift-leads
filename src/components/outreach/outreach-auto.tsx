@@ -20,6 +20,7 @@ import {
   type RingingLead,
 } from "@/lib/outreach/auto-run";
 import { getRecentRuns, type OutreachState } from "@/lib/outreach/server";
+import type { Campaign } from "@/lib/outreach/campaigns";
 import {
   runDate,
   runDuration,
@@ -61,16 +62,37 @@ const STEPS = [
  */
 export function OutreachAuto({
   state,
+  campaign = null,
   onReload,
+  onClearCampaign,
 }: {
   state: OutreachState;
+  /** Set when a campaign sent you here. The run is recorded against it. */
+  campaign?: Campaign | null;
   onReload: () => void;
+  onClearCampaign?: () => void;
 }) {
   const [form, setForm] = useState<AutoRunConfig>(() =>
-    clampAutoConfig({ ...DEFAULT_AUTO_CONFIG, dailyLimit: state.settings.dailyLimit }),
+    // A campaign fills the form in from what it was set up to look for. It is
+    // still the same form and the same run — the campaign chooses the inputs,
+    // it does not get a different pipeline or a different set of safety rules.
+    clampAutoConfig({
+      ...DEFAULT_AUTO_CONFIG,
+      dailyLimit: campaign
+        ? Math.min(campaign.dailyTarget, state.settings.dailyLimit)
+        : state.settings.dailyLimit,
+      ...(campaign
+        ? {
+            location: campaign.locations,
+            businessType: campaign.trades,
+            target: campaign.targetProspects,
+            mode: campaign.sendMode,
+          }
+        : {}),
+    }),
   );
   const [nation, setNation] = useState<Nation>(() => nationFor(DEFAULT_AUTO_CONFIG.location));
-  const { run, start, stop, reset, running } = useAutoRun(onReload);
+  const { run, start, stop, reset, running } = useAutoRun(onReload, campaign?.id ?? "");
 
   const set = <K extends keyof AutoRunConfig>(key: K, value: AutoRunConfig[K]) =>
     setForm((current) => ({ ...current, [key]: value }));
@@ -109,6 +131,28 @@ export function OutreachAuto({
           open. Dry run is the default. Nothing is sent unless you choose send.
         </p>
       </div>
+
+      {campaign ? (
+        <div className="flex items-start justify-between gap-3 rounded-xl bg-surface px-4 py-3 shadow-(--shadow-border)">
+          <div className="min-w-0">
+            <p className="text-sm font-medium">Running for {campaign.name || "this campaign"}</p>
+            <p className="mt-0.5 text-xs text-subtle">
+              Prospects found here join the campaign, and drafts are labelled with it. The daily
+              limit is still whichever is smaller — the campaign's {campaign.dailyTarget} or your
+              account's {state.settings.dailyLimit}.
+            </p>
+          </div>
+          {onClearCampaign ? (
+            <button
+              type="button"
+              className="shrink-0 text-xs text-muted underline hover:text-fg"
+              onClick={onClearCampaign}
+            >
+              Run without it
+            </button>
+          ) : null}
+        </div>
+      ) : null}
 
       {running || isFinished(run.phase) ? (
         <RunView

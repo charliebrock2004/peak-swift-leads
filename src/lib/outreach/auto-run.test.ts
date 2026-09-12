@@ -68,6 +68,7 @@ function email(partial: Partial<OutreachEmail> = {}): OutreachEmail {
     createdAt: "",
     updatedAt: "",
     personalisationEvidence: "",
+    campaignId: "",
     ...partial,
   };
 }
@@ -666,5 +667,93 @@ describe("configProblem with several trades", () => {
   it("still refuses a run with no usable trade", () => {
     assert.equal(configProblem({ ...base, businessType: "" }), "Choose a business type.");
     assert.equal(configProblem({ ...base, businessType: " , , " }), "Choose a business type.");
+  });
+});
+
+describe("planTargets names the real reason an email was not found", () => {
+  const ctx = {
+    settings: { includeLow: true },
+    suppressed: new Set<string>(),
+    alreadyContacted: new Set<string>(),
+    contactedAddresses: new Set<string>(),
+  };
+
+  function noEmailLead(id: string) {
+    return {
+      id,
+      businessName: `Business ${id}`,
+      trade: "Joiner",
+      town: "Perth",
+      phone: "01738 700000",
+      email: "",
+      emailConfidence: "" as const,
+      emailSource: "",
+      address: "1 High Street, Perth PH1 5AB",
+      website: "",
+      websiteStatus: "No Website Found" as const,
+      websiteQuality: "" as const,
+      websiteAnalysis: "",
+      websiteScore: "" as const,
+      websiteCheckedAt: "",
+      businessStatus: "Active",
+      rating: 4.6,
+      reviews: 40,
+      called: "Not Called" as const,
+      callResult: "" as const,
+      outreachStatus: "",
+      unsubscribed: "",
+      lastEmailedAt: "",
+      followUpDate: "",
+      notes: "",
+      mapsLink: "",
+      foundAt: "",
+      source: "research",
+      updatedAt: "",
+    };
+  }
+
+  it("still says something useful when discovery recorded nothing", () => {
+    const plan = planTargets([noEmailLead("a")], ctx, 10);
+    const all = [...plan.skipped, ...plan.ringing.map((r) => ({ reasons: [r.reason] }))];
+    assert.ok(all.length === 1, "the lead goes somewhere");
+    assert.ok(all[0]!.reasons[0]!.length > 0);
+  });
+
+  it("replaces the generic no-email line with the cause discovery found", () => {
+    const why = new Map([["a", "No search key configured — only the listing and domain guesses were tried"]]);
+    // A lead with no phone cannot be rung, so it lands in skipped where the
+    // reason text is shown.
+    const lead = { ...noEmailLead("a"), phone: "" };
+    const plan = planTargets([lead], ctx, 10, undefined, why);
+    assert.equal(plan.skipped.length, 1);
+    assert.ok(
+      plan.skipped[0]!.reasons.some((reason) => reason.includes("No search key configured")),
+      `expected the real cause, got ${plan.skipped[0]!.reasons.join(", ")}`,
+    );
+    assert.ok(
+      !plan.skipped[0]!.reasons.includes("No public email found"),
+      "the generic line should have been replaced, not added to",
+    );
+  });
+
+  it("leaves every other refusal reason exactly as it was", () => {
+    const why = new Map([["a", "Contact page had no address"]]);
+    const unsubscribed = { ...noEmailLead("a"), phone: "", unsubscribed: "2026-01-01" };
+    const plan = planTargets([unsubscribed], ctx, 10, undefined, why);
+    assert.ok(
+      plan.skipped[0]!.reasons.some((reason) => /contact/i.test(reason)),
+      "the no-email line is still replaced",
+    );
+    assert.ok(
+      plan.skipped[0]!.reasons.length > 1,
+      "the unsubscribe reason must still be listed alongside it",
+    );
+  });
+
+  it("does not invent a reason for a lead discovery said nothing about", () => {
+    const why = new Map([["someone-else", "Contact page had no address"]]);
+    const lead = { ...noEmailLead("a"), phone: "" };
+    const plan = planTargets([lead], ctx, 10, undefined, why);
+    assert.ok(plan.skipped[0]!.reasons.includes("No public email found"));
   });
 });

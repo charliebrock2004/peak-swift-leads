@@ -21,6 +21,7 @@ import {
   type TemplateKind,
 } from "./types.ts";
 import { DEFAULT_TEMPLATES } from "./templates.ts";
+import type { Campaign } from "./campaigns.ts";
 
 function iso(value: unknown): string {
   if (!value) return "";
@@ -244,12 +245,13 @@ export async function saveTemplate(sql: Sql, userId: string, template: OutreachT
 
 // ── Emails ───────────────────────────────────────────────────────────────────
 
-const EMAIL_COLUMNS = `personalisation_evidence, id, lead_id, business_name, recipient, subject, body, status, kind,
+const EMAIL_COLUMNS = `campaign_id, personalisation_evidence, id, lead_id, business_name, recipient, subject, body, status, kind,
   generated_by, sending_account, gmail_message_id, gmail_thread_id, error, attempts,
   approved_at, sent_at, replied_at, created_at, updated_at`;
 
 function emailFromRow(row: Record<string, unknown>): OutreachEmail {
   return {
+    campaignId: text(row.campaign_id),
     personalisationEvidence: text(row.personalisation_evidence),
     id: text(row.id),
     leadId: text(row.lead_id),
@@ -306,6 +308,8 @@ export type NewEmail = {
   gmailThreadId?: string;
   /** Why this email said what it said, for the Review screen. */
   personalisationEvidence?: string;
+  /** Which campaign this was written under. Empty outside a campaign. */
+  campaignId?: string;
 };
 
 /**
@@ -320,13 +324,17 @@ export async function upsertDraft(sql: Sql, userId: string, email: NewEmail): Pr
   await sql.query(
     `insert into outreach_emails
        (user_id, id, lead_id, business_name, recipient, subject, body, status, kind,
-        generated_by, gmail_thread_id, personalisation_evidence, created_at, updated_at)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, now(), now())
+        generated_by, gmail_thread_id, personalisation_evidence, campaign_id, created_at, updated_at)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, now(), now())
      on conflict (user_id, id) do update set
        subject = excluded.subject, body = excluded.body, status = excluded.status,
        generated_by = excluded.generated_by, recipient = excluded.recipient,
        business_name = excluded.business_name,
        personalisation_evidence = excluded.personalisation_evidence,
+       -- A campaign label is only ever set, never cleared: regenerating a draft
+       -- outside a campaign must not erase which campaign it belongs to.
+       campaign_id = case when excluded.campaign_id = '' then outreach_emails.campaign_id
+                         else excluded.campaign_id end,
        error = '', updated_at = now()`,
     [
       userId,
@@ -341,6 +349,7 @@ export async function upsertDraft(sql: Sql, userId: string, email: NewEmail): Pr
       email.generatedBy,
       email.gmailThreadId ?? "",
       email.personalisationEvidence ?? "",
+      email.campaignId ?? "",
     ],
   );
 }
@@ -805,4 +814,110 @@ export async function loadReviews(sql: Sql, userId: string): Promise<LeadReview[
     note: text(row.note),
     decidedAt: iso(row.decided_at),
   }));
+}
+
+// ── Campaigns ────────────────────────────────────────────────────────────────
+
+/**
+ * Campaign rows.
+ *
+ * Only intent is stored: name, what to look for, how much and how fast. Every
+ * progress number is computed from `leads` and `outreach_emails` at read time,
+ * so a campaign row can never claim a send that did not happen.
+ */
+export async function loadCampaigns(sql: Sql, userId: string, limit = 100): Promise<Campaign[]> {
+  const rows = await sql.query<Record<string, unknown>>(
+    `select id, name, status, locations, trades, target_prospects, daily_target,
+            batch_size, send_mode, created_at, updated_at
+       from campaigns where user_id = $1 order by updated_at desc limit $2`,
+    [userId, Math.min(200, Math.max(1, limit))],
+  );
+  const num = (value: unknown, fallback: number) => {
+    const next = Number(value);
+    return Number.isFinite(next) ? next : fallback;
+  };
+  return rows.map((row) => ({
+    id: text(row.id),
+    name: text(row.name),
+    status: (text(row.status) || "DRAFT") as Campaign["status"],
+    locations: text(row.locations),
+    trades: text(row.trades),
+    targetProspects: num(row.target_prospects, 50),
+    dailyTarget: num(row.daily_target, 10),
+    batchSize: num(row.batch_size, 5),
+    sendMode: text(row.send_mode) === "send" ? "send" : "prepare",
+    createdAt: iso(row.created_at),
+    updatedAt: iso(row.updated_at),
+  }));
+}
+
+export async function loadCampaign(sql: Sql, userId: string, id: string): Promise<Campaign | null> {
+  const all = await loadCampaigns(sql, userId, 200);
+  return all.find((campaign) => campaign.id === id) ?? null;
+}
+
+/** Create or update one campaign. `created_at` is never moved by an update. */
+export async function upsertCampaign(sql: Sql, userId: string, campaign: Campaign): Promise<void> {
+  await sql.query(
+    `insert into campaigns
+       (user_id, id, name, status, locations, trades, target_prospects,
+        daily_target, batch_size, send_mode, created_at, updated_at)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, now(), now())
+     on conflict (user_id, id) do update set
+       name = excluded.name, status = excluded.status, locations = excluded.locations,
+       trades = excluded.trades, target_prospects = excluded.target_prospects,
+       daily_target = excluded.daily_target, batch_size = excluded.batch_size,
+       send_mode = excluded.send_mode, updated_at = now()`,
+    [
+      userId,
+      campaign.id,
+      campaign.name,
+      campaign.status,
+      campaign.locations,
+      campaign.trades,
+      campaign.targetProspects,
+      campaign.dailyTarget,
+      campaign.batchSize,
+      campaign.sendMode,
+    ],
+  );
+}
+
+/** Every campaign membership for this account: campaign id → lead ids. */
+export async function loadCampaignMembers(
+  sql: Sql,
+  userId: string,
+  limit = 20000,
+): Promise<{ campaignId: string; leadId: string }[]> {
+  const rows = await sql.query<Record<string, unknown>>(
+    `select campaign_id, lead_id from campaign_prospects
+       where user_id = $1 order by added_at desc limit $2`,
+    [userId, Math.min(50000, Math.max(1, limit))],
+  );
+  return rows.map((row) => ({ campaignId: text(row.campaign_id), leadId: text(row.lead_id) }));
+}
+
+/**
+ * Add prospects to a campaign.
+ *
+ * Idempotent by primary key: re-running discovery for a campaign re-adds
+ * nothing. Membership is all this writes — it never touches a lead's outreach
+ * state, which is why a rediscovery run cannot reset where a prospect had got
+ * to.
+ */
+export async function addCampaignProspects(
+  sql: Sql,
+  userId: string,
+  campaignId: string,
+  leadIds: readonly string[],
+): Promise<number> {
+  const ids = [...new Set(leadIds.filter((id) => id.trim()))].slice(0, 1000);
+  if (ids.length === 0) return 0;
+  await sql.query(
+    `insert into campaign_prospects (user_id, campaign_id, lead_id)
+       select $1, $2, unnest($3::text[])
+     on conflict (user_id, campaign_id, lead_id) do nothing`,
+    [userId, campaignId, ids],
+  );
+  return ids.length;
 }

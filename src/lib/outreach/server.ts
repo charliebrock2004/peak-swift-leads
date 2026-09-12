@@ -24,6 +24,14 @@ import { authMiddleware } from "@/lib/auth/middleware";
 import { newLeadId, type Lead } from "@/lib/leads";
 import { composeEmail, evidenceFor, parseAiDraft, type AiDraft } from "./compose.ts";
 import { evidenceSummary } from "./evidence.ts";
+import {
+  campaignProblem,
+  campaignTransitionProblem,
+  clampCampaign,
+  newCampaign,
+  type Campaign,
+  type CampaignStatus,
+} from "./campaigns.ts";
 import { checkEligibility, emptyContext, type EligibilityContext } from "./eligibility.ts";
 import { allowance, nextBatch, sanitizeSettings } from "./limits.ts";
 import { checkEmailQuality, readsAsUnsubscribe } from "./quality.ts";
@@ -101,6 +109,30 @@ async function loadWorld(userId: string) {
     store.loadTemplates(sql, userId),
   ]);
   return { sql, store, settings, emails, suppression, templates };
+}
+
+/**
+ * Campaigns and their membership, or nothing at all.
+ *
+ * A deployment that has not run the campaigns migration has no campaigns —
+ * which is the truth, not a failure — so a missing table returns empty rather
+ * than taking down the whole outreach screen with it.
+ */
+async function loadCampaignWorld(
+  store: typeof import("./store.server.ts"),
+  sql: Awaited<ReturnType<typeof import("@/lib/db").getSql>>,
+  userId: string,
+): Promise<{ campaigns: Campaign[]; campaignMembers: { campaignId: string; leadId: string }[] }> {
+  try {
+    const [campaigns, campaignMembers] = await Promise.all([
+      store.loadCampaigns(sql, userId),
+      store.loadCampaignMembers(sql, userId),
+    ]);
+    return { campaigns, campaignMembers };
+  } catch (error) {
+    if (isMissingTable(error)) return { campaigns: [], campaignMembers: [] };
+    throw error;
+  }
 }
 
 async function salesTools() {
@@ -227,6 +259,9 @@ async function usableToken(userId: string): Promise<UsableToken> {
 
 export type OutreachState = {
   ok: true;
+  campaigns: Campaign[];
+  /** Which prospects belong to which campaign. Empty before the migration runs. */
+  campaignMembers: { campaignId: string; leadId: string }[];
   connection: GmailConnection;
   settings: OutreachSettings;
   templates: OutreachTemplate[];
@@ -272,6 +307,12 @@ export const getOutreachState = createServerFn({ method: "GET" })
         store.loadSuppression(sql, context.userId),
         store.loadLeads(sql, context.userId),
       ]);
+      // Folded into the state the screen already loads rather than given their
+      // own server function: the SSR bundle splits past a certain number of
+      // them, and campaigns are part of the same picture as everything here.
+      // A deployment that has not run the campaigns migration yet simply has
+      // none, which is true rather than an error.
+      const { campaigns, campaignMembers } = await loadCampaignWorld(store, sql, context.userId);
       return {
         ok: true,
         connection: store.publicConnection(account, config !== null, await clientIdentity(config)),
@@ -280,6 +321,8 @@ export const getOutreachState = createServerFn({ method: "GET" })
         emails,
         suppression,
         leads,
+        campaigns,
+        campaignMembers,
         allowance: allowance(emails, settings),
         aiAvailable: Boolean(process.env.XAI_API_KEY?.trim()),
         database: dbSource,
@@ -482,12 +525,20 @@ export type GeneratedRow = {
 export const generateEmails = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((input: unknown) => {
-    const source = (input ?? {}) as { leadIds?: unknown; mode?: unknown; kind?: unknown };
+    const source = (input ?? {}) as {
+      leadIds?: unknown;
+      mode?: unknown;
+      kind?: unknown;
+      campaignId?: unknown;
+    };
     const kind = str(source.kind, 20);
     return {
       leadIds: idList(source.leadIds, 50),
       mode: str(source.mode, 60) || "ai",
       kind: (kind === "follow-up-1" || kind === "follow-up-2" ? kind : "initial") as EmailKind,
+      // A label on the draft, never a permission. Eligibility below is
+      // unchanged and runs whether or not a campaign asked for this.
+      campaignId: str(source.campaignId, 40),
     };
   })
   .handler(async ({ data, context }): Promise<{ ok: true; rows: GeneratedRow[] } | Fail> => {
@@ -538,6 +589,7 @@ export const generateEmails = createServerFn({ method: "POST" })
         await store.upsertDraft(sql, context.userId, {
           id,
           personalisationEvidence: evidenceSummary(evidence),
+          campaignId: data.campaignId,
           leadId,
           businessName: lead.businessName,
           recipient: lead.email,
@@ -1274,6 +1326,110 @@ export const saveOutreachRun = createServerFn({ method: "POST" })
     } catch (error) {
       if (isMissingTable(error)) return { success: true as const, id: run.id, stored: false };
       return agentFail(error instanceof Error ? error.message : "Could not save the run.", "RUN_SAVE_FAILED", true);
+    }
+  });
+
+/**
+ * Every campaign write, behind one server function.
+ *
+ * Create, rename, retarget, start, pause, resume, complete, archive and add
+ * prospects are all the same shape of operation — change one campaign row, or
+ * its membership — so they share a function rather than each claiming their
+ * own. That is deliberate: the SSR bundle has split before under the weight of
+ * server-function exports, and a feature does not need nine of them.
+ *
+ * Nothing here sends. A campaign never gets its own route past
+ * `checkEligibility`, the suppression list, the duplicate index or the daily
+ * limit; starting one only means it may be searched against. `sanitizeSettings`
+ * still owns the ceiling, and `clampCampaign` is applied server-side so a
+ * crafted request cannot set a daily target the settings would refuse.
+ */
+export const saveCampaign = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((input: unknown) => {
+    const source = (input ?? {}) as Record<string, unknown>;
+    const action = str(source.action, 20);
+    return {
+      action: (action === "status" || action === "prospects" ? action : "save") as
+        | "save"
+        | "status"
+        | "prospects",
+      id: str(source.id, 40),
+      name: str(source.name, 60),
+      locations: str(source.locations, 200),
+      trades: str(source.trades, 200),
+      targetProspects: Number(source.targetProspects ?? 50),
+      dailyTarget: Number(source.dailyTarget ?? 10),
+      batchSize: Number(source.batchSize ?? 5),
+      sendMode: str(source.sendMode, 10) === "send" ? ("send" as const) : ("prepare" as const),
+      status: str(source.status, 20) as CampaignStatus,
+      leadIds: idList(source.leadIds, 500),
+    };
+  })
+  .handler(async ({ data, context }) => {
+    try {
+      const { getSql } = await import("@/lib/db");
+      const store = await import("./store.server.ts");
+      const sql = await getSql();
+      const settings = await store.loadSettings(sql, context.userId);
+      const limits = { dailyMax: settings.dailyLimit, batchMax: settings.batchSize };
+      const now = new Date().toISOString();
+      const existing = data.id ? await store.loadCampaign(sql, context.userId, data.id) : null;
+
+      if (data.action === "prospects") {
+        if (!existing) return agentFail("That campaign no longer exists.", "CAMPAIGN_MISSING");
+        const added = await store.addCampaignProspects(
+          sql,
+          context.userId,
+          existing.id,
+          data.leadIds,
+        );
+        return { success: true as const, id: existing.id, added };
+      }
+
+      if (data.action === "status") {
+        if (!existing) return agentFail("That campaign no longer exists.", "CAMPAIGN_MISSING");
+        const problem = campaignTransitionProblem(existing.status, data.status);
+        if (problem) return agentFail(problem, "CAMPAIGN_TRANSITION");
+        const next = { ...existing, status: data.status, updatedAt: now };
+        await store.upsertCampaign(sql, context.userId, next);
+        return { success: true as const, id: next.id, campaign: next };
+      }
+
+      const base = existing ?? newCampaign(data.id || newLeadId(), now);
+      const next = clampCampaign(
+        {
+          ...base,
+          name: data.name,
+          locations: data.locations,
+          trades: data.trades,
+          targetProspects: data.targetProspects,
+          dailyTarget: data.dailyTarget,
+          batchSize: data.batchSize,
+          sendMode: data.sendMode,
+          // A save never changes status — that is what the status action is
+          // for — so editing a paused campaign cannot quietly restart it.
+          status: base.status,
+        },
+        limits,
+        now,
+      );
+      const problem = campaignProblem(next);
+      if (problem) return agentFail(problem, "CAMPAIGN_INVALID");
+      await store.upsertCampaign(sql, context.userId, next);
+      return { success: true as const, id: next.id, campaign: next };
+    } catch (error) {
+      if (isMissingTable(error)) {
+        return agentFail(
+          "Campaigns need the latest database migration. Redeploy to apply it.",
+          "CAMPAIGNS_NOT_MIGRATED",
+        );
+      }
+      return agentFail(
+        error instanceof Error ? error.message : "Could not save the campaign.",
+        "CAMPAIGN_SAVE_FAILED",
+        true,
+      );
     }
   });
 
