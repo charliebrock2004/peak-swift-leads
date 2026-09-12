@@ -26,10 +26,13 @@ import {
 } from "@/lib/email-discovery";
 
 import {
+  buildEmailQueries,
   buildQueries,
   classifySearchFailure,
   isRetryable,
   looksLikeJson,
+  looksLikePublicProfile,
+  MAX_EMAIL_SEARCHES,
   MAX_SEARCH_BYTES,
   parseRetryAfter,
   type SearchFailureKind,
@@ -43,8 +46,12 @@ import {
   type WebsiteLead,
 } from "@/lib/search-provider";
 import {
+  bestPossibleWebsite,
   bestWebsite,
   candidateDomains,
+  emailsAllowedFromMatch,
+  isSingleBusinessListing,
+  listingClearlyMatches,
   pageText,
   pageTitle,
   scoreWebsiteMatch,
@@ -329,12 +336,17 @@ export const findLeadEmail = createServerFn({ method: "POST" })
   })
   .handler(async ({ data }): Promise<FindEmailResult> => {
     const foundAt = new Date().toISOString();
-    const context = { websiteUrl: data.website, businessName: data.businessName };
+    let context = { websiteUrl: data.website, businessName: data.businessName };
     const candidates: EmailCandidate[] = [];
     const sourcesChecked: string[] = [];
+    /** Every fetch, for the diagnostic. Does not gate the email crawl. */
     let attempts = 0;
+    /** Pages fetched specifically to extract addresses. Gated by MAX_PAGES. */
+    let emailPages = 0;
     let failure: DiscoveryReason | null = null;
     let sawContactPage = false;
+    /** True when we crawled a POSSIBLE site without attaching it as official. */
+    let crawledPossible = false;
 
     /** The address already on the row, if the listing carried one. */
     const listingCandidate = (): EmailCandidate[] =>
@@ -349,9 +361,67 @@ export const findLeadEmail = createServerFn({ method: "POST" })
         : [];
 
     const best = () => rankCandidates(candidates, context)[0]?.score ?? 0;
+    const usableFound = () => {
+      const top = rankCandidates(candidates, context)[0];
+      return top?.confidence === "HIGH" || top?.confidence === "MEDIUM";
+    };
+
+    const profileSource = (url: string): EmailCandidate["source"] =>
+      classifyWebsiteUrl(url) === "Social Only" ? "PUBLIC_BUSINESS_PROFILE" : "PUBLIC_DIRECTORY";
+
+    /** HTML already fetched while identifying the site, keyed by URL and origin. */
+    const pageCache = new Map<string, { html: string; finalUrl: string }>();
+    const cachePage = (url: string, html: string, finalUrl: string) => {
+      pageCache.set(url, { html, finalUrl });
+      try {
+        pageCache.set(new URL(finalUrl).origin, { html, finalUrl });
+      } catch {
+        /* ignore */
+      }
+    };
+    const cachedPage = (url: string) => {
+      const hit = pageCache.get(url);
+      if (hit) return hit;
+      try {
+        const parsed = new URL(url);
+        const path = parsed.pathname.replace(/\/+$/, "");
+        if (path === "" || path === "/") return pageCache.get(parsed.origin);
+      } catch {
+        /* ignore */
+      }
+      return undefined;
+    };
+
+    const harvest = (
+      html: string,
+      pageUrl: string,
+      source: EmailCandidate["source"],
+      isContact: boolean,
+    ) => {
+      if (isContact) sawContactPage = true;
+      candidates.push(...extractCandidates(html, pageUrl, source, rejectedEmails));
+    };
+
+    const harvestProfile = (html: string, pageUrl: string) => {
+      const text = pageText(html);
+      if (!listingClearlyMatches(text, {
+        businessName: data.businessName, town: data.town, trade: data.trade,
+        phone: data.phone, address: data.address,
+      })) return false;
+      if (!isSingleBusinessListing(text)) return false;
+      harvest(html, pageUrl, profileSource(pageUrl), false);
+      return true;
+    };
 
     const readPage = async (url: string, isContact: boolean, timeout = 5000) => {
-      if (attempts >= MAX_PAGES) return;
+      const cached = cachedPage(url);
+      if (cached) {
+        sourcesChecked.push(url);
+        harvest(cached.html, cached.finalUrl || url, isContact ? "OFFICIAL_CONTACT_PAGE" : "OFFICIAL_WEBSITE", isContact);
+        return { ok: true, status: 200, finalUrl: cached.finalUrl, html: cached.html };
+      }
+      if (emailPages >= MAX_PAGES) return;
+      emailPages += 1;
       attempts += 1;
       const page = await fetchWithFallbacks(url, timeout);
       sourcesChecked.push(url);
@@ -359,10 +429,8 @@ export const findLeadEmail = createServerFn({ method: "POST" })
       if (page.status === 403 || page.status === 401) { failure ??= "BLOCKED_BY_SITE"; return; }
       if (page.status === 429) { failure ??= "RATE_LIMITED"; return; }
       if (!page.html) return;
-      if (isContact) sawContactPage = true;
-      candidates.push(
-        ...extractCandidates(page.html, page.finalUrl || url, isContact ? "OFFICIAL_CONTACT_PAGE" : "OFFICIAL_WEBSITE", rejectedEmails),
-      );
+      cachePage(url, page.html, page.finalUrl || url);
+      harvest(page.html, page.finalUrl || url, isContact ? "OFFICIAL_CONTACT_PAGE" : "OFFICIAL_WEBSITE", isContact);
       return page;
     };
 
@@ -421,18 +489,25 @@ export const findLeadEmail = createServerFn({ method: "POST" })
       // fetched and put through the same corroboration as a guessed domain.
       const provider = searchProvider();
       const probeMatches: WebsiteMatch[] = [];
+      const allMatches: WebsiteMatch[] = [];
+      let websiteProbes = 0;
+      const MAX_WEBSITE_PROBES = 8;
+      let possibleUpgrades = 0;
 
       /**
        * Fetch a candidate and decide whether it is this business.
        *
-       * Returns true once something has verified, which is the waterfall's
-       * stop condition. Every candidate is recorded either way, so a miss can
-       * be read afterwards rather than guessed at.
+       * Website probes have their own budget — they must not starve the email
+       * crawl. HTML is kept so a verified (or merely possible) page is not
+       * fetched twice. Directory/social pages are never attached as the
+       * official website, but a listing that clearly is this business can
+       * still yield a MEDIUM address.
        */
       const probeCandidate = async (lead: WebsiteLead): Promise<boolean> => {
-        if (attempts >= MAX_PAGES) return false;
+        if (websiteProbes >= MAX_WEBSITE_PROBES) return false;
         if (probedOrigins.has(lead.origin)) return false;
         probedOrigins.add(lead.origin);
+        websiteProbes += 1;
         attempts += 1;
         sourcesChecked.push(lead.origin);
         const page = await fetchWithFallbacks(lead.origin, 3000);
@@ -441,15 +516,52 @@ export const findLeadEmail = createServerFn({ method: "POST" })
           siteCandidates.push({ url: lead.origin, score: 0, accepted: false, signals: ["unreachable"] });
           return false;
         }
-        // The search layer already knows a Yell or Checkatrade result is a
-        // directory profile. Passing that through is what stops a listing page
-        // being attached as the business's own website — it used to be
-        // discarded here, and a Yell page scored a perfect 100.
-        const match = scoreWebsiteMatch(
-          { url: page.finalUrl || lead.origin, text: pageText(page.html), title: pageTitle(page.html) },
+        cachePage(lead.origin, page.html, page.finalUrl || lead.origin);
+
+        let match = scoreWebsiteMatch(
+          {
+            url: page.finalUrl || lead.origin,
+            text: pageText(page.html),
+            title: pageTitle(page.html),
+            extraText: `${lead.title} ${lead.snippet}`,
+          },
           identity,
           { kind: lead.kind },
         );
+
+        // Homepages of small trades often omit the phone. One extra /contact
+        // fetch is cheap and is how a POSSIBLE site becomes STRONG.
+        if (
+          match.confidence === "POSSIBLE" &&
+          lead.kind === "OWN_WEBSITE" &&
+          possibleUpgrades < 2 &&
+          websiteProbes < MAX_WEBSITE_PROBES
+        ) {
+          let origin = "";
+          try { origin = new URL(page.finalUrl || lead.origin).origin; } catch { origin = ""; }
+          if (origin) {
+            possibleUpgrades += 1;
+            websiteProbes += 1;
+            attempts += 1;
+            const contactUrl = `${origin}/contact`;
+            const contact = await fetchWithFallbacks(contactUrl, 2500);
+            if (contact?.ok && contact.html) {
+              sourcesChecked.push(contactUrl);
+              cachePage(contactUrl, contact.html, contact.finalUrl || contactUrl);
+              match = scoreWebsiteMatch(
+                {
+                  url: page.finalUrl || lead.origin,
+                  text: `${pageText(page.html)} ${pageText(contact.html)}`,
+                  title: pageTitle(page.html),
+                  extraText: `${lead.title} ${lead.snippet}`,
+                },
+                identity,
+                { kind: lead.kind },
+              );
+            }
+          }
+        }
+
         const accepted = match.score >= WEBSITE_MIN_SCORE;
         siteCandidates.push({
           url: page.finalUrl || lead.origin,
@@ -458,8 +570,20 @@ export const findLeadEmail = createServerFn({ method: "POST" })
           signals: match.evidence.length > 0 ? match.evidence : ["no identity signals matched"],
           character: match.character,
         });
+        allMatches.push(match);
         if (accepted) probeMatches.push(match);
         else rejected.push({ url: lead.origin, why: match.evidence.join("; ") || "identity not corroborated" });
+
+        if (emailsAllowedFromMatch(match)) {
+          harvest(page.html, page.finalUrl || lead.origin, "OFFICIAL_WEBSITE", false);
+          const contactHit = (() => {
+            try { return pageCache.get(`${new URL(page.finalUrl || lead.origin).origin}/contact`); }
+            catch { return undefined; }
+          })();
+          if (contactHit) harvest(contactHit.html, contactHit.finalUrl, "OFFICIAL_CONTACT_PAGE", true);
+        } else if (lead.kind === "PUBLIC_PROFILE") {
+          harvestProfile(page.html, page.finalUrl || lead.origin);
+        }
         return accepted;
       };
 
@@ -496,72 +620,100 @@ export const findLeadEmail = createServerFn({ method: "POST" })
               verified = true;
               break;
             }
-            if (attempts >= MAX_PAGES) break;
+            if (websiteProbes >= MAX_WEBSITE_PROBES) break;
           }
-          if (verified || attempts >= MAX_PAGES) break;
+          if (verified || websiteProbes >= MAX_WEBSITE_PROBES) break;
         }
       }
       discoveredSite = bestWebsite(probeMatches);
-      if (discoveredSite) {
-        href = discoveredSite.url;
-        discoveryVia = "SEARCH";
+      const possibleSite = discoveredSite ? null : bestPossibleWebsite(allMatches);
+      const adoptSite = (match: WebsiteMatch, via: "SEARCH" | "DOMAIN_GUESS", attach: boolean) => {
+        href = match.url;
+        context = { ...context, websiteUrl: match.url };
+        discoveryVia = via;
+        if (attach) discoveredSite = match;
+        else crawledPossible = true;
+      };
+      if (discoveredSite) adoptSite(discoveredSite, "SEARCH", true);
+      else if (possibleSite) adoptSite(possibleSite, "SEARCH", false);
 
-        // Tavily returns the text of pages it fetched. Read addresses out of it
-        // for the site we just VERIFIED — and only that site. The provider
-        // already fetched the page, so this is still an address observed in a
-        // public source, and on a site that blocks our crawler but not theirs
-        // it is the only way we will ever see it.
-        //
-        // Scoping to the verified origin is the whole safety of this: raw text
-        // from an unverified result would harvest a different business's
-        // address and attach it here with full confidence.
-        let verifiedOrigin = "";
-        try {
-          verifiedOrigin = new URL(discoveredSite.url).origin;
-        } catch {
-          verifiedOrigin = "";
-        }
-        if (verifiedOrigin) {
-          for (const result of collectedResults) {
-            if (!result.rawContent) continue;
-            let sameSite = false;
-            try {
-              sameSite = new URL(result.url).origin === verifiedOrigin;
-            } catch {
-              sameSite = false;
-            }
-            if (!sameSite) continue;
+      // Tavily already fetched page text. Mine it for the site we are crawling
+      // (STRONG or POSSIBLE) and for directory listings that clearly match.
+      {
+        let crawlOrigin = "";
+        try { crawlOrigin = href ? new URL(href).origin : ""; } catch { crawlOrigin = ""; }
+        for (const result of collectedResults) {
+          const blob = result.rawContent || "";
+          if (!blob && !result.snippet) continue;
+          let resultOrigin = "";
+          try { resultOrigin = new URL(result.url).origin; } catch { continue; }
+          const text = `${result.title} ${result.snippet} ${blob}`;
+          if (crawlOrigin && resultOrigin === crawlOrigin && blob) {
             providerExtracts += 1;
-            candidates.push(
-              ...extractCandidates(result.rawContent, result.url, "OFFICIAL_WEBSITE", rejectedEmails),
-            );
+            harvest(blob, result.url, "OFFICIAL_WEBSITE", /contact|enquir|get-in-touch/i.test(result.url));
+          } else if (looksLikePublicProfile(result.url) && listingClearlyMatches(text, identity) && isSingleBusinessListing(text)) {
+            if (blob) providerExtracts += 1;
+            harvest(blob || result.snippet, result.url, profileSource(result.url), false);
           }
         }
       }
       // Concurrently: most candidate domains do not resolve, and waiting out
       // four DNS failures one after another would add twenty seconds to every
-      // lead that has no website — which is most of them.
-      if (!discoveredSite) {
+      // lead that has no website — which is most of them. Skip when search
+      // already gave us something to crawl.
+      if (!discoveredSite && !possibleSite) {
       const probes = candidateDomains(data.businessName, data.town, data.trade, WEBSITE_PROBES);
-      attempts += probes.length;
       sourcesChecked.push(...probes.map((host) => `https://${host}`));
       const settled = await Promise.all(
-        probes.map(async (host): Promise<WebsiteMatch | null> => {
+        probes.map(async (host): Promise<{ match: WebsiteMatch; html: string; finalUrl: string } | null> => {
+          attempts += 1;
           const probe = `https://${host}`;
           const page = await fetchWithFallbacks(probe, 2500);
           if (!page?.ok || !page.html) return null;
-          return scoreWebsiteMatch(
+          const match = scoreWebsiteMatch(
             { url: page.finalUrl || probe, text: pageText(page.html), title: pageTitle(page.html) },
             identity,
           );
+          return { match, html: page.html, finalUrl: page.finalUrl || probe };
         }),
       );
-      const guessed = settled.filter((match): match is WebsiteMatch => match !== null);
-      for (const match of guessed) {
-        if (match.score < 75) rejected.push({ url: match.url, why: match.evidence.join("; ") || "identity not corroborated" });
+      const guessed = settled.filter((entry): entry is { match: WebsiteMatch; html: string; finalUrl: string } => entry !== null);
+      for (const entry of guessed) {
+        allMatches.push(entry.match);
+        cachePage(entry.finalUrl, entry.html, entry.finalUrl);
+        if (entry.match.score < WEBSITE_MIN_SCORE) {
+          rejected.push({ url: entry.match.url, why: entry.match.evidence.join("; ") || "identity not corroborated" });
+        }
+        if (emailsAllowedFromMatch(entry.match)) {
+          harvest(entry.html, entry.finalUrl, "OFFICIAL_WEBSITE", false);
+        }
       }
-      discoveredSite = bestWebsite(guessed);
-      if (discoveredSite) { href = discoveredSite.url; discoveryVia = "DOMAIN_GUESS"; }
+      discoveredSite = bestWebsite(guessed.map((entry) => entry.match));
+      if (discoveredSite) adoptSite(discoveredSite, "DOMAIN_GUESS", true);
+      else {
+        const guessedPossible = bestPossibleWebsite(guessed.map((entry) => entry.match));
+        if (guessedPossible) adoptSite(guessedPossible, "DOMAIN_GUESS", false);
+      }
+      }
+    }
+
+    // The listing itself may be a Yell/Facebook URL that publishes an address.
+    if (
+      !usableFound() &&
+      href &&
+      (classifyWebsiteUrl(href) === "Social Only" || classifyWebsiteUrl(href) === "Directory Only")
+    ) {
+      const cached = cachedPage(href);
+      if (cached) {
+        harvestProfile(cached.html, cached.finalUrl);
+      } else {
+        attempts += 1;
+        sourcesChecked.push(href);
+        const listingPage = await fetchWithFallbacks(href, 3000);
+        if (listingPage?.ok && listingPage.html) {
+          cachePage(href, listingPage.html, listingPage.finalUrl || href);
+          harvestProfile(listingPage.html, listingPage.finalUrl || href);
+        }
       }
     }
 
@@ -620,13 +772,13 @@ export const findLeadEmail = createServerFn({ method: "POST" })
       // better evidence than a path we guessed at.
       if (best() < GOOD_ENOUGH_SCORE && home?.html) {
         for (const link of contactLinks(home.html, home.finalUrl || href)) {
-          if (best() >= GOOD_ENOUGH_SCORE || attempts >= MAX_PAGES) break;
+          if (best() >= GOOD_ENOUGH_SCORE || emailPages >= MAX_PAGES) break;
           await readPage(link, true, 4500);
         }
       }
 
       // Then the sitemap, which finds pages nothing links to.
-      if (best() < GOOD_ENOUGH_SCORE && origin && attempts < MAX_PAGES) {
+      if (best() < GOOD_ENOUGH_SCORE && origin && emailPages < MAX_PAGES) {
         attempts += 1;
         sourcesChecked.push(`${origin}/sitemap.xml`);
         const map = await fetchWithFallbacks(`${origin}/sitemap.xml`, 4000);
@@ -640,19 +792,69 @@ export const findLeadEmail = createServerFn({ method: "POST" })
             }
           }
           for (const url of urls) {
-            if (best() >= GOOD_ENOUGH_SCORE || attempts >= MAX_PAGES) break;
+            if (best() >= GOOD_ENOUGH_SCORE || emailPages >= MAX_PAGES) break;
             await readPage(url, true, 4500);
           }
         }
       }
 
       // Finally the well-known paths, for sites that link to nothing at all.
-      if (best() < GOOD_ENOUGH_SCORE && origin && attempts < MAX_PAGES) {
+      if (best() < GOOD_ENOUGH_SCORE && origin && emailPages < MAX_PAGES) {
         const tried = new Set(sourcesChecked);
         for (const url of wellKnownPaths(origin)) {
-          if (best() >= GOOD_ENOUGH_SCORE || attempts >= MAX_PAGES) break;
+          if (best() >= GOOD_ENOUGH_SCORE || emailPages >= MAX_PAGES) break;
           if (tried.has(url)) continue;
           await readPage(url, true, 3500);
+        }
+      }
+    }
+
+    // After a crawl miss, one extra search aimed at a published address.
+    if (!usableFound()) {
+      const provider = searchProvider();
+      if (provider && searchFailure !== "AUTH" && searchFailure !== "QUOTA") {
+        const identity = {
+          businessName: data.businessName, town: data.town, trade: data.trade,
+          phone: data.phone, address: data.address,
+        };
+        let crawlOrigin = "";
+        try { crawlOrigin = href ? new URL(href).origin : ""; } catch { crawlOrigin = ""; }
+        let extra = 0;
+        for (const query of buildEmailQueries(identity)) {
+          if (extra >= MAX_EMAIL_SEARCHES) break;
+          extra += 1;
+          searchesRun += 1;
+          queriesUsed.push(query.text);
+          sourcesChecked.push(`search:${query.text}`);
+          const answer = await runSearch(provider, query.text);
+          if (!answer.ok) {
+            searchFailure = answer.kind;
+            break;
+          }
+          collectedResults.push(...answer.results);
+          for (const result of answer.results) {
+            const blob = `${result.title} ${result.snippet} ${result.rawContent ?? ""}`;
+            let resultOrigin = "";
+            try { resultOrigin = new URL(result.url).origin; } catch { continue; }
+            if (crawlOrigin && resultOrigin === crawlOrigin) {
+              if (result.rawContent) providerExtracts += 1;
+              harvest(result.rawContent || result.snippet, result.url, "OFFICIAL_WEBSITE", /contact|enquir/i.test(result.url));
+            } else if (looksLikePublicProfile(result.url) && listingClearlyMatches(blob, identity) && isSingleBusinessListing(blob)) {
+              harvest(result.rawContent || result.snippet, result.url, profileSource(result.url), false);
+            } else if (crawlOrigin) {
+              // Keep only addresses that already match the domain we are crawling.
+              const mined = extractCandidates(blob, result.url, "OFFICIAL_WEBSITE", rejectedEmails);
+              let siteHost = "";
+              try { siteHost = new URL(crawlOrigin).hostname.replace(/^www\./, "").toLowerCase(); } catch { siteHost = ""; }
+              for (const entry of mined) {
+                const host = entry.email.slice(entry.email.lastIndexOf("@") + 1);
+                if (siteHost && (host === siteHost || host.endsWith(`.${siteHost}`) || siteHost.endsWith(`.${host}`))) {
+                  candidates.push(entry);
+                }
+              }
+            }
+          }
+          if (usableFound()) break;
         }
       }
     }
@@ -660,6 +862,10 @@ export const findLeadEmail = createServerFn({ method: "POST" })
     // The listing address is a real source, just a weak one — it only wins if
     // nothing better turned up.
     candidates.push(...listingCandidate());
+
+    if (crawledPossible && !usableFound()) {
+      failure ??= "POSSIBLE_WEBSITE_NO_EMAIL";
+    }
 
     const result = decide({ candidates, context, sourcesChecked, attempts, failure, sawContactPage });
     return {

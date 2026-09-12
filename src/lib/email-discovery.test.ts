@@ -5,6 +5,7 @@ import {
   contactLinks,
   decide,
   deobfuscate,
+  decodeCfEmail,
   extractCandidates,
   looksUsable,
   noWebsiteResult,
@@ -172,7 +173,11 @@ describe("following the site", () => {
     assert.deepEqual(contactLinks(`<a href="/">Contact home</a>`, "https://a.test/"), []);
   });
   it("covers the paths a small site actually uses", () => {
-    for (const p of ["/contact", "/contact-us", "/about", "/about-us", "/get-in-touch", "/request-a-quote", "/team"]) {
+    for (const p of [
+      "/contact", "/contact-us", "/about", "/about-us", "/get-in-touch",
+      "/request-a-quote", "/team", "/find-us", "/our-team", "/privacy",
+      "/privacy-policy", "/terms", "/legal",
+    ]) {
       assert.ok(CANDIDATE_PATHS.includes(p as never), `${p} should be probed`);
     }
   });
@@ -436,6 +441,18 @@ describe("reporting what a run achieved", () => {
       assert.ok(REASON_LABELS[reason as keyof typeof REASON_LABELS].length > 5, reason);
     }
   });
+
+  it("splits website vs directory vs no-site misses", () => {
+    const t = emptyTally();
+    tallyDiscovery(t, found("OFFICIAL_CONTACT_PAGE", "HIGH"));
+    tallyDiscovery(t, found("PUBLIC_DIRECTORY", "MEDIUM"));
+    tallyDiscovery(t, missed("CONTACT_PAGE_NO_EMAIL"));
+    tallyDiscovery(t, missed("WEBSITE_NOT_VERIFIED"));
+    assert.equal(t.websiteEmails, 1);
+    assert.equal(t.directoryEmails, 1);
+    assert.equal(t.verifiedWebsiteNoEmail, 1);
+    assert.equal(t.noVerifiedWebsite, 1);
+  });
 });
 
 describe("obfuscated addresses the page really does publish", () => {
@@ -519,5 +536,31 @@ describe("contact pages worth following", () => {
   it("never follows a link off the site", () => {
     const html = `<a href="https://someone-else.co.uk/contact">Contact</a>`;
     assert.deepEqual(contactLinks(html, "https://clarkjoinery.co.uk", 4), []);
+  });
+});
+
+describe("Cloudflare email protection", () => {
+  // info@clarkjoinery.co.uk XOR-encoded with key 0x4a. A published address.
+  const encoded = "4a23242c250a29262b3821202523242f3833642925643f21";
+
+  it("decodes a data-cfemail payload", () => {
+    assert.equal(decodeCfEmail(encoded), "info@clarkjoinery.co.uk");
+  });
+
+  it("reads the address out of a protected page", () => {
+    const html = `<a href="/cdn-cgi/l/email-protection#${encoded}" data-cfemail="${encoded}">email us</a>`;
+    const found = extractCandidates(html, "https://clarkjoinery.co.uk/", "OFFICIAL_WEBSITE");
+    assert.ok(found.some((c) => c.email === "info@clarkjoinery.co.uk"), JSON.stringify(found));
+    assert.equal(found[0]?.method, "DEOBFUSCATED");
+  });
+
+  it("ignores a payload that is not hex", () => {
+    assert.equal(decodeCfEmail("zzzz"), "");
+    assert.equal(decodeCfEmail("4a"), "");
+  });
+
+  it("does not invent an address from an empty attribute", () => {
+    const found = extractCandidates(`<span data-cfemail=""></span>`, "https://clarkjoinery.co.uk/", "OFFICIAL_WEBSITE");
+    assert.equal(found.length, 0);
   });
 });

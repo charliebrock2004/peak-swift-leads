@@ -103,6 +103,16 @@ export type SiteEvidence = {
   /** The page's own text, already stripped of markup by the caller. */
   text: string;
   title: string;
+  /**
+   * Search snippet / result title for THIS candidate only.
+   *
+   * Used for unique identity signals (phone, postcode) when the fetched page
+   * does not print them — common on JS-rendered homepages. Never used for
+   * name/town/trade (those echo the query) and never for contradiction or
+   * page-character detection. A snippet phone is ignored when the page itself
+   * prints a different number.
+   */
+  extraText?: string;
 };
 
 export type BusinessIdentity = {
@@ -326,6 +336,8 @@ export function domainMatchesName(url: string, businessName: string): boolean {
 
 /** The threshold below which a candidate is never attached to a lead. */
 export const WEBSITE_MIN_SCORE = 75;
+/** High enough to crawl for emails, too low to attach as the official site. */
+export const WEBSITE_POSSIBLE_MIN = 55;
 
 /**
  * Is this page the business we were looking for?
@@ -381,18 +393,35 @@ export function scoreWebsiteMatch(
   const fullName = nameWords.join(" ");
   const titleHasName = fullName.length > 0 && words(evidence.title).join(" ").includes(fullName);
 
+  // extraText is the search snippet for THIS result. Unique signals only.
+  const extraHaystack = (evidence.extraText ?? "").toLowerCase();
+
   // ── 2. Hard signals: specific enough to identify one business ─────────────
-  const phoneMatches = Boolean(identity.phone) && pageHasPhone(haystack, identity.phone);
-  if (phoneMatches) {
+  const pagePhone = Boolean(identity.phone) && pageHasPhone(haystack, identity.phone);
+  const pageOtherPhones = Boolean(identity.phone) && !pagePhone && phonesOnPage(evidence.text).length > 0;
+  const extraPhone =
+    Boolean(identity.phone) && !pageOtherPhones && pageHasPhone(extraHaystack, identity.phone);
+  const phoneMatches = pagePhone || extraPhone;
+  if (pagePhone) {
     score += 55;
     notes.push("the listing's phone number is printed on the page");
+  } else if (extraPhone) {
+    score += 55;
+    notes.push("the listing's phone number appears in the search listing for this page");
   }
 
   const postcode = extractPostcode(identity.address ?? "");
-  const postcodeMatches = Boolean(postcode) && pageHasPostcode(haystack, postcode);
-  if (postcodeMatches) {
+  const pagePostcode = Boolean(postcode) && pageHasPostcode(haystack, postcode);
+  const pageOtherPostcodes = Boolean(postcode) && !pagePostcode && postcodesOnPage(evidence.text).length > 0;
+  const extraPostcode =
+    Boolean(postcode) && !pageOtherPostcodes && pageHasPostcode(extraHaystack, postcode);
+  const postcodeMatches = pagePostcode || extraPostcode;
+  if (pagePostcode) {
     score += 45;
     notes.push(`the listing's postcode (${postcode}) is on the page`);
+  } else if (extraPostcode) {
+    score += 45;
+    notes.push(`the listing's postcode (${postcode}) appears in the search listing for this page`);
   }
 
   // ── 3. Medium signals: the page is *about* this business ──────────────────
@@ -429,6 +458,16 @@ export function scoreWebsiteMatch(
     notes.push("the business name and the town agree");
   }
 
+  // Distinctive street/building tokens ("Bonnygate", "Reform Street") are more
+  // specific than a town and less specific than a postcode. Common words
+  // (High, South, Street) are ignored so they cannot carry a verdict.
+  const addressTokens = distinctiveAddressTokens(identity.address ?? "", identity.town);
+  const addressHit = addressTokens.find((token) => haystack.includes(token));
+  if (addressHit) {
+    score += 18;
+    notes.push(`the listing's street (${addressHit}) is on the page`);
+  }
+
   // ── 5. Contradiction: evidence of a DIFFERENT business ────────────────────
   //
   // Absence of our phone number proves nothing; the presence of somebody
@@ -456,7 +495,7 @@ export function scoreWebsiteMatch(
   }
 
   score = Math.max(0, Math.min(100, score));
-  const confidence = score >= WEBSITE_MIN_SCORE ? "STRONG" : score >= 55 ? "POSSIBLE" : "REJECTED";
+  const confidence = score >= WEBSITE_MIN_SCORE ? "STRONG" : score >= WEBSITE_POSSIBLE_MIN ? "POSSIBLE" : "REJECTED";
   return { url: evidence.url, score, confidence, evidence: notes, character };
 }
 
@@ -481,4 +520,76 @@ export function bestWebsite(matches: readonly WebsiteMatch[]): WebsiteMatch | nu
     .filter((match) => match.score >= WEBSITE_MIN_SCORE)
     .sort((a, b) => b.score - a.score);
   return strong[0] ?? null;
+}
+
+/**
+ * The strongest site that looks like this business but does not clear the
+ * attach-as-official-website bar. Callers may crawl it for emails; they must
+ * not record it as the lead's website.
+ */
+export function bestPossibleWebsite(matches: readonly WebsiteMatch[]): WebsiteMatch | null {
+  const possible = matches
+    .filter(
+      (match) =>
+        match.character === "BUSINESS" &&
+        match.score >= WEBSITE_POSSIBLE_MIN &&
+        match.score < WEBSITE_MIN_SCORE,
+    )
+    .sort((a, b) => b.score - a.score);
+  return possible[0] ?? null;
+}
+
+/** May we harvest addresses from this page? STRONG and POSSIBLE business sites only. */
+export function emailsAllowedFromMatch(match: WebsiteMatch): boolean {
+  return match.character === "BUSINESS" && match.confidence !== "REJECTED";
+}
+
+/**
+ * A directory or profile page that is clearly THIS business, not a list of many.
+ *
+ * Name overlap alone is not enough — every "Clark Joinery" listing in the
+ * country would pass. The listing's phone or postcode has to agree, and the
+ * page must not be a directory-of-many (several numbers).
+ */
+export function listingClearlyMatches(text: string, identity: BusinessIdentity): boolean {
+  const haystack = text.toLowerCase();
+  const nameWords = words(identity.businessName);
+  if (nameWords.length === 0) return false;
+  const matched = nameWords.filter((word) => haystack.includes(word));
+  if (matched.length / nameWords.length < 0.5) return false;
+  const phoneOk = Boolean(identity.phone) && pageHasPhone(haystack, identity.phone);
+  const postcode = extractPostcode(identity.address ?? "");
+  const postcodeOk = Boolean(postcode) && pageHasPostcode(haystack, postcode);
+  return phoneOk || postcodeOk;
+}
+
+/** One business's listing, not a page of many. */
+export function isSingleBusinessListing(text: string): boolean {
+  return phonesOnPage(text).length < 3 && postcodesOnPage(text).length < 3;
+}
+
+const ADDRESS_STOP = new Set([
+  "street", "road", "lane", "avenue", "close", "drive", "way", "terrace",
+  "place", "court", "gardens", "grove", "crescent", "row", "hill", "end",
+  "gate", "wynd", "brae", "south", "north", "east", "west", "upper", "lower",
+  "great", "little", "new", "old", "the", "and",
+]);
+
+/**
+ * Street or building words distinctive enough to identify one address.
+ *
+ * "Bonnygate" and "Reform" count; "High", "South" and "Street" do not.
+ */
+export function distinctiveAddressTokens(address: string, town: string): string[] {
+  if (!address.trim()) return [];
+  const withoutPc = address.replace(/\b[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}\b/gi, " ");
+  const townWords = new Set(words(town));
+  const out: string[] = [];
+  for (const token of words(withoutPc)) {
+    if (token.length < 6) continue;
+    if (ADDRESS_STOP.has(token) || townWords.has(token)) continue;
+    if (/^\d+$/.test(token)) continue;
+    if (!out.includes(token)) out.push(token);
+  }
+  return out;
 }

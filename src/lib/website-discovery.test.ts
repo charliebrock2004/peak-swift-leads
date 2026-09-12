@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   bestWebsite,
+  bestPossibleWebsite,
   candidateDomains,
   MAX_WEBSITE_CANDIDATES,
   normalisePhone,
@@ -10,10 +11,15 @@ import {
   pageTitle,
   scoreWebsiteMatch,
   WEBSITE_MIN_SCORE,
+  WEBSITE_POSSIBLE_MIN,
   detectPageCharacter,
   domainMatchesName,
   phonesOnPage,
   postcodesOnPage,
+  listingClearlyMatches,
+  emailsAllowedFromMatch,
+  isSingleBusinessListing,
+  distinctiveAddressTokens,
 } from "./website-discovery.ts";
 
 const cuttingEdge = {
@@ -157,6 +163,28 @@ describe("choosing between candidates", () => {
   });
   it("returns nothing from an empty field", () => {
     assert.equal(bestWebsite([]), null);
+  });
+});
+
+describe("possible sites — crawl for emails, never attach", () => {
+  const m = (url: string, score: number, confidence: "STRONG" | "POSSIBLE" | "REJECTED" = "POSSIBLE") => ({
+    url, score, confidence, evidence: [] as string[], character: "BUSINESS" as const,
+  });
+
+  it("picks the strongest POSSIBLE site", () => {
+    assert.equal(bestPossibleWebsite([m("a", 60), m("b", 72), m("c", 40, "REJECTED")])?.url, "b");
+    assert.ok(72 >= WEBSITE_POSSIBLE_MIN && 72 < WEBSITE_MIN_SCORE);
+  });
+  it("ignores STRONG sites — those go through bestWebsite", () => {
+    assert.equal(bestPossibleWebsite([m("a", 90, "STRONG"), m("b", 70)])?.url, "b");
+  });
+  it("returns nothing when everything is rejected or strong", () => {
+    assert.equal(bestPossibleWebsite([m("a", 90, "STRONG"), m("b", 40, "REJECTED")]), null);
+  });
+  it("allows email harvest from POSSIBLE and STRONG, never REJECTED", () => {
+    assert.equal(emailsAllowedFromMatch(m("a", 80, "STRONG")), true);
+    assert.equal(emailsAllowedFromMatch(m("a", 60, "POSSIBLE")), true);
+    assert.equal(emailsAllowedFromMatch(m("a", 20, "REJECTED")), false);
   });
 });
 
@@ -389,5 +417,76 @@ describe("reading contact details off a page", () => {
   it("reports nothing rather than nonsense on a page with neither", () => {
     assert.deepEqual(phonesOnPage("We are open six days a week."), []);
     assert.deepEqual(postcodesOnPage("We are open six days a week."), []);
+  });
+});
+
+describe("search snippet as corroboration, not as a free pass", () => {
+  const clark = {
+    businessName: "Clark Joinery", town: "Perth", trade: "Joinery",
+    phone: "01738 445566", address: "22 South Street, Perth PH2 8PG",
+  };
+
+  it("ACCEPTS a homepage whose search snippet carries the listing phone", () => {
+    const m = scoreWebsiteMatch(
+      {
+        url: "https://perthwoodcraft.co.uk",
+        title: "Perth Woodcraft",
+        text: "Clark Joinery of Perth. Bespoke staircases, kitchens and fitted wardrobes across Perthshire for twenty years.",
+        extraText: "Clark Joinery Perth. Tel 01738 445566.",
+      },
+      clark,
+    );
+    assert.ok(m.score >= WEBSITE_MIN_SCORE, `scored ${m.score}: ${m.evidence.join("; ")}`);
+    assert.ok(m.evidence.some((e) => /search listing/.test(e)));
+  });
+
+  it("does NOT let a snippet phone override a different number printed on the page", () => {
+    const m = scoreWebsiteMatch(
+      {
+        url: "https://clarkjoinerydundee.co.uk",
+        title: "Clark Joinery Dundee",
+        text: "Clark Joinery, Dundee. Call 01382 111222. 4 Reform Street, Dundee DD1 1AA. Joinery across Tayside.",
+        extraText: "Clark Joinery. Tel 01738 445566.",
+      },
+      clark,
+    );
+    assert.ok(m.score < WEBSITE_MIN_SCORE, `scored ${m.score}: ${m.evidence.join("; ")}`);
+    assert.ok(m.evidence.some((e) => /different phone/.test(e)));
+  });
+});
+
+describe("directory listings as email sources, never as websites", () => {
+  const clark = {
+    businessName: "Clark Joinery", town: "Perth", trade: "Joinery",
+    phone: "01738 445566", address: "22 South Street, Perth PH2 8PG",
+  };
+
+  it("recognises a single listing that carries this business's phone", () => {
+    const text = "Clark Joinery, Perth. 22 South Street PH2 8PG. Tel 01738 445566. info@clarkjoinery.co.uk";
+    assert.equal(listingClearlyMatches(text, clark), true);
+    assert.equal(isSingleBusinessListing(text), true);
+  });
+
+  it("rejects a list of many businesses even when ours is among them", () => {
+    const text =
+      "Clark Joinery 01738 445566 PH2 8PG. Smith Joinery 01738 221100 PH1 2AB. " +
+      "Jones Joinery 01738 667788 PH2 0QR. Perth Woodworks 01738 334455 PH2 8LF.";
+    assert.equal(isSingleBusinessListing(text), false);
+  });
+
+  it("rejects a listing that only shares a name", () => {
+    assert.equal(
+      listingClearlyMatches("Clark Joinery of Dundee. Call 01382 111222.", clark),
+      false,
+    );
+  });
+});
+
+describe("distinctive address tokens", () => {
+  it("keeps a rare street name", () => {
+    assert.ok(distinctiveAddressTokens("12 Bonnygate, Cupar, KY15 4BU", "Cupar").includes("bonnygate"));
+  });
+  it("drops High / South / Street", () => {
+    assert.deepEqual(distinctiveAddressTokens("22 South Street, Perth PH2 8PG", "Perth"), []);
   });
 });

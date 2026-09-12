@@ -71,6 +71,13 @@ export type BusinessIdentity = {
  */
 export const MAX_SEARCHES_PER_LEAD = 5;
 
+/**
+ * Extra searches, after a crawl found no address, looking specifically for a
+ * published email. One is enough: these queries are expensive and the
+ * identity check still has to pass.
+ */
+export const MAX_EMAIL_SEARCHES = 1;
+
 /** Results worth fetching from one query. */
 export const MAX_RESULTS_PER_QUERY = 5;
 
@@ -151,6 +158,35 @@ export function buildQueries(identity: BusinessIdentity): SearchQuery[] {
   return queries.sort((a, b) => b.strength - a.strength).slice(0, MAX_SEARCHES_PER_LEAD);
 }
 
+/**
+ * Queries that look for a published address rather than a website.
+ *
+ * Run AFTER a crawl has failed, never instead of it: a snippet containing
+ * `info@` is evidence to verify, not an address to store. The caller still
+ * has to show the address belongs to this business.
+ */
+export function buildEmailQueries(identity: BusinessIdentity): SearchQuery[] {
+  const name = clean(identity.businessName);
+  const town = clean(identity.town);
+  if (name.length < 2) return [];
+  const [primary] = nameVariations(name);
+  const queries: SearchQuery[] = [];
+  const add = (text: string, strength: number) => {
+    const value = clean(text);
+    if (value && !queries.some((q) => q.text === value)) {
+      queries.push({ text: value, intent: "email", strength });
+    }
+  };
+  if (town) {
+    add(`"${primary}" ${town} email`, 50);
+    add(`"${primary}" ${town} "info@"`, 45);
+    add(`"${primary}" ${town} contact email`, 40);
+  } else {
+    add(`"${primary}" email`, 40);
+  }
+  return queries.slice(0, 2);
+}
+
 /** A UK postcode out of free text. Duplicated deliberately: this module is pure. */
 function extractPostcodeFrom(address: string): string {
   const match = address.toUpperCase().match(/\b([A-Z]{1,2}\d[A-Z\d]?)\s*(\d[A-Z]{2})\b/);
@@ -172,7 +208,9 @@ const NOT_A_WEBSITE = [
 /** Directory and profile hosts that may still legitimately publish an address. */
 const PUBLIC_PROFILE_HOSTS = [
   "yell.com", "freeindex.co.uk", "cylex-uk.co.uk", "scoot.co.uk",
-  "thomsonlocal.com", "checkatrade.com",
+  "thomsonlocal.com", "checkatrade.com", "mybuilder.com", "ratedpeople.com",
+  "trustatrader.com", "bark.com",
+  "facebook.com", "instagram.com", "linkedin.com",
 ];
 
 function hostOf(url: string): string {
@@ -243,7 +281,10 @@ export function candidatesFromResults(results: readonly SearchResult[], max = 4)
     if (looksLikeOwnWebsite(result.url)) own.push({ ...entry, kind: "OWN_WEBSITE" });
     else if (looksLikePublicProfile(result.url)) profiles.push({ ...entry, kind: "PUBLIC_PROFILE" });
   }
-  return [...own, ...profiles].slice(0, max);
+  // Own sites first (they can be attached). Profiles ride along so we can
+  // still mine a matching Yell/Facebook page for an address when the site
+  // itself never verified — without spending the own-site budget on them.
+  return [...own.slice(0, max), ...profiles.slice(0, 2)];
 }
 
 // ── Provider response shapes ─────────────────────────────────────────────────

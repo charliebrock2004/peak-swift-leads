@@ -57,6 +57,11 @@ export const DISCOVERY_REASONS = [
   "SEARCH_QUOTA_EXHAUSTED",
   /** Candidates were all directories, socials or parked domains. */
   "ONLY_DIRECTORY_LISTINGS_FOUND",
+  /**
+   * A plausible site was crawled for an address, but it never cleared the
+   * identity bar so it was not attached as the business's website.
+   */
+  "POSSIBLE_WEBSITE_NO_EMAIL",
 ] as const;
 export type DiscoveryReason = (typeof DISCOVERY_REASONS)[number];
 
@@ -129,18 +134,25 @@ export const CANDIDATE_PATHS = [
   "/get-in-touch",
   "/enquiries",
   "/enquiry",
+  "/find-us",
   "/about",
   "/about-us",
   "/quote",
   "/request-a-quote",
   "/book",
   "/team",
+  "/our-team",
+  "/meet-the-team",
   "/staff",
+  "/privacy",
+  "/privacy-policy",
+  "/terms",
+  "/legal",
 ] as const;
 
 /** Link text or href worth following, beyond the well-known paths above. */
 const CONTACT_HREF =
-  /contact|get-?in-?touch|enquir|quote|book|about|team|staff|reach-?us|services?|find-?us|where-?to-?find/i;
+  /contact|get-?in-?touch|enquir|quote|book|about|team|staff|reach-?us|services?|find-?us|where-?to-?find|meet-the-team|our-team|privacy|terms|legal/i;
 
 /** Junk that is never a business mailbox. */
 const SKIP_LOCAL = /^(noreply|no-reply|no_reply|donotreply|privacy|legal|webmaster|hostmaster|postmaster|mailer-daemon|abuse|sentry|test|example|user|username|email|your|name)$/i;
@@ -222,7 +234,36 @@ export function joinScriptLiterals(html: string): string {
   return out.join(" ");
 }
 
+/**
+ * Cloudflare's `data-cfemail` / `/cdn-cgi/l/email-protection#…` encoding.
+ *
+ * This is a published address, XOR-obfuscated in the HTML so scrapers that
+ * only look for `@` miss it. Decoding it is reading the page, not guessing.
+ * An odd-length or non-hex payload is not an address and is ignored.
+ */
+export function decodeCfEmail(encoded: string): string {
+  const hex = encoded.trim();
+  if (hex.length < 4 || hex.length % 2 !== 0 || /[^0-9a-f]/i.test(hex)) return "";
+  const key = Number.parseInt(hex.slice(0, 2), 16);
+  if (!Number.isFinite(key)) return "";
+  let out = "";
+  for (let i = 2; i < hex.length; i += 2) {
+    const byte = Number.parseInt(hex.slice(i, i + 2), 16);
+    if (!Number.isFinite(byte)) return "";
+    out += String.fromCharCode(byte ^ key);
+  }
+  return out;
+}
+
 // ── Extraction ───────────────────────────────────────────────────────────────
+
+function decodeMailto(raw: string): string {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
 
 function cleanEmail(raw: string): string {
   return raw.trim().replace(/^[<("']+/, "").replace(/[.,;:)>"']+$/, "").toLowerCase();
@@ -320,9 +361,27 @@ export function extractCandidates(
 
   // 1. mailto: — the business explicitly linking its own address.
   for (const m of html.matchAll(/href\s*=\s*["']\s*mailto:([^"'?]+)/gi)) {
-    push(out, seen, decodeURIComponent(m[1] ?? ""), {
+    push(out, seen, decodeMailto(m[1] ?? ""), {
       source, sourceUrl: pageUrl, method: "MAILTO_LINK",
       evidence: "Published as a mailto: link on the page",
+    }, rejected);
+  }
+
+  // 1b. Cloudflare email protection — a published address, XOR-obfuscated.
+  for (const m of html.matchAll(/data-cfemail=["']([0-9a-fA-F]+)["']/gi)) {
+    const decoded = decodeCfEmail(m[1] ?? "");
+    if (!decoded) continue;
+    push(out, seen, decoded, {
+      source, sourceUrl: pageUrl, method: "DEOBFUSCATED",
+      evidence: "Decoded from Cloudflare email protection on the page",
+    }, rejected);
+  }
+  for (const m of html.matchAll(/cdn-cgi\/l\/email-protection#([0-9a-fA-F]+)/gi)) {
+    const decoded = decodeCfEmail(m[1] ?? "");
+    if (!decoded) continue;
+    push(out, seen, decoded, {
+      source, sourceUrl: pageUrl, method: "DEOBFUSCATED",
+      evidence: "Decoded from Cloudflare email protection on the page",
     }, rejected);
   }
 
@@ -417,8 +476,14 @@ export function contactLinks(html: string, pageUrl: string, max = 4): string[] {
     const path = absolute.pathname.replace(/\/+$/, "");
     if (path === "" || seen.has(url)) continue;
     seen.add(url);
-    // A page called "contact" beats one called "about".
-    const rank = /contact|get-?in-?touch|enquir/i.test(path) ? 0 : /quote|book/i.test(path) ? 1 : 2;
+    // A page called "contact" beats one called "about"; privacy/legal last.
+    const rank = /contact|get-?in-?touch|enquir/i.test(path)
+      ? 0
+      : /quote|book/i.test(path)
+        ? 1
+        : /privacy|terms|legal/i.test(path)
+          ? 3
+          : 2;
     scored.push({ url, rank });
   }
   return scored.sort((a, b) => a.rank - b.rank).slice(0, max).map((entry) => entry.url);
@@ -484,8 +549,13 @@ const SOURCE_POINTS: Record<SourceKind, number> = {
   OFFICIAL_CONTACT_PAGE: 40,
   OFFICIAL_WEBSITE: 34,
   STRUCTURED_DATA: 32,
-  PUBLIC_BUSINESS_PROFILE: 26,
-  PUBLIC_DIRECTORY: 22,
+  // A public profile or directory listing that already passed identity matching
+  // (name + phone/postcode on a single-business page). Calibrated so plain
+  // page-text on that listing lands at exactly MEDIUM (30 + 20): good enough to
+  // write to after review, never HIGH, and a domain mismatch still drops it
+  // to LOW. We only extract these when the listing clearly is this business.
+  PUBLIC_BUSINESS_PROFILE: 30,
+  PUBLIC_DIRECTORY: 30,
   // An address a mapper or registrar recorded against this business. Weaker
   // than reading it off the company's own site, but it is still a published
   // address tied to this business by whoever maintains the listing.
@@ -542,6 +612,18 @@ export function scoreCandidate(candidate: EmailCandidate, context: ScoreContext)
     // all, so there is no disagreement to penalise.
     score -= 8;
     notes.push("different domain from the website");
+  }
+
+  if (
+    (candidate.source === "PUBLIC_DIRECTORY" || candidate.source === "PUBLIC_BUSINESS_PROFILE") &&
+    !domainMatch &&
+    !PERSONAL_HOSTS.has(host) &&
+    !nameOverlap(candidate.email, context.businessName)
+  ) {
+    // A listing we mined still has to belong to this business. An info@ on a
+    // different firm's domain is not ours just because it sat on the same page.
+    score -= 20;
+    notes.push("listing address does not belong to this business");
   }
 
   if (ROLE_LOCAL.test(local)) {
@@ -689,6 +771,18 @@ export type DiscoveryTally = {
   high: number;
   medium: number;
   low: number;
+  /** Addresses read off a verified or possible business website. */
+  websiteEmails: number;
+  /** Addresses read off a directory listing that matched the business. */
+  directoryEmails: number;
+  /** Addresses read off a public social/business profile. */
+  profileEmails: number;
+  /** Addresses already carried on the OSM/Companies House listing. */
+  listingEmails: number;
+  /** Had a site we could crawl, and it published no address. */
+  verifiedWebsiteNoEmail: number;
+  /** Never attached a real website, so there was nothing to crawl. */
+  noVerifiedWebsite: number;
 };
 
 export function emptyTally(): DiscoveryTally {
@@ -699,8 +793,24 @@ export function emptyTally(): DiscoveryTally {
       PUBLIC_BUSINESS_PROFILE: 0, PUBLIC_DIRECTORY: 0, EXISTING_LISTING: 0,
     },
     byReason: {}, high: 0, medium: 0, low: 0,
+    websiteEmails: 0, directoryEmails: 0, profileEmails: 0, listingEmails: 0,
+    verifiedWebsiteNoEmail: 0, noVerifiedWebsite: 0,
   };
 }
+
+const WEBSITE_SOURCES = new Set<SourceKind>([
+  "OFFICIAL_CONTACT_PAGE", "OFFICIAL_WEBSITE", "STRUCTURED_DATA",
+]);
+const NO_SITE_REASONS = new Set<string>([
+  "NO_WEBSITE", "WEBSITE_NOT_VERIFIED", "ONLY_DIRECTORY_LISTINGS_FOUND",
+  "SEARCH_PROVIDER_UNAVAILABLE", "SEARCH_AUTH_FAILED", "SEARCH_RATE_LIMITED",
+  "SEARCH_QUOTA_EXHAUSTED",
+]);
+const HAD_SITE_NO_EMAIL = new Set<string>([
+  "CONTACT_PAGE_NO_EMAIL", "NO_CONTACT_PAGE", "WEBSITE_UNREACHABLE",
+  "BLOCKED_BY_SITE", "RATE_LIMITED", "EMAIL_OBFUSCATED_UNREADABLE",
+  "POSSIBLE_WEBSITE_NO_EMAIL", "DIRECTORY_NO_EMAIL", "PUBLIC_PROFILE_NO_EMAIL",
+]);
 
 /** Fold one lead's result into the run's tally. Mutates, and returns it. */
 export function tallyDiscovery(tally: DiscoveryTally, result: DiscoveryResult): DiscoveryTally {
@@ -708,8 +818,14 @@ export function tallyDiscovery(tally: DiscoveryTally, result: DiscoveryResult): 
   if (result.status === "FOUND" && result.source) {
     tally.found += 1;
     tally.bySource[result.source] += 1;
+    if (WEBSITE_SOURCES.has(result.source)) tally.websiteEmails += 1;
+    else if (result.source === "PUBLIC_DIRECTORY") tally.directoryEmails += 1;
+    else if (result.source === "PUBLIC_BUSINESS_PROFILE") tally.profileEmails += 1;
+    else if (result.source === "EXISTING_LISTING") tally.listingEmails += 1;
   } else if (result.reason) {
     tally.byReason[result.reason] = (tally.byReason[result.reason] ?? 0) + 1;
+    if (NO_SITE_REASONS.has(result.reason)) tally.noVerifiedWebsite += 1;
+    else if (HAD_SITE_NO_EMAIL.has(result.reason)) tally.verifiedWebsiteNoEmail += 1;
   }
   if (result.confidence === "HIGH") tally.high += 1;
   else if (result.confidence === "MEDIUM") tally.medium += 1;
@@ -736,6 +852,7 @@ export const REASON_LABELS: Record<DiscoveryReason, string> = {
   SEARCH_RATE_LIMITED: "The search provider asked us to slow down — try again shortly",
   SEARCH_QUOTA_EXHAUSTED: "The search provider's quota is used up — no more searches until it resets",
   ONLY_DIRECTORY_LISTINGS_FOUND: "Only directory and social listings were found, never the business's own site",
+  POSSIBLE_WEBSITE_NO_EMAIL: "A possible site was crawled but never proved it belonged to this business, and published no address",
 };
 
 /** Where most of this run's addresses came from, for the one-line summary. */

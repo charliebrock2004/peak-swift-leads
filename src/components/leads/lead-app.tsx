@@ -46,7 +46,7 @@ import {
   type WebsiteStatus,
 } from "@/lib/leads";
 import { checkLeadWebsite, findLeadEmail } from "@/lib/qualify-server";
-import { emailPatch, websitePatch } from "@/lib/qualify";
+import { emailPatch, websitePatch, discoveredWebsitePatch } from "@/lib/qualify";
 import type { Prospect } from "@/lib/research";
 import { useLeadSync } from "@/lib/use-lead-sync";
 import { cn } from "@/lib/utils";
@@ -373,7 +373,9 @@ export function LeadApp() {
       if (!quiet) toast(result.error);
       return false;
     }
-    updateLead(lead.id, emailPatch(lead, result.found, result.foundAt));
+    const email = emailPatch(lead, result.found, result.foundAt);
+    const site = discoveredWebsitePatch({ ...lead, ...email }, result.website);
+    updateLead(lead.id, { ...email, ...site });
     if (!result.found) {
       if (!quiet) toast("No public email found");
       return true;

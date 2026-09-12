@@ -394,3 +394,27 @@ export function emailPatch(
   patch.opportunityScore = computeOpportunity({ ...lead, ...patch } as Lead);
   return patch;
 }
+
+/**
+ * Persist a STRONG, corroborated business website discovered during email lookup.
+ *
+ * Never overwrites a site the lead already has, and never records a directory,
+ * social profile, or POSSIBLE (unproven) candidate. False negatives are fine;
+ * attaching the wrong site is not.
+ */
+export function discoveredWebsitePatch(
+  lead: Pick<Lead, "website" | "websiteStatus" | "websiteQuality" | "email" | "emailConfidence" | "reviews" | "rating" | "businessStatus">,
+  match: { url: string; confidence: string; character: string } | null | undefined,
+): Partial<Lead> {
+  if (!match || match.confidence !== "STRONG" || match.character !== "BUSINESS") return {};
+  const current = classifyWebsiteUrl(lead.website);
+  if (current === "Proper Website" || current === "Basic Website") return {};
+  const status = classifyWebsiteUrl(match.url);
+  if (status !== "Proper Website" && status !== "Basic Website") return {};
+  const patch: Partial<Lead> = {
+    website: match.url,
+    websiteStatus: status,
+  };
+  patch.opportunityScore = computeOpportunity({ ...lead, ...patch } as Lead);
+  return patch;
+}

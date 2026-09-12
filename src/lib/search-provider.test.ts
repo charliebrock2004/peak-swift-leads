@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   buildQueries,
+  buildEmailQueries,
   candidatesFromResults,
   looksLikeOwnWebsite,
   looksLikePublicProfile,
   MAX_SEARCHES_PER_LEAD,
+  MAX_EMAIL_SEARCHES,
   classifySearchFailure,
   MAX_RESULTS_PER_QUERY,
   parseBing,
@@ -89,6 +91,28 @@ describe("what gets searched for", () => {
   });
 });
 
+describe("searching for a published email after a crawl miss", () => {
+  it("pins every query to the name and the town", () => {
+    for (const query of buildEmailQueries(cuttingEdge)) {
+      assert.ok(query.text.includes("Cutting Edge"), query.text);
+      assert.ok(query.text.includes("Cupar"), query.text);
+      assert.equal(query.intent, "email");
+    }
+  });
+  it("asks for email and info@ explicitly", () => {
+    const all = buildEmailQueries(cuttingEdge).map((q) => q.text).join(" | ");
+    assert.ok(/email/i.test(all), all);
+    assert.ok(/info@/.test(all), all);
+  });
+  it("stays inside the extra-search budget", () => {
+    assert.ok(buildEmailQueries(cuttingEdge).length <= 2);
+    assert.equal(MAX_EMAIL_SEARCHES, 1);
+  });
+  it("searches for nothing when there is no name", () => {
+    assert.deepEqual(buildEmailQueries({ ...cuttingEdge, businessName: "" }), []);
+  });
+});
+
 describe("telling a business's own site from a listing of it", () => {
   it("accepts an ordinary business domain", () => {
     assert.ok(looksLikeOwnWebsite("https://cuttingedgecupar.co.uk/"));
@@ -112,6 +136,7 @@ describe("telling a business's own site from a listing of it", () => {
   });
   it("still recognises a directory as a public profile worth reading", () => {
     assert.ok(looksLikePublicProfile("https://www.yell.com/biz/cutting-edge-cupar"));
+    assert.ok(looksLikePublicProfile("https://www.facebook.com/cuttingedgecupar"));
     assert.equal(looksLikePublicProfile("https://cuttingedge.co.uk"), false);
   });
 });
@@ -136,8 +161,19 @@ describe("turning results into candidates", () => {
     assert.equal(out[1].kind, "PUBLIC_PROFILE");
   });
 
-  it("drops results that are neither", () => {
-    assert.deepEqual(candidatesFromResults([r("https://facebook.com/x"), r("not a url")]), []);
+  it("drops results that are neither a site nor a public profile", () => {
+    assert.deepEqual(candidatesFromResults([r("https://wikipedia.org/wiki/x"), r("not a url")]), []);
+  });
+
+  it("keeps a matching directory or Facebook page alongside own sites, for email mining", () => {
+    const out = candidatesFromResults([
+      r("https://clarkjoinery.co.uk/"),
+      r("https://www.yell.com/biz/clark-joinery"),
+      r("https://www.facebook.com/clarkjoinery"),
+    ]);
+    assert.ok(out.some((c) => c.kind === "OWN_WEBSITE"));
+    assert.ok(out.some((c) => c.url.includes("yell.com") && c.kind === "PUBLIC_PROFILE"));
+    assert.ok(out.some((c) => c.url.includes("facebook.com") && c.kind === "PUBLIC_PROFILE"));
   });
 
   it("stays within its budget", () => {

@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import { findDuplicate, fillMissingLead, liveLeads, newLeadId, type Lead } from "@/lib/leads";
-import { emailPatch, websitePatch } from "@/lib/qualify";
+import { emailPatch, websitePatch, discoveredWebsitePatch } from "@/lib/qualify";
 import { checkLeadWebsite, findLeadEmail } from "@/lib/qualify-server";
 import { researchProspects, type Prospect } from "@/lib/research";
 import { runPlannedSearch } from "@/lib/run-search";
@@ -464,7 +464,9 @@ export function useAutoRun(onFinished?: () => void, campaignId = "") {
                 },
               });
                 if (mail.ok) {
-                const patch = emailPatch(working, mail.found, mail.foundAt);
+                const email = emailPatch(working, mail.found, mail.foundAt);
+                const site = discoveredWebsitePatch({ ...working, ...email }, mail.website);
+                const patch = { ...email, ...site };
                 patches.push({ id: lead.id, patch });
                 tallyDiscovery(discovery, mail.discovery);
                 if (!mail.found && mail.discovery.reason) {
@@ -510,6 +512,18 @@ export function useAutoRun(onFinished?: () => void, campaignId = "") {
             discovery.found > 0 ? "good" : "warn",
           );
           if (top) log(`Best source: ${top.source.toLowerCase().replace(/_/g, " ")} (${top.count}).`);
+          if (
+            discovery.websiteEmails ||
+            discovery.directoryEmails ||
+            discovery.profileEmails ||
+            discovery.verifiedWebsiteNoEmail ||
+            discovery.noVerifiedWebsite
+          ) {
+            log(
+              `Sources: ${discovery.websiteEmails} website, ${discovery.directoryEmails} directory, ${discovery.profileEmails} profile. ` +
+                `No email: ${discovery.verifiedWebsiteNoEmail} had a verified site, ${discovery.noVerifiedWebsite} had none.`,
+            );
+          }
           if (stuck) {
             log(
               `Biggest blocker: ${DISCOVERY_REASON_LABELS[stuck.reason as keyof typeof DISCOVERY_REASON_LABELS] ?? stuck.reason} (${stuck.count}).`,
