@@ -24,6 +24,7 @@ import { authMiddleware } from "@/lib/auth/middleware";
 import { newLeadId, type Lead } from "@/lib/leads";
 import { composeEmail, evidenceFor, parseAiDraft, type AiDraft } from "./compose.ts";
 import { evidenceSummary } from "./evidence.ts";
+import { decideApproval } from "./approval.ts";
 import {
   campaignProblem,
   campaignTransitionProblem,
@@ -684,44 +685,27 @@ export const setEmailDecision = createServerFn({ method: "POST" })
 
       for (const id of data.ids) {
         const email = await store.loadEmail(sql, context.userId, id);
-        if (!email) continue;
-        if (email.status === "sent" || email.status === "replied" || email.status === "sending") {
-          refused.push(`${email.businessName}: already sent`);
-          continue;
-        }
-        if (data.decision === "skip") {
-          await store.setEmailStatus(sql, context.userId, id, "skipped");
-          changed += 1;
-          continue;
-        }
-
-        // Approving is the moment a person says "send this", so it is checked
-        // properly rather than trusted.
-        const lead = await store.loadLead(sql, context.userId, email.leadId);
-        if (!lead) {
-          refused.push(`${email.businessName}: lead is gone`);
-          continue;
-        }
-        const eligibilityContext = contextFrom(
-          emails.filter((other) => other.id !== id),
-          suppression,
-          settings,
-          email.kind,
-        );
-        const eligibility = checkEligibility(lead, eligibilityContext, email.kind);
-        if (!eligibility.eligible) {
-          refused.push(`${email.businessName}: ${eligibility.reasons[0]}`);
-          continue;
-        }
-        const verdict = checkEmailQuality({
-          subject: email.subject,
-          body: email.body,
-          recipient: email.recipient,
+        // The lead is only needed for an approval, and only when the email
+        // resolved. `decideApproval` handles both being absent.
+        const lead = email ? await store.loadLead(sql, context.userId, email.leadId) : null;
+        const outcome = decideApproval({
+          decision: data.decision,
+          email,
           lead,
+          context: contextFrom(
+            emails.filter((other) => other.id !== id),
+            suppression,
+            settings,
+            email?.kind ?? "initial",
+          ),
           suppressed: suppression,
         });
-        if (!verdict.ok) {
-          refused.push(`${email.businessName}: ${verdict.problems[0].message}`);
+
+        if (outcome.action === "refuse") {
+          // Every refusal is reported, including an id that no longer resolves.
+          // Skipping one silently returned `changed: 0, refused: []`, which the
+          // UI could only render as the button having done nothing at all.
+          refused.push(outcome.reason);
           continue;
         }
 
@@ -730,8 +714,8 @@ export const setEmailDecision = createServerFn({ method: "POST" })
             sql,
             context.userId,
             id,
-            data.decision === "queue" ? "queued" : "approved",
-            { approved: true },
+            outcome.status,
+            { approved: outcome.status !== "skipped" },
           );
           changed += 1;
         } catch (error) {
@@ -739,10 +723,11 @@ export const setEmailDecision = createServerFn({ method: "POST" })
           // another live email already exists for this address and kind, this
           // is where it is refused.
           const message = error instanceof Error ? error.message : String(error);
+          const who = email?.businessName || "That email";
           refused.push(
             /unique|duplicate/i.test(message)
-              ? `${email.businessName}: already has an email queued or sent`
-              : `${email.businessName}: could not approve`,
+              ? `${who}: already has an email queued or sent`
+              : `${who}: could not approve`,
           );
         }
       }

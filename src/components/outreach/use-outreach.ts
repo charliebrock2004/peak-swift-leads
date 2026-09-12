@@ -126,8 +126,19 @@ export function useOutreach() {
     decide: (ids: string[], decision: "approve" | "queue" | "skip") =>
       run(decision, async () => {
         const result = await setEmailDecision({ data: { ids, decision } });
-        if (!result.ok) setError(result.error);
-        else if (result.refused.length > 0) setError(result.refused.join(" · "));
+        if (!result.ok) {
+          setError(result.error);
+        } else if (result.refused.length > 0) {
+          // Say what happened to the whole batch, not just the failures. "0 of
+          // 3 approved" is the sentence that explains a button that appeared to
+          // do nothing; a bare list of reasons does not.
+          const total = ids.length;
+          const verb = decision === "skip" ? "skipped" : "approved";
+          setError(
+            `${result.changed} of ${total} ${verb}. ` +
+              `${result.refused.length} refused — ${result.refused.join(" · ")}`,
+          );
+        }
         return result;
       }),
 

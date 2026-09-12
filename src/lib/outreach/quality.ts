@@ -53,12 +53,38 @@ const BROKEN_MARKERS: [RegExp, string][] = [
  * they are the honest reason most of these emails are worth sending at all.
  */
 const FABRICATED: [RegExp, string][] = [
-  [/\b(slow|sluggish|loads? slowly|loading time|page speed|pagespeed)\b/i, "claims something about load speed, which is never measured"],
-  [/\b(seo|search ranking|ranking|rank higher|google ranking|first page of google)\b/i, "claims something about search ranking, which is never measured"],
-  [/\b(not |isn'?t |aren'?t )?mobile[- ]?(friendly|responsive|optimised|optimized)\b/i, "claims something about mobile rendering, which is never checked"],
-  [/\b(out ?of ?date|outdated|dated|old[- ]fashioned|looks old)\s*(website|site|design)?\b/i, "claims the site is dated, which is never assessed"],
-  [/\b(conversion rate|converting|bounce rate|traffic|visitors per)\b/i, "claims something about traffic or conversion, which is never measured"],
-  [/\bi (noticed|saw|see) (that )?your (website|site) (is|was|looks|loads)\b/i, "asserts an observation about their site that was never made"],
+  // Each pattern requires the CLAIM, not merely a word that can appear in one.
+  // The first version of this list matched a bare "slow" and a bare
+  // "converting", which refused perfectly good drafts saying "winter is a slow
+  // month" and "converting your Facebook page into a website" — and a refused
+  // draft never reaches the send queue, so an over-broad rule here silently
+  // breaks Approve. Anchor every claim to the thing being claimed about.
+  [
+    // Bare proximity is not enough — "slow to get moving but a site helps" is
+    // not a claim about anything. The claim has to be attached to THEIR site.
+    /\b(?:your|the|their)\s+(?:site|website|web ?page)\b[^.!?]{0,30}\b(?:is|runs|feels|loads?|seems)\s+(?:a bit\s+|quite\s+|very\s+|really\s+)?(?:slow|sluggish|slowly)\b|\bloads? slowly\b|\b(?:loading times?|load times?|page ?speed|pagespeed)\b/i,
+    "claims something about load speed, which is never measured",
+  ],
+  [
+    /\b(?:seo|search ranking|google ranking|rank(?:ing|s)? (?:higher|well|poorly|on google|in google)|first page of google|search results?)\b/i,
+    "claims something about search ranking, which is never measured",
+  ],
+  [
+    /\b(?:not |isn'?t |aren'?t |never )?mobile[- ]?(?:friendly|responsive|optimised|optimized)\b|\bdoesn'?t work on (?:a )?(?:phone|mobile)\b/i,
+    "claims something about mobile rendering, which is never checked",
+  ],
+  [
+    /\b(?:out ?of ?date|outdated|old[- ]fashioned|looks old|dated)\b[^.!?]{0,30}\b(?:website|site|design|look)\b|\b(?:website|site|design)\b[^.!?]{0,30}\b(?:is|looks|feels)\s+(?:a bit\s+|quite\s+|very\s+)?(?:out ?of ?date|outdated|dated|old[- ]fashioned|old)\b/i,
+    "claims the site is dated, which is never assessed",
+  ],
+  [
+    /\b(?:conversion rates?|bounce rates?|click[- ]through|visitors? per|page views?|web traffic|site traffic|traffic to your)\b/i,
+    "claims something about traffic or conversion, which is never measured",
+  ],
+  [
+    /\bi (?:noticed|saw|see|found) (?:that )?your (?:website|site) (?:is|was|looks|loads|seems)\b/i,
+    "asserts an observation about their site that was never made",
+  ],
 ];
 
 /** Openers that announce the email as a circular. */

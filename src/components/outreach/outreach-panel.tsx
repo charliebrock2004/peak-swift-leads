@@ -162,7 +162,9 @@ export function OutreachPanel({ onClose }: { onClose: () => void }) {
                   onFilter={setProspectFilter}
                 />
               ) : null}
-              {tab === "review" ? <OutreachQueue state={state} busy={busy} actions={actions} /> : null}
+              {tab === "review" ? (
+                <OutreachQueue state={state} context={context} busy={busy} actions={actions} />
+              ) : null}
               {tab === "campaigns" ? (
                 <OutreachCampaigns
                   state={state}

@@ -9,6 +9,8 @@ import { leadFacts } from "@/lib/outreach/compose";
 import { parseEvidenceSummary } from "@/lib/outreach/evidence";
 import type { Campaign } from "@/lib/outreach/campaigns";
 import { decideProspect } from "@/lib/decision";
+import { decideApproval } from "@/lib/outreach/approval";
+import type { EligibilityContext } from "@/lib/outreach/eligibility";
 import type { OutreachLead } from "@/lib/outreach/types";
 import { cn } from "@/lib/utils";
 
@@ -21,10 +23,13 @@ import { cn } from "@/lib/utils";
  */
 export function OutreachQueue({
   state,
+  context,
   busy,
   actions,
 }: {
   state: OutreachState;
+  /** The eligibility context the panel already builds, so both agree. */
+  context: EligibilityContext;
   busy: string;
   actions: OutreachActions;
 }) {
@@ -53,6 +58,35 @@ export function OutreachQueue({
   }, [state.leads]);
 
   const queued = groups.ready.filter((email) => email.status === "queued");
+
+  /**
+   * Why a draft would be refused if you pressed Approve.
+   *
+   * The same pure rules the server runs, so the answer here and the answer
+   * there cannot disagree. Shown on the card because "press Approve and read
+   * the error" is a bad way to find out that a draft was never sendable — and
+   * for a while it was worse than that, because an over-broad quality rule
+   * refused ordinary wording and the button looked simply broken.
+   */
+  const blockers = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const email of state.emails) {
+      if (email.status !== "draft") continue;
+      const lead = leadsById.get(email.leadId);
+      const outcome = decideApproval({
+        decision: "queue",
+        email,
+        lead: lead ?? null,
+        context,
+        suppressed: new Set(state.suppression.map((entry) => entry.email)),
+      });
+      if (outcome.action === "refuse") {
+        // The card already names the business; the reason is the useful half.
+        map.set(email.id, outcome.reason.replace(`${email.businessName}: `, ""));
+      }
+    }
+    return map;
+  }, [state.emails, state.suppression, leadsById, context]);
   const willSend = Math.min(queued.length, state.allowance.batch);
 
   function startEdit(email: OutreachEmail) {
@@ -75,7 +109,13 @@ export function OutreachQueue({
     });
   }
 
-  const chosenDrafts = groups.drafts.filter((email) => selected.has(email.id)).map((email) => email.id);
+  const chosenDrafts = groups.drafts
+    .filter((email) => selected.has(email.id) && !blockers.has(email.id))
+    .map((email) => email.id);
+  /** Selected but unapprovable, so the count on the button is honest. */
+  const chosenBlocked = groups.drafts.filter(
+    (email) => selected.has(email.id) && blockers.has(email.id),
+  ).length;
 
   return (
     <section className="flex flex-col gap-6">
@@ -156,11 +196,20 @@ export function OutreachQueue({
                     )}
 
                     {editing === email.id ? null : (
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        <Button size="sm" disabled={busy !== ""} onClick={() => void actions.decide([email.id], "queue")}>
+                      <div className="mt-3 flex flex-wrap items-center gap-2">
+                        <Button
+                          size="sm"
+                          disabled={busy !== "" || blockers.has(email.id)}
+                          onClick={() => void actions.decide([email.id], "queue")}
+                        >
                           <Check />
                           Approve
                         </Button>
+                        {blockers.has(email.id) ? (
+                          <span className="text-xs text-hot">
+                            Cannot approve — {blockers.get(email.id)}
+                          </span>
+                        ) : null}
                         <Button variant="secondary" size="sm" onClick={() => startEdit(email)}>
                           <Pencil />
                           Edit
@@ -190,6 +239,13 @@ export function OutreachQueue({
               </li>
             ))}
           </ul>
+
+          {chosenBlocked > 0 ? (
+            <p className="mt-3 text-xs text-hot">
+              {chosenBlocked} selected draft{chosenBlocked === 1 ? "" : "s"} cannot be approved —
+              each says why on its card. They are left out of the count below.
+            </p>
+          ) : null}
 
           {chosenDrafts.length > 0 ? (
             <div className="mt-3 flex gap-2">
