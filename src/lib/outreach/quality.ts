@@ -53,28 +53,35 @@ const BROKEN_MARKERS: [RegExp, string][] = [
  * they are the honest reason most of these emails are worth sending at all.
  */
 const FABRICATED: [RegExp, string][] = [
-  // Each pattern requires the CLAIM, not merely a word that can appear in one.
-  // The first version of this list matched a bare "slow" and a bare
-  // "converting", which refused perfectly good drafts saying "winter is a slow
-  // month" and "converting your Facebook page into a website" — and a refused
-  // draft never reaches the send queue, so an over-broad rule here silently
-  // breaks Approve. Anchor every claim to the thing being claimed about.
+  // Each pattern requires a claim ABOUT THEIR SITE, never merely a word that can
+  // appear in one. Two rounds of real regressions came from getting this wrong:
+  // a bare "slow" refused "winter is a slow month", a bare "converting" refused
+  // "converting your Facebook page into a website", a bare "mobile friendly"
+  // refused "I build mobile friendly websites", and a bare "seo" refused "I'm
+  // not an SEO person". A refused draft never reaches the send queue, so an
+  // over-broad rule here silently breaks Approve.
+  //
+  // The distinction that matters throughout: "I can build a website that is X"
+  // is an offer about our own work and is allowed; "your website is X" is a
+  // claim about something we never measured and is refused.
   [
-    // Bare proximity is not enough — "slow to get moving but a site helps" is
-    // not a claim about anything. The claim has to be attached to THEIR site.
-    /\b(?:your|the|their)\s+(?:site|website|web ?page)\b[^.!?]{0,30}\b(?:is|runs|feels|loads?|seems)\s+(?:a bit\s+|quite\s+|very\s+|really\s+)?(?:slow|sluggish|slowly)\b|\bloads? slowly\b|\b(?:loading times?|load times?|page ?speed|pagespeed)\b/i,
+    /\b(?:your|the|their)\s+(?:site|website|web ?page)\b[^.!?]{0,30}\b(?:is|runs|feels|loads?|seems|looks)\s+(?:a bit\s+|quite\s+|very\s+|really\s+|pretty\s+)?(?:slow|sluggish|slowly)\b|\byour\s+(?:site|website|page)\b[^.!?]{0,30}\b(?:loads? slowly|load times?|page ?speed)\b|\byour\s+(?:loading times?|load times?|page ?speed|pagespeed)\b|\b(?:loading times?|load times?|page ?speed|pagespeed)\b[^.!?]{0,20}\b(?:could|would|is|are|must)\s+(?:be\s+)?(?:better|improved|faster|slow)\b/i,
     "claims something about load speed, which is never measured",
   ],
   [
-    /\b(?:seo|search ranking|google ranking|rank(?:ing|s)? (?:higher|well|poorly|on google|in google)|first page of google|search results?)\b/i,
+    // "your SEO", "improve your SEO", "ranking well" — a claim. Plain "SEO" in
+    // "I'm not an SEO person" is not.
+    /\byour\s+seo\b|\bseo\b[^.!?]{0,20}\b(?:is|isn'?t|could|would|needs?|suffer)\b|\b(?:improve|fix|sort|boost)\w*\s+your\s+(?:seo|ranking|search)\b|\b(?:search|google) ranking\b|\brank(?:ing|s)?\s+(?:higher|well|poorly|badly|anywhere|on google|in google|in search)\b|\bfirst page of google\b|\byour\b[^.!?]{0,20}\bsearch results?\b/i,
     "claims something about search ranking, which is never measured",
   ],
   [
-    /\b(?:not |isn'?t |aren'?t |never )?mobile[- ]?(?:friendly|responsive|optimised|optimized)\b|\bdoesn'?t work on (?:a )?(?:phone|mobile)\b/i,
+    // The negation is what makes it a claim. "I build mobile friendly websites"
+    // is an offer; "your site isn't mobile friendly" is a verdict on their work.
+    /\b(?:not|isn'?t|aren'?t|never|hardly|barely)\s+(?:very\s+|really\s+|that\s+)?mobile[- ]?(?:friendly|responsive|optimised|optimized)\b|\byour\s+(?:site|website|page)\b[^.!?]{0,30}\bmobile[- ]?(?:friendly|responsive|optimised|optimized)\b|\bdoesn'?t work on (?:a )?(?:phone|mobile)\b|\bnot responsive\b/i,
     "claims something about mobile rendering, which is never checked",
   ],
   [
-    /\b(?:out ?of ?date|outdated|old[- ]fashioned|looks old|dated)\b[^.!?]{0,30}\b(?:website|site|design|look)\b|\b(?:website|site|design)\b[^.!?]{0,30}\b(?:is|looks|feels)\s+(?:a bit\s+|quite\s+|very\s+)?(?:out ?of ?date|outdated|dated|old[- ]fashioned|old)\b/i,
+    /\b(?:out ?of ?date|outdated|old[- ]fashioned|looks old|dated)\b[^.!?]{0,30}\b(?:website|site|design|look)\b|\b(?:website|site|design)\b[^.!?]{0,30}\b(?:is|looks|feels|seems|looking|feeling|seeming)\s+(?:a bit\s+|quite\s+|very\s+|really\s+|pretty\s+)?(?:out ?of ?date|outdated|dated|old[- ]fashioned|old|tired)\b/i,
     "claims the site is dated, which is never assessed",
   ],
   [
@@ -103,7 +110,12 @@ const INSULTING: [RegExp, string][] = [
   [/\b(terrible|awful|horrible|hideous|ugly|embarrassing|amateur|useless|rubbish)\b/i, "is insulting"],
   [/\b(bad|poor|dreadful|shocking)\s+(website|site|design)\b/i, "calls their website bad"],
   [/\b(website|site)\s+is\s+(bad|poor|terrible|awful|outdated|broken|a mess)\b/i, "calls their website bad"],
-  [/\byou\s+(clearly|obviously)\b/i, "is condescending"],
+  // Only when it precedes a criticism. "You clearly care about your work" is a
+  // compliment, and refusing it blocked a perfectly good email.
+  [
+    /\byou\s+(?:clearly|obviously)\s+(?:don'?t|do not|haven'?t|have not|aren'?t|are not|need|lack|never)\b/i,
+    "is condescending",
+  ],
 ];
 
 export type QualityInput = {
@@ -158,7 +170,7 @@ export function checkEmailQuality(input: QualityInput): QualityVerdict {
   if (!businessName) add("no-business-name", "The lead has no business name.");
   // Personalisation has to be real. If the business is not named anywhere, this
   // is a circular that happens to have an address on it.
-  else if (!body.toLowerCase().includes(businessName.toLowerCase()) && !subject.toLowerCase().includes(businessName.toLowerCase())) {
+  else if (!mentionsBusiness(body, businessName) && !mentionsBusiness(subject, businessName)) {
     add("not-personalised", "The email never mentions the business by name.");
   }
 
@@ -199,11 +211,78 @@ export function checkEmailQuality(input: QualityInput): QualityVerdict {
   return problems.length === 0 ? { ok: true } : { ok: false, problems };
 }
 
-/** Does the text tell them how to stop hearing from us? */
+/**
+ * Does the text tell them how to stop hearing from us?
+ *
+ * This is a REQUIRED rule, which makes a false negative the dangerous
+ * direction: failing to recognise a perfectly good opt-out blocks the email
+ * from ever being approved. The first version matched seven fixed phrasings and
+ * missed five of seven natural ones — "if you'd prefer I didn't get in touch
+ * again", "let me know if you'd like me to stop", "just say the word and I'll
+ * leave it there" — all of which plainly give the reader a way out.
+ *
+ * What matters is that the reader is told they can make it stop. These are the
+ * ways an actual person writes that. A body with no such sentence still fails,
+ * which is the point of the rule.
+ */
 export function hasOptOut(body: string): boolean {
-  return /(rather i didn'?t|rather not hear|not to contact|don'?t contact|no longer wish|just let me know and i won'?t|reply .{0,20}stop)/i.test(
-    body,
-  );
+  return [
+    // "if you'd rather / prefer I didn't ..."
+    /\b(?:rather|prefer(?:red)?)\s+(?:i|that i)\s*(?:didn'?t|did not|not|don'?t)\b/i,
+    /\brather not hear\b/i,
+    /\b(?:you'?d |you would )?(?:rather|prefer) (?:i|me) (?:didn'?t|not|stopped?)\b/i,
+    // "don't contact me", "not to contact you"
+    /\b(?:not to|don'?t|do not|never)\s+(?:contact|email|write to|get in touch with)\b/i,
+    /\bno longer wish\b/i,
+    // "let me know / just say / tell me / reply" + "and I'll stop | leave you"
+    /\b(?:let me know|just say|say the word|tell me|reply|drop me a line|get back to me)\b[^.!?]{0,60}\b(?:and )?(?:i'?ll |i will |and i )?(?:won'?t|will not|stop|leave (?:you|it)|no more|that'?s the end)\b/i,
+    /\b(?:i'?ll|i will|happy to)\s+(?:leave (?:you|it)|stop|not (?:contact|write|email))\b/i,
+    /\bleave you (?:be|alone|in peace)\b/i,
+    /\breply\b.{0,20}\bstop\b/i,
+    // "if you'd like me to stop", "if this isn't welcome"
+    /\bif (?:you'?d like|you want) me to stop\b/i,
+    /\bif (?:this|it) (?:isn'?t|is not) welcome\b/i,
+  ].some((pattern) => pattern.test(body));
+}
+
+/**
+ * Corporate suffixes that are part of a registered name but not of the name a
+ * person writes. A model told to mention "Strathearn Joinery Ltd" very often
+ * writes "Strathearn Joinery", and that is the same business.
+ */
+const NAME_SUFFIXES = /\b(?:ltd|limited|llp|plc|cic|co|company|inc|incorporated|the)\b/gi;
+
+/** The words of a business name that actually identify it. */
+function nameTokens(businessName: string): string[] {
+  return businessName
+    .toLowerCase()
+    .replace(/['’]/g, "")
+    .replace(NAME_SUFFIXES, " ")
+    .split(/[^a-z0-9]+/)
+    .filter((word) => word.length >= 2);
+}
+
+/**
+ * Does this text name the business?
+ *
+ * An exact substring match refused "Strathearn Joinery" for a lead recorded as
+ * "Strathearn Joinery Ltd" — the same over-literal failure that refused
+ * "PeakSwift Studio", and on the half of the email the model is most likely to
+ * paraphrase. Punctuation, "&" against "and", possessives and a dropped Ltd all
+ * describe the same business.
+ *
+ * Accepts when every identifying word appears, or when one sufficiently
+ * distinctive word does — "Strathearn" alone is unmistakably them. A circular
+ * that names nobody still fails, which is what the rule is for.
+ */
+export function mentionsBusiness(text: string, businessName: string): boolean {
+  const tokens = nameTokens(businessName);
+  if (tokens.length === 0) return true;
+  const haystack = text.toLowerCase().replace(/['’]/g, "").replace(/&/g, " and ");
+  const present = (token: string) => new RegExp(`\\b${token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "i").test(haystack);
+  if (tokens.every(present)) return true;
+  const distinctive = tokens.filter((token) => token.length >= 6).sort((a, b) => b.length - a.length)[0];
+  return distinctive !== undefined && present(distinctive);
 }
 
 /**
