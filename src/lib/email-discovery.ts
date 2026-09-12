@@ -44,6 +44,19 @@ export const DISCOVERY_REASONS = [
   "WEBSITE_NOT_VERIFIED",
   /** No search key is configured, so only the listing and guesses were tried. */
   "SEARCH_PROVIDER_UNAVAILABLE",
+  /**
+   * The next three split what used to be one catch-all.
+   *
+   * They need different responses from the person reading them — a rejected key
+   * is a settings problem, a rate limit is a wait, and an exhausted quota is a
+   * bill — so collapsing them into "search unavailable" left the only useful
+   * part of the answer out.
+   */
+  "SEARCH_AUTH_FAILED",
+  "SEARCH_RATE_LIMITED",
+  "SEARCH_QUOTA_EXHAUSTED",
+  /** Candidates were all directories, socials or parked domains. */
+  "ONLY_DIRECTORY_LISTINGS_FOUND",
 ] as const;
 export type DiscoveryReason = (typeof DISCOVERY_REASONS)[number];
 
@@ -126,7 +139,8 @@ export const CANDIDATE_PATHS = [
 ] as const;
 
 /** Link text or href worth following, beyond the well-known paths above. */
-const CONTACT_HREF = /contact|get-?in-?touch|enquir|quote|book|about|team|staff|reach-?us/i;
+const CONTACT_HREF =
+  /contact|get-?in-?touch|enquir|quote|book|about|team|staff|reach-?us|services?|find-?us|where-?to-?find/i;
 
 /** Junk that is never a business mailbox. */
 const SKIP_LOCAL = /^(noreply|no-reply|no_reply|donotreply|privacy|legal|webmaster|hostmaster|postmaster|mailer-daemon|abuse|sentry|test|example|user|username|email|your|name)$/i;
@@ -165,15 +179,47 @@ const EMAIL_RE = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,24}/g;
  * there, in that order, in the text.
  */
 export function deobfuscate(text: string): string {
-  return text
-    .replace(/\s*[[({<]\s*(?:at|@)\s*[\])}>]\s*/gi, "@")
-    .replace(/\s+(?:at)\s+/gi, "@")
-    .replace(/\s*[[({<]\s*(?:dot|\.)\s*[\])}>]\s*/gi, ".")
-    .replace(/\s+(?:dot)\s+/gi, ".")
-    .replace(/&#0?64;/g, "@")
-    .replace(/&#0?46;/g, ".")
-    .replace(/&commat;/gi, "@")
-    .replace(/&period;/gi, ".");
+  return (
+    text
+      .replace(/\s*[[({<]\s*(?:at|@)\s*[\])}>]\s*/gi, "@")
+      .replace(/\s+(?:at)\s+/gi, "@")
+      .replace(/\s*[[({<]\s*(?:dot|\.)\s*[\])}>]\s*/gi, ".")
+      .replace(/\s+(?:dot)\s+/gi, ".")
+      .replace(/&#0?64;/g, "@")
+      .replace(/&#0?46;/g, ".")
+      .replace(/&commat;/gi, "@")
+      .replace(/&period;/gi, ".")
+      // "info @ clarkjoinery . co . uk" — spacing alone, no words. Only closed
+      // up between word characters, so ordinary prose ("call us . We are")
+      // is untouched and no address is invented from unrelated text.
+      .replace(/(\w)\s+@\s+(\w)/g, "$1@$2")
+      .replace(/(\w)\s+\.\s+(\w)/g, "$1.$2")
+  );
+}
+
+/**
+ * Addresses a page builds in JavaScript from adjacent string literals.
+ *
+ * `"info" + "@" + "example.co.uk"` is a real and common way of hiding an
+ * address from scrapers, and the whole address is present in the source — this
+ * only joins literals that are already there. It deliberately does NOT try to
+ * resolve variables: reassembling `var u="info", d="example.co.uk"` would be
+ * constructing an address rather than reading one, and a constructed address
+ * is a guess however plausible it looks.
+ */
+export function joinScriptLiterals(html: string): string {
+  const out: string[] = [];
+  for (const block of html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)) {
+    const code = block[1] ?? "";
+    // Runs of quoted literals joined by +, e.g. "a" + "@" + "b.co.uk".
+    for (const run of code.matchAll(/(["'])(?:(?!\1)[^\\\r\n]|\\.)*\1(?:\s*\+\s*(["'])(?:(?!\2)[^\\\r\n]|\\.)*\2)+/g)) {
+      const joined = (run[0].match(/(["'])((?:(?!\1)[^\\\r\n]|\\.)*)\1/g) ?? [])
+        .map((literal) => literal.slice(1, -1))
+        .join("");
+      if (joined.includes("@")) out.push(joined);
+    }
+  }
+  return out.join(" ");
 }
 
 // ── Extraction ───────────────────────────────────────────────────────────────
@@ -297,6 +343,17 @@ export function extractCandidates(
     push(out, seen, m[0], {
       source, sourceUrl: pageUrl, method: "DEOBFUSCATED",
       evidence: "Written with [at]/[dot] separators on the page",
+    });
+  }
+
+  // 7. Addresses assembled from adjacent string literals in a script. The whole
+  //    address is in the source; this only closes up the joins.
+  //    Reads `html`, not `text`: step 5 strips script blocks out of `text`, so
+  //    passing that here would hand the joiner a page with no scripts in it.
+  for (const m of joinScriptLiterals(html).matchAll(EMAIL_RE)) {
+    push(out, seen, m[0], {
+      source, sourceUrl: pageUrl, method: "DEOBFUSCATED",
+      evidence: "Built from adjacent string literals in the page's own script",
     });
   }
 
@@ -644,6 +701,10 @@ export const REASON_LABELS: Record<DiscoveryReason, string> = {
   BLOCKED_BY_SITE: "Site blocked the request",
   WEBSITE_NOT_VERIFIED: "Found possible sites, none provably this business",
   SEARCH_PROVIDER_UNAVAILABLE: "No search key configured — only the listing and domain guesses were tried",
+  SEARCH_AUTH_FAILED: "The search provider rejected the API key — check it in the deployment settings",
+  SEARCH_RATE_LIMITED: "The search provider asked us to slow down — try again shortly",
+  SEARCH_QUOTA_EXHAUSTED: "The search provider's quota is used up — no more searches until it resets",
+  ONLY_DIRECTORY_LISTINGS_FOUND: "Only directory and social listings were found, never the business's own site",
 };
 
 /** Where most of this run's addresses came from, for the one-line summary. */

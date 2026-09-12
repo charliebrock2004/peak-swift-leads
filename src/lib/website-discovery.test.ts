@@ -10,6 +10,10 @@ import {
   pageTitle,
   scoreWebsiteMatch,
   WEBSITE_MIN_SCORE,
+  detectPageCharacter,
+  domainMatchesName,
+  phonesOnPage,
+  postcodesOnPage,
 } from "./website-discovery.ts";
 
 const cuttingEdge = {
@@ -114,7 +118,13 @@ describe("deciding whether a page is the right business", () => {
 
   it("REJECTS a page that never names the business, however much else matches", () => {
     const m = scoreWebsiteMatch(page({
-      title: "Fife Salons", text: "Hairdressing in Cupar, Fife.",
+      title: "Fife Salons",
+      // Long enough to be a real page: a 28-character fixture reads as an empty
+      // holding page and would be rejected for that instead, which is not what
+      // this test is about.
+      text:
+        "Fife Salons. Hairdressing in Cupar, Fife. Cuts, colour and styling for " +
+        "the whole family. Walk-ins welcome six days a week. Book online or pop in.",
     }), cuttingEdge);
     assert.ok(m.score < WEBSITE_MIN_SCORE, `scored ${m.score}`);
     assert.ok(m.evidence.some((e) => /largely absent/.test(e)));
@@ -131,7 +141,13 @@ describe("deciding whether a page is the right business", () => {
 });
 
 describe("choosing between candidates", () => {
-  const m = (url: string, score: number) => ({ url, score, confidence: "STRONG" as const, evidence: [] });
+  const m = (url: string, score: number) => ({
+    url,
+    score,
+    confidence: "STRONG" as const,
+    evidence: [],
+    character: "BUSINESS" as const,
+  });
 
   it("takes the strongest that clears the bar", () => {
     assert.equal(bestWebsite([m("a", 80), m("b", 95), m("c", 76)])?.url, "b");
@@ -154,5 +170,224 @@ describe("reading a page", () => {
   it("reads the title", () => {
     assert.equal(pageTitle(`<title>  Cutting Edge  </title>`), "Cutting Edge");
     assert.equal(pageTitle(`<html></html>`), "");
+  });
+});
+
+describe("page character", () => {
+  const chr = (url: string, title: string, text: string) => detectPageCharacter(url, title, text);
+  const REAL =
+    "Bespoke joinery in Perth for over twenty years. Staircases, kitchens and " +
+    "fitted wardrobes. Free quotes across Perthshire.";
+
+  it("recognises a single business's own site", () => {
+    assert.equal(chr("https://clarkjoinery.co.uk", "Clark Joinery", REAL), "BUSINESS");
+  });
+
+  it("recognises a short one-page site for a sole trader as a real business", () => {
+    assert.equal(chr("https://x.co.uk", "Clark Joinery", "Clark Joinery, Perth. Call 01738 445566 for a quote."), "BUSINESS");
+  });
+
+  it("recognises a site that keeps its contact details on another page", () => {
+    assert.equal(
+      chr("https://clarkjoinery.co.uk", "Clark Joinery - Perth",
+        "Clark Joinery of Perth. Bespoke staircases, kitchens and fitted wardrobes " +
+        "across Perthshire. Established 1998. Get in touch for a free quote."),
+      "BUSINESS",
+      "a homepage with no phone number is still a business, not a parked domain",
+    );
+  });
+
+  it("recognises social profiles", () => {
+    for (const host of ["facebook.com", "www.instagram.com", "linkedin.com", "x.com"]) {
+      assert.equal(chr(`https://${host}/clarkjoinery`, "Clark Joinery", REAL), "SOCIAL", host);
+    }
+  });
+
+  it("recognises the directories it knows by name", () => {
+    for (const host of ["yell.com", "www.checkatrade.com", "freeindex.co.uk", "trustpilot.com"]) {
+      assert.equal(chr(`https://${host}/x`, "Clark Joinery, Perth", REAL), "DIRECTORY", host);
+    }
+  });
+
+  it("recognises a directory it has never heard of, by shape", () => {
+    assert.equal(
+      chr("https://sometradesite.co.uk/perth/joiners", "Joiners in Perth",
+        `Clark Joinery, 22 South Street, Perth PH2 8PG. Tel 01738 445566.
+         Smith Joinery, 5 Main Road, Perth PH1 2AB. Tel 01738 221100.
+         Jones & Sons, 18 Kings Way, Perth PH2 0QR. Tel 01738 667788.
+         Perth Woodworks, 3 Canal St, Perth PH2 8LF. Tel 01738 334455.
+         Fair City Joiners, 9 Tay St, Perth PH1 5LQ. Tel 01738 889900.`),
+      "DIRECTORY",
+      "five businesses' contact details on one page is a list, whatever the host",
+    );
+  });
+
+  it("treats result-counting language as decisive", () => {
+    assert.equal(chr("https://x.co.uk", "Clark Joinery Perth", `${REAL} Showing 1-20 of 340.`), "DIRECTORY");
+    assert.equal(chr("https://x.co.uk", "Joiners in Perth", `${REAL} 40 more joiners in Perth.`), "DIRECTORY");
+  });
+
+  it("recognises a parked or for-sale domain", () => {
+    assert.equal(chr("https://x.co.uk", "x.co.uk", "This domain is for sale. Make an offer today."), "PARKED");
+    assert.equal(chr("https://x.co.uk", "", "   "), "PARKED");
+    assert.equal(chr("https://x.co.uk", "Clark Joinery", "Website coming soon. Clark Joinery of Perth."), "PARKED");
+  });
+});
+
+describe("domainMatchesName", () => {
+  it("matches a domain built from the business name", () => {
+    assert.ok(domainMatchesName("https://clarkjoinery.co.uk", "Clark Joinery"));
+    assert.ok(domainMatchesName("https://www.clark-joinery.com", "Clark Joinery Ltd"));
+    assert.ok(domainMatchesName("https://clarkjoineryperth.co.uk", "Clark Joinery"));
+  });
+
+  it("does not match an unrelated domain", () => {
+    assert.equal(domainMatchesName("https://tradesdirectory.co.uk", "Clark Joinery"), false);
+    assert.equal(domainMatchesName("https://perthwoodcraft.co.uk", "Clark Joinery"), false);
+  });
+
+  it("ignores a domain too short to carry a name", () => {
+    assert.equal(domainMatchesName("https://ab.co.uk", "Clark Joinery"), false);
+  });
+});
+
+describe("identity verification — the cases that must never attach", () => {
+  const clark = {
+    businessName: "Clark Joinery", town: "Perth", trade: "Joinery",
+    phone: "01738 445566", address: "22 South Street, Perth PH2 8PG",
+  };
+  const score = (url: string, title: string, text: string, kind?: "OWN_WEBSITE" | "PUBLIC_PROFILE") =>
+    scoreWebsiteMatch({ url, title, text }, clark, kind ? { kind } : {});
+
+  it("REJECTS the same name in the same town when phone and postcode contradict", () => {
+    const m = score("https://clarkjoineryperth.co.uk", "Clark Joinery Perth",
+      "Clark Joinery, Perth. Quality joinery throughout Perthshire for thirty years. " +
+      "Call 01738 999111. 9 Mill Street, Perth PH1 9ZZ. Free estimates.");
+    assert.ok(m.score < WEBSITE_MIN_SCORE, `scored ${m.score}: ${m.evidence.join("; ")}`);
+    assert.ok(
+      m.evidence.some((e) => /different phone/.test(e)),
+      "the contradicting phone number must be counted against, not merely ignored",
+    );
+  });
+
+  it("REJECTS the same name in a different town", () => {
+    const m = score("https://clarkjoinery.co.uk", "Clark Joinery Dundee",
+      "Clark Joinery, Dundee. Joinery and carpentry across Tayside. " +
+      "Call 01382 111222. 4 Reform Street, Dundee DD1 1AA.");
+    assert.ok(m.score < WEBSITE_MIN_SCORE, `scored ${m.score}: ${m.evidence.join("; ")}`);
+  });
+
+  it("REJECTS a directory listing even when every detail is right", () => {
+    const m = score("https://www.yell.com/biz/clark-joinery-perth-123/", "Clark Joinery, Perth | Yell",
+      "Clark Joinery, Perth. Joinery. 22 South Street, Perth PH2 8PG. Tel 01738 445566. " +
+      "Read reviews and compare quotes from local joiners.");
+    assert.equal(m.score, 0);
+    assert.equal(m.character, "DIRECTORY");
+  });
+
+  it("REJECTS a directory the search layer flagged, whatever the page looks like", () => {
+    const m = score("https://unknown-directory.example/perth", "Clark Joinery",
+      "Clark Joinery, Perth PH2 8PG, 01738 445566. Bespoke joinery across Perthshire.",
+      "PUBLIC_PROFILE");
+    assert.equal(m.score, 0, "the caller's own classification is respected");
+  });
+
+  it("REJECTS a social profile even when every detail is right", () => {
+    const m = score("https://www.facebook.com/clarkjoineryperth", "Clark Joinery | Facebook",
+      "Clark Joinery, Perth. Joinery. 01738 445566. 22 South Street, Perth PH2 8PG. Bespoke work.");
+    assert.equal(m.score, 0);
+    assert.equal(m.character, "SOCIAL");
+  });
+
+  it("REJECTS a parked domain carrying the business name", () => {
+    const m = score("https://clarkjoinery.co.uk", "Clark Joinery",
+      "Clark Joinery. This domain is for sale. Perth joinery. Enquire now.");
+    assert.equal(m.score, 0);
+    assert.equal(m.character, "PARKED");
+  });
+
+  it("never lets name, town and trade alone reach the bar", () => {
+    const m = score("https://someothersite.co.uk", "Clark Joinery",
+      "Clark Joinery. Joinery in Perth. We cover the whole of Perthshire and beyond " +
+      "with bespoke carpentry, staircases and fitted furniture for homes and offices.");
+    assert.ok(
+      m.score < WEBSITE_MIN_SCORE,
+      `name + town + trade must not be enough on its own, scored ${m.score}`,
+    );
+  });
+});
+
+describe("identity verification — the cases that must attach", () => {
+  const clark = {
+    businessName: "Clark Joinery", town: "Perth", trade: "Joinery",
+    phone: "01738 445566", address: "22 South Street, Perth PH2 8PG",
+  };
+  const score = (url: string, title: string, text: string) =>
+    scoreWebsiteMatch({ url, title, text }, clark);
+
+  it("ACCEPTS the right business on a domain bearing no resemblance to its name", () => {
+    const m = score("https://perthwoodcraft.co.uk", "Perth Woodcraft - Bespoke Joinery",
+      "Trading as Clark Joinery. Perth. Call 01738 445566. 22 South Street, Perth PH2 8PG. " +
+      "Bespoke staircases, kitchens and fitted wardrobes across Perthshire.");
+    assert.ok(m.score >= WEBSITE_MIN_SCORE, `scored ${m.score}`);
+  });
+
+  it("ACCEPTS on an exact phone match", () => {
+    const m = score("https://somename.co.uk", "Joinery in Perth",
+      "Perth's joinery specialists. Call 01738 445566 today. Clark Joinery has served " +
+      "Perthshire for twenty years with staircases, kitchens and fitted furniture.");
+    assert.ok(m.score >= WEBSITE_MIN_SCORE, `an exact phone match should carry it, scored ${m.score}`);
+  });
+
+  it("ACCEPTS on an exact postcode match plus the name", () => {
+    const m = score("https://somename.co.uk", "Clark Joinery",
+      "Clark Joinery. Visit us at 22 South Street, Perth PH2 8PG. Bespoke joinery, " +
+      "staircases and fitted furniture made in our own workshop.");
+    assert.ok(m.score >= WEBSITE_MIN_SCORE, `scored ${m.score}`);
+  });
+
+  it("ACCEPTS a matching domain plus title plus town, with no phone published", () => {
+    const m = score("https://clarkjoinery.co.uk", "Clark Joinery - Perth",
+      "Clark Joinery of Perth. Bespoke staircases, kitchens and fitted wardrobes across " +
+      "Perthshire. Established 1998. Get in touch for a free quote on your project.");
+    assert.ok(m.score >= WEBSITE_MIN_SCORE, `scored ${m.score}`);
+  });
+
+  it("handles &/and, Ltd/Limited, apostrophes and punctuation", () => {
+    for (const [name, title] of [
+      ["Smith & Sons Joinery", "Smith and Sons Joinery, Perth"],
+      ["MacLeod Plumbing Ltd", "MacLeod Plumbing Limited - Perth"],
+      ["O'Brien's Barbers", "OBriens Barbers Perth"],
+      ["A.J. Clark Joinery", "AJ Clark Joinery Perth"],
+    ] as const) {
+      const m = scoreWebsiteMatch(
+        {
+          url: "https://x.co.uk",
+          title,
+          text: `${title}. Serving Perth and Perthshire. Call 01738 445566 for a free quote on any job.`,
+        },
+        { ...clark, businessName: name },
+      );
+      assert.ok(m.score >= WEBSITE_MIN_SCORE, `${name} vs ${title} scored ${m.score}`);
+    }
+  });
+});
+
+describe("reading contact details off a page", () => {
+  it("finds every UK phone number printed", () => {
+    const phones = phonesOnPage("Call 01738 445566 or 0131 555 1234, mobile 07700 900123.");
+    assert.ok(phones.includes("01738445566"));
+    assert.ok(phones.includes("01315551234"));
+    assert.equal(phones.length, 3);
+  });
+
+  it("finds every UK postcode printed", () => {
+    const codes = postcodesOnPage("Perth PH2 8PG and Dundee DD1 1AA and London EC1A 1BB");
+    assert.deepEqual(codes.sort(), ["DD11AA", "EC1A1BB", "PH28PG"]);
+  });
+
+  it("reports nothing rather than nonsense on a page with neither", () => {
+    assert.deepEqual(phonesOnPage("We are open six days a week."), []);
+    assert.deepEqual(postcodesOnPage("We are open six days a week."), []);
   });
 });

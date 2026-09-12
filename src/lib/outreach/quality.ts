@@ -40,6 +40,35 @@ const BROKEN_MARKERS: [RegExp, string][] = [
 ];
 
 /**
+ * Claims nothing in the pipeline can support.
+ *
+ * The prompt already asks the model not to make these; this is what stops it
+ * anyway. Load speed, mobile rendering, search ranking, traffic and conversion
+ * are never measured anywhere in this system, so any statement about them is
+ * invented — and an invented criticism of someone's business is the single
+ * worst thing this product could send.
+ *
+ * Deliberately NOT banned: talking about a business having no website, or only
+ * a social page. Those are recorded observations with a field behind them, and
+ * they are the honest reason most of these emails are worth sending at all.
+ */
+const FABRICATED: [RegExp, string][] = [
+  [/\b(slow|sluggish|loads? slowly|loading time|page speed|pagespeed)\b/i, "claims something about load speed, which is never measured"],
+  [/\b(seo|search ranking|ranking|rank higher|google ranking|first page of google)\b/i, "claims something about search ranking, which is never measured"],
+  [/\b(not |isn'?t |aren'?t )?mobile[- ]?(friendly|responsive|optimised|optimized)\b/i, "claims something about mobile rendering, which is never checked"],
+  [/\b(out ?of ?date|outdated|dated|old[- ]fashioned|looks old)\s*(website|site|design)?\b/i, "claims the site is dated, which is never assessed"],
+  [/\b(conversion rate|converting|bounce rate|traffic|visitors per)\b/i, "claims something about traffic or conversion, which is never measured"],
+  [/\bi (noticed|saw|see) (that )?your (website|site) (is|was|looks|loads)\b/i, "asserts an observation about their site that was never made"],
+];
+
+/** Openers that announce the email as a circular. */
+const GENERIC_OPENERS: [RegExp, string][] = [
+  [/\bdear (business owner|sir or madam|sir\/madam|owner|manager|team)\b/i, "opens with a circular's greeting"],
+  [/\bto whom it may concern\b/i, "opens with a circular's greeting"],
+  [/\bi hope this (email|message) finds you well\b/i, "opens with filler that marks it as a template"],
+];
+
+/**
  * Wording that insults the recipient. Cold email that opens by telling someone
  * their work is bad does not win the job, and several of these are claims a page
  * fetch cannot support anyway.
@@ -123,6 +152,18 @@ export function checkEmailQuality(input: QualityInput): QualityVerdict {
   for (const [pattern, why] of INSULTING) {
     if (pattern.test(body) || pattern.test(subject)) {
       add("insulting", `The generated text ${why}.`);
+      break;
+    }
+  }
+  for (const [pattern, why] of FABRICATED) {
+    if (pattern.test(body) || pattern.test(subject)) {
+      add("fabricated", `The generated text ${why}.`);
+      break;
+    }
+  }
+  for (const [pattern, why] of GENERIC_OPENERS) {
+    if (pattern.test(body) || pattern.test(subject)) {
+      add("generic", `The generated text ${why}.`);
       break;
     }
   }

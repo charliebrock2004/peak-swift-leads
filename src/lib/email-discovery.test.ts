@@ -20,6 +20,7 @@ import {
   tallyDiscovery,
   type DiscoveryResult,
   type EmailCandidate,
+  joinScriptLiterals,
 } from "./email-discovery.ts";
 
 const ctx = { websiteUrl: "https://strathearnjoinery.co.uk", businessName: "Strathearn Joinery Ltd" };
@@ -434,5 +435,89 @@ describe("reporting what a run achieved", () => {
     for (const reason of Object.keys(REASON_LABELS)) {
       assert.ok(REASON_LABELS[reason as keyof typeof REASON_LABELS].length > 5, reason);
     }
+  });
+});
+
+describe("obfuscated addresses the page really does publish", () => {
+  const find = (html: string) =>
+    extractCandidates(html, "https://clarkjoinery.co.uk", "OFFICIAL_WEBSITE").map((c) => c.email);
+
+  it("reads every spelling of a hidden address", () => {
+    for (const [label, html] of [
+      ["bracketed", "Email us at info [at] clarkjoinery [dot] co.uk today"],
+      ["parenthesised", "info(at)clarkjoinery(dot)co.uk"],
+      ["spaced symbols", "info @ clarkjoinery . co . uk"],
+      ["spaced dots", "info@clarkjoinery . co . uk"],
+      ["numeric entities", "info&#64;clarkjoinery&#46;co.uk"],
+      ["named entities", "info&commat;clarkjoinery&period;co.uk"],
+      ["words in caps", "INFO AT CLARKJOINERY DOT CO DOT UK"],
+      ["mailto link", `<a href="mailto:info@clarkjoinery.co.uk">Email</a>`],
+      ["plain text", "Contact info@clarkjoinery.co.uk"],
+      ["script literals", `<script>var e = "info" + "@" + "clarkjoinery.co.uk";</script>`],
+    ] as const) {
+      assert.ok(find(html).includes("info@clarkjoinery.co.uk"), `${label}: ${html}`);
+    }
+  });
+
+  it("NEVER reassembles an address from separate variables", () => {
+    // The address is not written anywhere in this source — building it would be
+    // constructing an address rather than reading one, and a constructed
+    // address is a guess however plausible it looks.
+    const found = find(`<script>var user="info", domain="clarkjoinery.co.uk";</script>`);
+    assert.deepEqual(found, [], `invented an address: ${found.join(", ")}`);
+  });
+
+  it("does not turn ordinary prose into an address", () => {
+    assert.deepEqual(find("Call us . We are open six days a week . Ask for Charlie ."), []);
+    assert.deepEqual(find("Meet the team at our workshop . Free quotes ."), []);
+  });
+});
+
+describe("joinScriptLiterals", () => {
+  it("joins adjacent literals that already contain the whole address", () => {
+    assert.match(
+      joinScriptLiterals(`<script>var e = "info" + "@" + "x.co.uk";</script>`),
+      /info@x\.co\.uk/,
+    );
+    assert.match(
+      joinScriptLiterals(`<script>a('hello' + '@' + 'y.com')</script>`),
+      /hello@y\.com/,
+    );
+  });
+
+  it("ignores joins that never produce an address", () => {
+    assert.equal(joinScriptLiterals(`<script>var t = "Hello, " + "world";</script>`), "");
+  });
+
+  it("ignores a page with no scripts at all", () => {
+    assert.equal(joinScriptLiterals("<p>info@x.co.uk</p>"), "");
+  });
+});
+
+describe("contact pages worth following", () => {
+  it("follows every contact path the brief names", () => {
+    const paths = [
+      "contact", "contact-us", "get-in-touch", "about", "about-us", "team",
+      "meet-the-team", "quote", "request-a-quote", "book", "booking",
+      "services", "find-us", "enquiries",
+    ];
+    const html = paths.map((path) => `<a href="/${path}">${path}</a>`).join("");
+    const found = contactLinks(html, "https://clarkjoinery.co.uk", 30).map(
+      (url) => new URL(url).pathname,
+    );
+    for (const path of paths) {
+      assert.ok(found.includes(`/${path}`), `/${path} was not followed`);
+    }
+  });
+
+  it("still puts the contact page before the about page", () => {
+    const html = `<a href="/about">About</a><a href="/contact">Contact</a>`;
+    const found = contactLinks(html, "https://clarkjoinery.co.uk", 4);
+    assert.match(found[0]!, /\/contact$/);
+  });
+
+  it("never follows a link off the site", () => {
+    const html = `<a href="https://someone-else.co.uk/contact">Contact</a>`;
+    assert.deepEqual(contactLinks(html, "https://clarkjoinery.co.uk", 4), []);
   });
 });

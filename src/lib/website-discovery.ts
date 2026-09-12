@@ -146,6 +146,8 @@ export type WebsiteMatch = {
   confidence: "STRONG" | "POSSIBLE" | "REJECTED";
   /** Every signal that fired, in words. This is the audit trail. */
   evidence: string[];
+  /** What kind of page this turned out to be. */
+  character: PageCharacter;
 };
 
 /** Digits only, so `01334 652000` and `+44 1334 652000` compare equal. */
@@ -166,23 +168,212 @@ export function pageHasPhone(text: string, phone: string): boolean {
   return trunk.length >= 9 && (onPage.includes(trunk) || onPage.includes(`44${trunk}`));
 }
 
+/**
+ * Every UK-shaped phone number printed on a page.
+ *
+ * At most one separator between digits, deliberately. A looser class runs
+ * straight through a sentence end — "Call 01738 999111. 9 Mill Street" was
+ * being read as one twelve-digit number and then discarded for being too long,
+ * which silently lost the contradiction evidence this exists to provide.
+ */
+export function phonesOnPage(text: string): string[] {
+  // Brackets are cosmetic in a printed number — "(01738) 999111" — and removing
+  // them first keeps the one-separator rule that fixes the sentence-end bug.
+  const found = text.replace(/[()]/g, "").match(/(?:\+44\s?|0)\d(?:[\s.-]?\d){8,12}/g) ?? [];
+  const out = new Set<string>();
+  for (const raw of found) {
+    const norm = normalisePhone(raw);
+    if (norm.length >= 10 && norm.length <= 11) out.add(norm);
+  }
+  return [...out];
+}
+
+/** Every UK postcode printed on a page. */
+export function postcodesOnPage(text: string): string[] {
+  const found = text.toUpperCase().match(/\b[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}\b/g) ?? [];
+  return [...new Set(found.map((code) => code.replace(/\s+/g, "")))];
+}
+
+/**
+ * What sort of page this is.
+ *
+ * The single most important thing the old scorer did not know. It measured
+ * whether a page *mentioned* the business, which a Yell listing, a Facebook
+ * page and a forty-firm trade directory all do — and all three were being
+ * attached as the business's own website with a perfect score.
+ */
+export const PAGE_CHARACTERS = ["BUSINESS", "DIRECTORY", "SOCIAL", "PARKED"] as const;
+export type PageCharacter = (typeof PAGE_CHARACTERS)[number];
+
+const SOCIAL_HOSTS = [
+  "facebook.com", "instagram.com", "twitter.com", "x.com", "linkedin.com",
+  "tiktok.com", "youtube.com", "pinterest.com",
+];
+
+const KNOWN_DIRECTORY_HOSTS = [
+  "yell.com", "yelp.com", "yelp.co.uk", "thomsonlocal.com", "cylex-uk.co.uk",
+  "freeindex.co.uk", "scoot.co.uk", "192.com", "checkatrade.com", "trustpilot.com",
+  "tripadvisor.com", "tripadvisor.co.uk", "mybuilder.com", "ratedpeople.com",
+  "bark.com", "trustatrader.com", "which.co.uk", "gumtree.com", "treatwell.co.uk",
+  "fresha.com", "booksy.com", "companieshouse.gov.uk",
+  "find-and-update.company-information.service.gov.uk",
+];
+
+/** Language that only appears on a domain nobody is trading from. */
+const PARKED_PHRASES = [
+  "domain is for sale", "this domain is for sale", "buy this domain",
+  "domain for sale", "domain parking", "parked domain", "this webpage is parked",
+  "coming soon", "under construction", "website coming soon",
+  "godaddy.com/domains", "sedo.com", "hugedomains", "afternic",
+  "default web site page", "if you are the owner of this website",
+];
+
+/** Language that marks a page as a listing of many businesses, not one. */
+const DIRECTORY_PHRASES = [
+  "businesses found", "results found", "search results", "find a ", "compare quotes",
+  "get quotes from", "browse ", "listings in", "directory of", "trusted traders",
+  "read reviews and", "add your business", "claim this listing", "claim your profile",
+  "advertise with us", "write a review", "sponsored listing", "nearby businesses",
+  "similar businesses", "related businesses", "view profile", "show number",
+];
+
+/** "40 more joiners in Perth", "127 results", "1-20 of 340" — list-page counting. */
+const LIST_COUNT_PATTERNS = [
+  /\b\d{2,}\s+(?:more\s+)?(?:results|listings|businesses|companies|traders|firms)\b/i,
+  /\b\d+\s*[-–]\s*\d+\s+of\s+\d+\b/i,
+  /\b\d{2,}\s+more\s+\w+s?\s+in\b/i,
+];
+
+function hostname(url: string): string {
+  try {
+    return new URL(url).hostname.toLowerCase().replace(/^www\./, "");
+  } catch {
+    return "";
+  }
+}
+
+function hostMatches(host: string, list: readonly string[]): boolean {
+  return list.some((entry) => host === entry || host.endsWith(`.${entry}`));
+}
+
+/**
+ * Decide what a fetched page actually is.
+ *
+ * Host lists catch the directories we know; the phrase and shape tests are what
+ * catch the ones we do not, which is the case that mattered — an unknown
+ * `tradesdirectory.co.uk` listing forty joiners was scoring 100 because it
+ * printed our business's real phone number among the other thirty-nine.
+ */
+export function detectPageCharacter(
+  url: string,
+  title: string,
+  text: string,
+): PageCharacter {
+  const host = hostname(url);
+  if (host && hostMatches(host, SOCIAL_HOSTS)) return "SOCIAL";
+
+  const body = `${title} ${text}`.toLowerCase();
+
+  // Parked first: a for-sale page can otherwise look like a thin business site.
+  if (PARKED_PHRASES.some((phrase) => body.includes(phrase))) return "PARKED";
+  // Only a genuinely empty page counts as parked on length alone. Thin is not
+  // parked: plenty of real one-page sites for sole traders are a paragraph and
+  // a phone number, and plenty of real sites push contact details to their
+  // contact page. Calling either parked would lose exactly the small businesses
+  // this product exists to find, so the phrase list above does the real work.
+  if (text.trim().length < 40) return "PARKED";
+
+  if (host && hostMatches(host, KNOWN_DIRECTORY_HOSTS)) return "DIRECTORY";
+
+  const phrases = DIRECTORY_PHRASES.filter((phrase) => body.includes(phrase)).length;
+  // Result-counting language ("1-20 of 340", "40 more joiners in Perth") is on
+  // its own decisive: a single business's own site has no reason to count other
+  // businesses, and a page that does is a list whatever its host.
+  if (LIST_COUNT_PATTERNS.some((pattern) => pattern.test(body))) return "DIRECTORY";
+  // A page printing many different businesses' phone numbers is a list of
+  // businesses, whatever its host. One business publishes one or two numbers.
+  const phones = phonesOnPage(text).length;
+  const postcodes = postcodesOnPage(text).length;
+  if (phones >= 5 || postcodes >= 5) return "DIRECTORY";
+  if (phrases >= 1 && (phones >= 3 || postcodes >= 3)) return "DIRECTORY";
+  if (phrases >= 2) return "DIRECTORY";
+
+  return "BUSINESS";
+}
+
+/**
+ * Does the domain itself carry the business name?
+ *
+ * Real evidence that was being thrown away: the URL was passed into the scorer
+ * and never read. `clarkjoinery.co.uk` titled "Clark Joinery" is the business;
+ * `tradesdirectory.co.uk` with the same title is not, and only the domain
+ * separates them.
+ */
+export function domainMatchesName(url: string, businessName: string): boolean {
+  const host = hostname(url);
+  if (!host) return false;
+  const domain = host.split(".")[0] ?? "";
+  if (domain.length < 4) return false;
+  const parts = words(businessName);
+  if (parts.length === 0) return false;
+  const joined = parts.join("");
+  if (joined.length >= 5 && domain.includes(joined)) return true;
+  // Every significant word present in the domain, in any arrangement.
+  const significant = parts.filter((word) => word.length >= 4);
+  if (significant.length === 0) return false;
+  return significant.every((word) => domain.includes(word));
+}
+
 /** The threshold below which a candidate is never attached to a lead. */
 export const WEBSITE_MIN_SCORE = 75;
 
 /**
  * Is this page the business we were looking for?
  *
- * Corroboration, not resemblance. The phone number is the decisive signal: a
- * site that prints the same number the listing holds is almost certainly the
- * same business, and almost nothing else gives that confidence on its own.
- * Name and town agreement together can carry a candidate, but a name match
- * alone never can — "Cutting Edge" is a hairdresser in a dozen towns, and
- * attaching the wrong one would produce a confident, evidenced, wrong email.
+ * Corroboration, not resemblance — and now contradiction as well as agreement.
+ * The rules, in the order they matter:
+ *
+ * 1. A page that is not a single business's own site can never be that
+ *    business's website. A directory, a social profile and a parked domain are
+ *    rejected outright however perfectly they match, because all three
+ *    routinely print the business's real name, town, phone and postcode.
+ *
+ * 2. Contradiction counts against. A page that prints UK phone numbers, none of
+ *    them ours, is positive evidence of a different business — not merely an
+ *    absence of evidence. The same goes for postcodes. This is what stops the
+ *    other "Clark Joinery" in the same town being attached.
+ *
+ * 3. Soft signals can never carry a verdict on their own. Name, town and trade
+ *    together reach 60 against a bar of 75, deliberately: those three agree for
+ *    every same-named competitor in the same town. Something specific — the
+ *    phone, the postcode, the domain, or the title being the business itself —
+ *    has to be present.
+ *
+ * False negatives are the acceptable failure here. Finding nothing costs one
+ * lead; attaching the wrong site produces a confident, evidenced email to
+ * somebody else's business.
  */
-export function scoreWebsiteMatch(evidence: SiteEvidence, identity: BusinessIdentity): WebsiteMatch {
+export function scoreWebsiteMatch(
+  evidence: SiteEvidence,
+  identity: BusinessIdentity,
+  options: { kind?: "OWN_WEBSITE" | "PUBLIC_PROFILE" } = {},
+): WebsiteMatch {
   const notes: string[] = [];
   let score = 0;
   const haystack = `${evidence.title} ${evidence.text}`.toLowerCase();
+
+  const character = detectPageCharacter(evidence.url, evidence.title, evidence.text);
+
+  // ── 1. Disqualify anything that is not one business's own site ────────────
+  if (character !== "BUSINESS" || options.kind === "PUBLIC_PROFILE") {
+    const why =
+      character === "PARKED"
+        ? "the domain is parked or the page is empty — not a trading website"
+        : character === "SOCIAL"
+          ? "this is a social media profile, not the business's own website"
+          : "this is a directory or listing page, not the business's own website";
+    return { url: evidence.url, score: 0, confidence: "REJECTED", evidence: [why], character };
+  }
 
   const nameWords = words(identity.businessName);
   const matchedWords = nameWords.filter((word) => haystack.includes(word));
@@ -190,47 +381,71 @@ export function scoreWebsiteMatch(evidence: SiteEvidence, identity: BusinessIden
   const fullName = nameWords.join(" ");
   const titleHasName = fullName.length > 0 && words(evidence.title).join(" ").includes(fullName);
 
-  if (identity.phone && pageHasPhone(haystack, identity.phone)) {
+  // ── 2. Hard signals: specific enough to identify one business ─────────────
+  const phoneMatches = Boolean(identity.phone) && pageHasPhone(haystack, identity.phone);
+  if (phoneMatches) {
     score += 55;
     notes.push("the listing's phone number is printed on the page");
   }
 
-  // The postcode is the most specific signal available: two businesses sharing
-  // a name, a town and a trade will not share one.
   const postcode = extractPostcode(identity.address ?? "");
-  if (postcode && pageHasPostcode(haystack, postcode)) {
+  const postcodeMatches = Boolean(postcode) && pageHasPostcode(haystack, postcode);
+  if (postcodeMatches) {
     score += 45;
     notes.push(`the listing's postcode (${postcode}) is on the page`);
   }
+
+  // ── 3. Medium signals: the page is *about* this business ──────────────────
+  if (domainMatchesName(evidence.url, identity.businessName)) {
+    score += 30;
+    notes.push("the domain is the business name");
+  }
   if (titleHasName) {
-    // The site is *about* this business, not merely mentioning it.
-    score += 35;
+    score += 30;
     notes.push("the page title is the business name");
-  } else if (nameRatio >= 0.99) {
-    score += 20;
+  }
+
+  // ── 4. Soft signals: true of every competitor too ─────────────────────────
+  if (!titleHasName && nameRatio >= 0.99) {
+    score += 15;
     notes.push("every word of the business name appears on the page");
-  } else if (nameRatio >= 0.5) {
-    score += 10;
+  } else if (!titleHasName && nameRatio >= 0.5) {
+    score += 8;
     notes.push("part of the business name appears on the page");
   }
   const townWord = words(identity.town)[0];
-  if (townWord && haystack.includes(townWord)) {
-    score += 15;
+  const townMatches = Boolean(townWord) && haystack.includes(townWord!);
+  if (townMatches) {
+    score += 12;
     notes.push("the town matches");
   }
   const tradeWord = words(identity.trade)[0];
   if (tradeWord && haystack.includes(tradeWord.replace(/er$/, ""))) {
-    score += 10;
+    score += 8;
     notes.push("the trade matches");
   }
-
-  // Name and town together are far more specific than either alone: a business
-  // name repeats across the country, but this name in this town usually does
-  // not. Without the pairing, the same name in a different town scores well
-  // below the bar — which is the failure this bonus exists to keep out.
-  if (titleHasName && townWord && haystack.includes(townWord)) {
-    score += 15;
+  if (titleHasName && townMatches) {
+    score += 10;
     notes.push("the business name and the town agree");
+  }
+
+  // ── 5. Contradiction: evidence of a DIFFERENT business ────────────────────
+  //
+  // Absence of our phone number proves nothing; the presence of somebody
+  // else's, on a page claiming our business name, proves a great deal.
+  if (identity.phone && !phoneMatches) {
+    const others = phonesOnPage(evidence.text);
+    if (others.length > 0) {
+      score -= 30;
+      notes.push(`the page publishes a different phone number (${others[0]}) — counted against`);
+    }
+  }
+  if (postcode && !postcodeMatches) {
+    const others = postcodesOnPage(evidence.text);
+    if (others.length > 0) {
+      score -= 25;
+      notes.push(`the page publishes a different postcode (${others[0]}) — counted against`);
+    }
   }
 
   // A page that does not name the business at all is not the business, however
@@ -242,7 +457,7 @@ export function scoreWebsiteMatch(evidence: SiteEvidence, identity: BusinessIden
 
   score = Math.max(0, Math.min(100, score));
   const confidence = score >= WEBSITE_MIN_SCORE ? "STRONG" : score >= 55 ? "POSSIBLE" : "REJECTED";
-  return { url: evidence.url, score, confidence, evidence: notes };
+  return { url: evidence.url, score, confidence, evidence: notes, character };
 }
 
 /** Strip markup to the text `scoreWebsiteMatch` reads. */

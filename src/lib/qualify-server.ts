@@ -25,7 +25,6 @@ import {
 } from "@/lib/email-discovery";
 
 import {
-  looksLikeOwnWebsite as looksLikeOwnWebsiteUrl,
   buildQueries,
   classifySearchFailure,
   isRetryable,
@@ -48,6 +47,7 @@ import {
   pageText,
   pageTitle,
   scoreWebsiteMatch,
+  WEBSITE_MIN_SCORE,
   type WebsiteMatch,
 } from "@/lib/website-discovery";
 import {
@@ -124,7 +124,14 @@ export type FindEmailResult =
        */
       queriesUsed?: string[];
       searchResults?: { title: string; url: string }[];
-      candidates?: { url: string; score: number; accepted: boolean; signals: string[] }[];
+      candidates?: {
+        url: string;
+        score: number;
+        accepted: boolean;
+        signals: string[];
+        /** BUSINESS | DIRECTORY | SOCIAL | PARKED — why a perfect match was refused. */
+        character?: string;
+      }[];
       /** Wall-clock milliseconds for the whole discovery, including every fetch. */
       elapsedMs?: number;
     }
@@ -371,7 +378,15 @@ export const findLeadEmail = createServerFn({ method: "POST" })
     /** Every query actually sent, in order, for the test panel. */
     const queriesUsed: string[] = [];
     /** Every candidate site scored, kept or not, with the signals behind it. */
-    const siteCandidates: { url: string; score: number; accepted: boolean; signals: string[] }[] = [];
+    const siteCandidates: {
+      url: string;
+      score: number;
+      accepted: boolean;
+      signals: string[];
+      character?: string;
+    }[] = [];
+    /** Origins already fetched, so the waterfall never pays for one twice. */
+    const probedOrigins = new Set<string>();
     const startedAt = Date.now();
 
     // No usable website on the listing? Go and find one before giving up.
@@ -400,10 +415,61 @@ export const findLeadEmail = createServerFn({ method: "POST" })
       // obvious to a query. Results are candidates, never truth: each is
       // fetched and put through the same corroboration as a guessed domain.
       const provider = searchProvider();
-      const searchLeads: WebsiteLead[] = [];
+      const probeMatches: WebsiteMatch[] = [];
+
+      /**
+       * Fetch a candidate and decide whether it is this business.
+       *
+       * Returns true once something has verified, which is the waterfall's
+       * stop condition. Every candidate is recorded either way, so a miss can
+       * be read afterwards rather than guessed at.
+       */
+      const probeCandidate = async (lead: WebsiteLead): Promise<boolean> => {
+        if (attempts >= MAX_PAGES) return false;
+        if (probedOrigins.has(lead.origin)) return false;
+        probedOrigins.add(lead.origin);
+        attempts += 1;
+        sourcesChecked.push(lead.origin);
+        const page = await fetchWithFallbacks(lead.origin, 3000);
+        if (!page?.ok || !page.html) {
+          rejected.push({ url: lead.origin, why: "unreachable" });
+          siteCandidates.push({ url: lead.origin, score: 0, accepted: false, signals: ["unreachable"] });
+          return false;
+        }
+        // The search layer already knows a Yell or Checkatrade result is a
+        // directory profile. Passing that through is what stops a listing page
+        // being attached as the business's own website — it used to be
+        // discarded here, and a Yell page scored a perfect 100.
+        const match = scoreWebsiteMatch(
+          { url: page.finalUrl || lead.origin, text: pageText(page.html), title: pageTitle(page.html) },
+          identity,
+          { kind: lead.kind },
+        );
+        const accepted = match.score >= WEBSITE_MIN_SCORE;
+        siteCandidates.push({
+          url: page.finalUrl || lead.origin,
+          score: match.score,
+          accepted,
+          signals: match.evidence.length > 0 ? match.evidence : ["no identity signals matched"],
+          character: match.character,
+        });
+        if (accepted) probeMatches.push(match);
+        else rejected.push({ url: lead.origin, why: match.evidence.join("; ") || "identity not corroborated" });
+        return accepted;
+      };
+
       if (provider) {
         searchUsed = provider.name;
         const collected: SearchResult[] = collectedResults;
+
+        // ── The waterfall ──────────────────────────────────────────────────
+        //
+        // Strongest query first, then *evaluate before paying for the next
+        // one*. The previous version fired queries until any non-directory URL
+        // appeared anywhere in the results and then stopped — which could stop
+        // on a completely unrelated business and never run the query that
+        // would have found the right one. Verification is the stop condition
+        // now, not the mere presence of a plausible-looking link.
         for (const query of buildQueries(identity)) {
           searchesRun += 1;
           queriesUsed.push(query.text);
@@ -411,37 +477,24 @@ export const findLeadEmail = createServerFn({ method: "POST" })
           const answer = await runSearch(provider, query.text);
           if (!answer.ok) {
             searchFailure = answer.kind;
-            // Auth and quota will fail identically on every remaining query.
+            // Auth, quota and rate limits fail identically on every remaining
+            // query, so stop rather than burning the budget re-proving it.
             if (answer.kind === "AUTH" || answer.kind === "QUOTA" || answer.kind === "RATE_LIMIT") break;
             continue;
           }
           collected.push(...answer.results);
-          // The first query usually settles it; stop paying for the rest.
-          if (collected.some((result) => looksLikeOwnWebsiteUrl(result.url))) break;
-        }
-        searchLeads.push(...candidatesFromResults(collected));
-      }
 
-      const probeMatches: WebsiteMatch[] = [];
-      for (const lead of searchLeads) {
-        if (attempts >= MAX_PAGES) break;
-        attempts += 1;
-        sourcesChecked.push(lead.origin);
-        const page = await fetchWithFallbacks(lead.origin, 3000);
-        if (!page?.ok || !page.html) { rejected.push({ url: lead.origin, why: "unreachable" }); continue; }
-        const match = scoreWebsiteMatch(
-          { url: page.finalUrl || lead.origin, text: pageText(page.html), title: pageTitle(page.html) },
-          identity,
-        );
-        const accepted = match.score >= 75;
-        siteCandidates.push({
-          url: page.finalUrl || lead.origin,
-          score: match.score,
-          accepted,
-          signals: match.evidence,
-        });
-        if (accepted) probeMatches.push(match);
-        else rejected.push({ url: lead.origin, why: match.evidence.join("; ") || "identity not corroborated" });
+          // Probe what this query produced before deciding to buy another.
+          let verified = false;
+          for (const candidate of candidatesFromResults(collected)) {
+            if (await probeCandidate(candidate)) {
+              verified = true;
+              break;
+            }
+            if (attempts >= MAX_PAGES) break;
+          }
+          if (verified || attempts >= MAX_PAGES) break;
+        }
       }
       discoveredSite = bestWebsite(probeMatches);
       if (discoveredSite) {
@@ -514,12 +567,24 @@ export const findLeadEmail = createServerFn({ method: "POST" })
       // Say WHICH kind of nothing this is. "No website" when we never had a
       // candidate; "not verified" when we had some and none proved itself;
       // "no search key" when the one source that would have found it is off.
+      // Say WHICH kind of nothing this is, in the order the causes matter.
+      // A search that never ran explains everything downstream, so a provider
+      // failure is reported ahead of "nothing verified" — otherwise a rejected
+      // API key reads as forty businesses that happen to have no website.
       const noSiteReason: DiscoveryReason =
-        rejected.length > 0
-          ? "WEBSITE_NOT_VERIFIED"
-          : searchUsed === null
-            ? "SEARCH_PROVIDER_UNAVAILABLE"
-            : "NO_WEBSITE";
+        searchFailure === "AUTH"
+          ? "SEARCH_AUTH_FAILED"
+          : searchFailure === "QUOTA"
+            ? "SEARCH_QUOTA_EXHAUSTED"
+            : searchFailure === "RATE_LIMIT"
+              ? "SEARCH_RATE_LIMITED"
+              : searchUsed === null
+                ? "SEARCH_PROVIDER_UNAVAILABLE"
+                : siteCandidates.some((candidate) => candidate.character && candidate.character !== "BUSINESS")
+                  ? "ONLY_DIRECTORY_LISTINGS_FOUND"
+                  : rejected.length > 0
+                    ? "WEBSITE_NOT_VERIFIED"
+                    : "NO_WEBSITE";
       const result = ranked.length
         ? decide({ candidates: ranked, context, sourcesChecked, attempts })
         : { ...noWebsiteResult(), reason: noSiteReason, sourcesChecked, attempts };

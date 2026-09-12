@@ -42,6 +42,15 @@ export type SearchQuery = {
   text: string;
   /** What this query is trying to establish, for the evidence trail. */
   intent: "website" | "contact" | "email";
+  /**
+   * How specific this query is, 0–100.
+   *
+   * A postcode or a phone number pins one business; a name and a town pin one
+   * business in most towns; a name and a trade pin a category. The waterfall
+   * runs them strongest first and stops as soon as something is verified, so
+   * the weak ones usually cost nothing at all.
+   */
+  strength: number;
 };
 
 export type BusinessIdentity = {
@@ -55,11 +64,12 @@ export type BusinessIdentity = {
 /**
  * How many searches one lead may ever cost.
  *
- * Search APIs are billed per call and rate limited. Three well-chosen queries
- * find the site if it is findable; a dozen mostly re-find the same pages and
- * turn a lead run into an invoice.
+ * Search APIs are billed per call and rate limited. The waterfall almost never
+ * reaches this: it stops the moment a candidate is verified, so a business
+ * whose site is findable on the first query costs exactly one call. This is the
+ * ceiling for the hard cases, not the expected spend.
  */
-export const MAX_SEARCHES_PER_LEAD = 3;
+export const MAX_SEARCHES_PER_LEAD = 5;
 
 /** Results worth fetching from one query. */
 export const MAX_RESULTS_PER_QUERY = 5;
@@ -68,30 +78,83 @@ function clean(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
+/** Suffixes that add nothing to a search and cost specificity. */
+const NAME_NOISE = /\b(ltd|limited|llp|plc|cic|co|company|the)\b/gi;
+
 /**
- * The queries to run for one business, best first.
+ * Alternative spellings of a trading name worth searching.
  *
- * Quoted name plus town is the highest-yield single query: it pins the business
- * without the noise a bare name returns. The others add the trade and then ask
- * directly for contact details, which often surfaces a contact page that the
- * homepage never links to.
+ * A business registered as "Smith & Sons Joinery Ltd" trades as "Smith and
+ * Sons", and a search for one does not reliably return the other. These are
+ * spellings of the same name, never a different business.
+ */
+export function nameVariations(businessName: string): string[] {
+  const base = clean(businessName);
+  if (!base) return [];
+  const out: string[] = [base];
+  const add = (value: string) => {
+    const next = clean(value);
+    if (next.length >= 3 && !out.some((entry) => entry.toLowerCase() === next.toLowerCase())) {
+      out.push(next);
+    }
+  };
+  // Ltd/Limited and similar carry no search value and split the results.
+  add(base.replace(NAME_NOISE, " "));
+  if (/&/.test(base)) add(base.replace(/&/g, "and"));
+  else if (/\band\b/i.test(base)) add(base.replace(/\band\b/gi, "&"));
+  if (/['’]/.test(base)) add(base.replace(/['’]/g, ""));
+  return out.slice(0, 3);
+}
+
+/**
+ * The queries to run for one business, strongest first.
+ *
+ * The order is the whole design. A postcode or a phone number identifies one
+ * business and nothing else, so those go first and usually settle it in a
+ * single call. Name-and-town comes next because it pins the business in most
+ * towns. The weaker variations exist for the hard case — a business whose
+ * domain bears no resemblance to its trading name — and are only reached when
+ * everything above has failed to produce a verified site.
+ *
+ * The caller stops as soon as a candidate verifies, so this is a plan, not a
+ * batch: returning five queries does not mean five searches will be run.
  */
 export function buildQueries(identity: BusinessIdentity): SearchQuery[] {
   const name = clean(identity.businessName);
   const town = clean(identity.town);
   const trade = clean(identity.trade);
+  const postcode = extractPostcodeFrom(identity.address ?? "");
+  const phone = clean(identity.phone ?? "");
   if (name.length < 2) return [];
 
   const queries: SearchQuery[] = [];
-  const add = (text: string, intent: SearchQuery["intent"]) => {
+  const add = (text: string, intent: SearchQuery["intent"], strength: number) => {
     const value = clean(text);
-    if (value && !queries.some((q) => q.text === value)) queries.push({ text: value, intent });
+    if (value && !queries.some((q) => q.text === value)) queries.push({ text: value, intent, strength });
   };
 
-  add(`"${name}" ${town}`.trim(), "website");
-  if (trade) add(`"${name}" ${town} ${trade}`.trim(), "website");
-  add(`"${name}" ${town} contact email`.trim(), "contact");
-  return queries.slice(0, MAX_SEARCHES_PER_LEAD);
+  const [primary, ...variants] = nameVariations(name);
+
+  // Strongest: a postcode belongs to one address, a phone number to one line.
+  if (postcode) add(`"${primary}" ${postcode}`, "website", 95);
+  if (phone.replace(/\D/g, "").length >= 10) add(`"${primary}" "${phone}"`, "website", 90);
+
+  // Strong: the business in its town.
+  add(`"${primary}" ${town}`.trim(), "website", 70);
+  if (trade) add(`"${primary}" ${town} ${trade}`.trim(), "website", 60);
+
+  // Weaker, for a business whose domain looks nothing like its name. These are
+  // only reached when nothing above verified.
+  for (const variant of variants) add(`"${variant}" ${town}`.trim(), "website", 50);
+  add(`"${primary}" ${town} contact email`.trim(), "contact", 40);
+
+  return queries.sort((a, b) => b.strength - a.strength).slice(0, MAX_SEARCHES_PER_LEAD);
+}
+
+/** A UK postcode out of free text. Duplicated deliberately: this module is pure. */
+function extractPostcodeFrom(address: string): string {
+  const match = address.toUpperCase().match(/\b([A-Z]{1,2}\d[A-Z\d]?)\s*(\d[A-Z]{2})\b/);
+  return match ? `${match[1]} ${match[2]}` : "";
 }
 
 /** Hosts whose pages are never the business's own website. */

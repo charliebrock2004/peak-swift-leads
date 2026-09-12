@@ -288,3 +288,76 @@ describe("reading a reply as an unsubscribe", () => {
     }
   });
 });
+
+describe("the gate refuses claims nothing measured", () => {
+  const recipient = "hello@x.co.uk";
+  const send = (body: string) =>
+    checkEmailQuality({ subject: "A website for Strathearn Joinery", body, recipient, lead: lead() });
+  const frame = (claim: string) =>
+    "Hi there, I'm Charlie from PeakSwiftStudio. Strathearn Joinery Ltd came up when " +
+    `I was looking at joiners in Crieff. ${claim} ` +
+    "If you'd rather I didn't get in touch again, just say and I won't.";
+
+  it("EVERY template we ship still passes", () => {
+    // The point of a fabrication rule is to stop the model inventing things.
+    // If it also refuses our own copy, sending stops altogether — so this is
+    // the test that has to hold before any of the others matter.
+    for (const template of DEFAULT_TEMPLATES) {
+      const composed = composeFromTemplate(lead(), template);
+      const verdict = checkEmailQuality({ ...composed, recipient, lead: lead() });
+      assert.equal(
+        verdict.ok,
+        true,
+        `${template.id}: ${verdict.ok ? "" : verdict.problems.map((p) => p.message).join("; ")}`,
+      );
+    }
+  });
+
+  it("refuses a claim about load speed", () => {
+    const verdict = send(frame("I noticed your website is quite slow to load."));
+    assert.equal(verdict.ok, false);
+    assert.ok(!verdict.ok && verdict.problems.some((p) => p.code === "fabricated"));
+  });
+
+  it("refuses a claim about search ranking", () => {
+    assert.equal(send(frame("Your SEO could be better so you rank higher on Google.")).ok, false);
+  });
+
+  it("refuses a claim about mobile rendering", () => {
+    assert.equal(send(frame("Your site is not mobile friendly on a phone.")).ok, false);
+  });
+
+  it("refuses a claim that the site is dated", () => {
+    assert.equal(send(frame("Your website looks a bit outdated these days.")).ok, false);
+  });
+
+  it("refuses a claim about traffic or conversion", () => {
+    assert.equal(send(frame("Your conversion rate is probably suffering.")).ok, false);
+  });
+
+  it("refuses an observation about their site that was never made", () => {
+    assert.equal(send(frame("I noticed your website is missing a few things.")).ok, false);
+  });
+
+  it("refuses a circular's greeting", () => {
+    assert.equal(send(frame("Dear Business Owner, I can help with your web presence.")).ok, false);
+    assert.equal(send(frame("I hope this email finds you well.")).ok, false);
+  });
+
+  it("ALLOWS the honest, evidenced things we do say", () => {
+    // These are recorded observations with a field behind them, and they are
+    // the reason most of these emails are worth sending at all.
+    for (const honest of [
+      "You don't seem to have a website yet, which is why I got in touch.",
+      "It looks like Strathearn Joinery Ltd is on Facebook but has no site of its own.",
+      "Strathearn Joinery Ltd has 40 reviews averaging 4.6 — a lot of goodwill to build on.",
+    ]) {
+      const verdict = send(frame(honest));
+      assert.equal(
+        verdict.ok,
+        true,
+        `refused an honest line: ${verdict.ok ? "" : verdict.problems.map((p) => p.message).join("; ")}`,
+      );
+    }
+  });
+});

@@ -15,6 +15,7 @@ import {
   SEARCH_PROVIDERS,
   providerRequest,
   type SearchResult,
+  nameVariations,
 } from "./search-provider.ts";
 
 const cuttingEdge = {
@@ -26,8 +27,49 @@ describe("what gets searched for", () => {
   it("quotes the business name so the town does not dissolve it", () => {
     assert.ok(buildQueries(cuttingEdge)[0].text.startsWith('"Cutting Edge"'));
   });
-  it("pins the business with its town", () => {
-    assert.ok(buildQueries(cuttingEdge).every((q) => q.text.includes("Cupar")));
+  it("pins every query to something specific, not just the name", () => {
+    // The town is no longer the only pin: a postcode and a phone number are
+    // both MORE specific than a town, so the strongest queries use those
+    // instead. What must hold is that no query is the bare name on its own.
+    for (const query of buildQueries(cuttingEdge)) {
+      const pinned =
+        query.text.includes("Cupar") ||
+        query.text.includes("KY15 4BU") ||
+        query.text.includes("01334 652000");
+      assert.ok(pinned, `nothing pins this query: ${query.text}`);
+    }
+  });
+
+  it("runs the most specific query first", () => {
+    const queries = buildQueries(cuttingEdge);
+    // A postcode identifies one address; a town identifies a market town.
+    assert.ok(queries[0]!.text.includes("KY15 4BU"), `first query was: ${queries[0]!.text}`);
+    for (let i = 1; i < queries.length; i += 1) {
+      assert.ok(
+        queries[i - 1]!.strength >= queries[i]!.strength,
+        "queries must be ordered strongest first, so the waterfall can stop early",
+      );
+    }
+  });
+
+  it("uses the phone number when there is one", () => {
+    assert.ok(buildQueries(cuttingEdge).some((q) => q.text.includes("01334 652000")));
+  });
+
+  it("falls back to the town when there is no postcode or phone", () => {
+    const queries = buildQueries({ ...cuttingEdge, address: "", phone: "" });
+    assert.ok(queries.length > 0);
+    assert.ok(queries.every((q) => q.text.includes("Cupar")));
+  });
+
+  it("searches alternative spellings of a trading name", () => {
+    const queries = buildQueries({ ...cuttingEdge, businessName: "Smith & Sons Joinery Ltd" });
+    const all = queries.map((q) => q.text).join(" | ");
+    assert.ok(/Smith & Sons/.test(all) || /Smith and Sons/.test(all), all);
+    assert.ok(
+      queries.some((q) => !/\bLtd\b/.test(q.text)),
+      "at least one query should drop the Ltd, which only splits the results",
+    );
   });
   it("asks for contact details as well as the site", () => {
     assert.ok(buildQueries(cuttingEdge).some((q) => q.intent === "contact"));
@@ -271,5 +313,36 @@ describe("Tavily's own limit wording", () => {
 
   it("still reports a bad Tavily key as AUTH", () => {
     assert.equal(classifySearchFailure(401, '{"detail":{"error":"Invalid API key"}}').kind, "AUTH");
+  });
+});
+
+describe("nameVariations", () => {
+  it("keeps the name it was given first", () => {
+    assert.equal(nameVariations("Clark Joinery")[0], "Clark Joinery");
+  });
+
+  it("offers the name without Ltd, which only splits the results", () => {
+    const out = nameVariations("MacLeod Plumbing Ltd");
+    assert.ok(out.some((name) => name === "MacLeod Plumbing"), out.join(" | "));
+  });
+
+  it("swaps & for and, in both directions", () => {
+    assert.ok(nameVariations("Smith & Sons").some((n) => n === "Smith and Sons"));
+    assert.ok(nameVariations("Smith and Sons").some((n) => n === "Smith & Sons"));
+  });
+
+  it("offers a spelling without apostrophes", () => {
+    assert.ok(nameVariations("O'Brien's Barbers").some((n) => n === "OBriens Barbers"));
+  });
+
+  it("never repeats a spelling, and stays bounded", () => {
+    const out = nameVariations("Smith & Sons Joinery Ltd");
+    assert.equal(new Set(out.map((n) => n.toLowerCase())).size, out.length);
+    assert.ok(out.length <= 3);
+  });
+
+  it("has nothing to say about an empty name", () => {
+    assert.deepEqual(nameVariations(""), []);
+    assert.deepEqual(nameVariations("   "), []);
   });
 });
