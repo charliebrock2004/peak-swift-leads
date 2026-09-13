@@ -12,7 +12,7 @@
 
 import { normalizeName } from "./leads.ts";
 import { chSearchTowns } from "./scotland-places.ts";
-import { searchCompaniesHouse, type CompanyHit } from "./companies-house.ts";
+import { chSearchQueries, searchCompaniesHouse, type CompanyHit } from "./companies-house.ts";
 
 export type DiscoveredPlace = {
   businessName: string;
@@ -33,8 +33,42 @@ export type DiscoveredPlace = {
   osmChecked: boolean;
 };
 
+/**
+ * What a discovery run actually did, counted at every stage.
+ *
+ * A run that returns sixteen businesses could mean the area holds sixteen, or
+ * that four queries were sent where forty were needed, or that the caller's own
+ * target truncated a longer list. Those need opposite responses, and without
+ * these numbers there is no way to tell them apart.
+ */
+export type DiscoveryFunnel = {
+  /** Queries actually sent across every source. */
+  queriesSent: number;
+  /** The towns Companies House was asked about. */
+  towns: string[];
+  rawBySource: { nominatim: number; photon: number; bizdata: number; companiesHouse: number };
+  /** Rows returned before de-duplication. */
+  rawTotal: number;
+  /** Distinct businesses after merging. */
+  unique: number;
+  duplicatesMerged: number;
+  /** Businesses found and then cut by the caller's own target. */
+  droppedToLimit: number;
+  withWebsite: number;
+  withoutWebsite: number;
+  /** Businesses whose listing already carried an address. */
+  withListedEmail: number;
+  returned: number;
+};
+
 export type DiscoverResult =
-  | { ok: true; places: DiscoveredPlace[]; warnings: string[]; locationLabel: string }
+  | {
+      ok: true;
+      places: DiscoveredPlace[];
+      warnings: string[];
+      locationLabel: string;
+      funnel?: DiscoveryFunnel;
+    }
   | { ok: false; error: string; warnings: string[] };
 
 export const RADIUS_MILES = [10, 25, 50] as const;
@@ -741,7 +775,11 @@ async function searchNominatim(
   limit: number,
   fallbackTown: string,
 ): Promise<{ places: DiscoveredPlace[]; error?: string }> {
-  const terms = (profile.nominatim.length ? profile.nominatim : profile.queries).slice(0, 1);
+  // Every term the profile lists, not just the first. Slicing to one meant a
+  // joinery search never looked for "carpenter" on the map at all, and the
+  // second term costs one more request against a source with no key and no
+  // quota. Still bounded, so an over-long profile cannot run away.
+  const terms = (profile.nominatim.length ? profile.nominatim : profile.queries).slice(0, 3);
   if (terms.length === 0) return { places: [] };
   const bounded = profile.bounded !== false;
   const places: DiscoveredPlace[] = [];
@@ -1103,7 +1141,14 @@ export async function discoverBusinesses(options: {
 
   const profile = profileFor(trade);
   const warnings: string[] = [];
-  const towns = chSearchTowns(location, radiusMiles >= 40 ? 4 : 3);
+  // How wide a ring of towns Companies House is asked about. Three towns was
+  // far too narrow for a city like Perth, whose working radius covers a dozen;
+  // the query builder now spends its budget on one search word per outlying
+  // town rather than every word in three, so a wider ring costs no more calls.
+  const towns = chSearchTowns(location, radiusMiles >= 40 ? 12 : 8);
+
+  const chQueryCount = chSearchQueries(trade, towns).length;
+  const nominatimTermCount = (profile.nominatim.length ? profile.nominatim : profile.queries).slice(0, 3).length;
 
   const [nominatim, photon, biz, companies] = await Promise.all([
     searchNominatim(trade, profile, center, radiusMiles, limit, center.label),
@@ -1126,12 +1171,23 @@ export async function discoverBusinesses(options: {
   if (biz.error && biz.places.length === 0) sourceErrors.push(biz.error);
   if (companies.error && companies.hits.length === 0) sourceErrors.push(companies.error);
 
+  // The funnel, counted rather than guessed at. Without these it is impossible
+  // to tell whether a disappointing run failed to FIND businesses, failed to
+  // verify their websites, or failed to find their emails — and those need
+  // completely different fixes.
+  const companyPlaces = companies.hits.map((hit) => fromCompanyHit(hit, trade, center.label));
+  const rawBySource = {
+    nominatim: nominatim.places.length,
+    photon: photon.places.length,
+    bizdata: biz.places.length,
+    companiesHouse: companyPlaces.length,
+  };
+  const rawTotal =
+    rawBySource.nominatim + rawBySource.photon + rawBySource.bizdata + rawBySource.companiesHouse;
+
   let places = mergePlaces(nominatim.places, photon.places);
   places = mergePlaces(places, biz.places);
-  places = mergePlaces(
-    places,
-    companies.hits.map((hit) => fromCompanyHit(hit, trade, center.label)),
-  );
+  places = mergePlaces(places, companyPlaces);
 
   if (
     places.length === 0 &&
@@ -1177,9 +1233,28 @@ export async function discoverBusinesses(options: {
     return dist(a) - dist(b);
   });
 
+  const kept = places.slice(0, limit);
+  const funnel: DiscoveryFunnel = {
+    queriesSent: chQueryCount + nominatimTermCount + profile.queries.length,
+    towns,
+    rawBySource,
+    rawTotal,
+    unique: places.length,
+    duplicatesMerged: Math.max(0, rawTotal - places.length),
+    // What the caller's own cap threw away. A non-zero number here means more
+    // businesses existed and the target was the binding constraint, not the
+    // search — which is the opposite diagnosis from "we could not find any".
+    droppedToLimit: Math.max(0, places.length - kept.length),
+    withWebsite: kept.filter((place) => place.website).length,
+    withoutWebsite: kept.filter((place) => !place.website).length,
+    withListedEmail: kept.filter((place) => place.email).length,
+    returned: kept.length,
+  };
+
   return {
     ok: true,
-    places: places.slice(0, limit),
+    funnel,
+    places: kept,
     warnings,
     locationLabel: center.label,
   };

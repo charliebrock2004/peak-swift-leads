@@ -83,15 +83,36 @@ const HTML = `
 `;
 
 describe("specForTrade", () => {
-  it("uses Companies House words that actually rank, not OSM tags", () => {
-    assert.deepEqual(specForTrade("Joiner").queries, ["joinery"]);
-    assert.deepEqual(specForTrade("Plumber").queries, ["plumbing"]);
-    assert.deepEqual(specForTrade("Electrician").queries, ["electrical"]);
-    assert.deepEqual(specForTrade("Builder").queries, ["construction", "builders"]);
-    assert.deepEqual(specForTrade("Tiler").queries, ["tiling"]);
-    assert.deepEqual(specForTrade("Gym").queries, ["fitness"]);
-    assert.deepEqual(specForTrade("Mechanic").queries, ["motors", "mechanic"]);
-    assert.deepEqual(specForTrade("Garage").queries, ["motors", "mechanic"]);
+  it("leads with the Companies House word that actually ranks, not an OSM tag", () => {
+    // The FIRST word is the one used on its own in outlying towns, so it has
+    // to be the one company names most often carry. The rest widen the search
+    // in the main town; pinning the exact list here is what kept this to a
+    // single word and made "… Joiners" unfindable.
+    assert.equal(specForTrade("Joiner").queries[0], "joinery");
+    assert.equal(specForTrade("Plumber").queries[0], "plumbing");
+    assert.equal(specForTrade("Electrician").queries[0], "electrical");
+    assert.equal(specForTrade("Builder").queries[0], "construction");
+    assert.equal(specForTrade("Tiler").queries[0], "tiling");
+    assert.equal(specForTrade("Gym").queries[0], "fitness");
+    assert.equal(specForTrade("Mechanic").queries[0], "motors");
+    assert.equal(specForTrade("Garage").queries[0], "motors");
+  });
+
+  it("offers more than one naming style for the common trades", () => {
+    for (const trade of ["Joiner", "Plumber", "Electrician", "Builder"]) {
+      assert.ok(
+        specForTrade(trade).queries.length >= 2,
+        `${trade} can only be searched one way, so other naming styles are unfindable`,
+      );
+    }
+  });
+
+  it("keeps every search word a plain company-name word", () => {
+    for (const trade of ["Joiner", "Plumber", "Electrician", "Roofer", "Tiler"]) {
+      for (const word of specForTrade(trade).queries) {
+        assert.match(word, /^[a-z]+( [a-z]+)?$/, `${trade}: "${word}" is not a name-style word`);
+      }
+    }
   });
 });
 
@@ -204,5 +225,58 @@ describe("queries and area", () => {
       notes: "",
     };
     assert.equal(hitInArea(hit, crieff, 25, ["Perth"], "Crieff"), true);
+  });
+});
+
+describe("how wide the company search actually casts", () => {
+  it("searches every naming style of a trade, not just one word", () => {
+    // The bug this pins: `queries` are what is SEARCHED FOR and `tokens` only
+    // filter what comes back, so a company registered as "… Joiners" could
+    // never be found while the only search word was "joinery".
+    const queries = chSearchQueries("Joiner", ["Perth"]);
+    const text = queries.join(" | ");
+    assert.match(text, /joinery Perth/);
+    assert.match(text, /joiners Perth/, "a company named '… Joiners' has to be searchable");
+    assert.match(text, /carpentry Perth/);
+  });
+
+  it("gives the main town every word before any outlying town gets one", () => {
+    const queries = chSearchQueries("Joiner", ["Perth", "Scone", "Errol"]);
+    const firstOutlying = queries.findIndex((query) => /Scone|Errol/.test(query));
+    const perthQueries = queries.slice(0, firstOutlying);
+    assert.ok(perthQueries.length >= 3, `the main town got only ${perthQueries.length} words`);
+    assert.ok(perthQueries.every((query) => query.endsWith("Perth")));
+  });
+
+  it("spends the rest of the budget on reaching more towns", () => {
+    const towns = ["Perth", "Scone", "Bridge of Earn", "Methven", "Errol", "Stanley", "Abernethy", "Dunning"];
+    const queries = chSearchQueries("Joiner", towns);
+    const reached = new Set(towns.filter((town) => queries.some((query) => query.endsWith(town))));
+    assert.ok(reached.size >= 6, `only reached ${reached.size} towns: ${[...reached].join(", ")}`);
+  });
+
+  it("still has a hard ceiling, because every query is a real request", () => {
+    const many = Array.from({ length: 40 }, (_, i) => `Town${i}`);
+    assert.ok(chSearchQueries("Joiner", many).length <= 14);
+  });
+
+  it("widens the other trades the same way", () => {
+    for (const [trade, expected] of [
+      ["Plumber", /plumbers/],
+      ["Electrician", /electricians/],
+      ["Roofer", /roofers/],
+    ] as const) {
+      assert.match(chSearchQueries(trade, ["Perth"]).join(" | "), expected, trade);
+    }
+  });
+
+  it("never repeats a query", () => {
+    const queries = chSearchQueries("Joiner", ["Perth", "Perth", " Perth ", "Scone"]);
+    assert.equal(new Set(queries).size, queries.length);
+  });
+
+  it("asks for nothing when there is no town to ask about", () => {
+    assert.deepEqual(chSearchQueries("Joiner", []), []);
+    assert.deepEqual(chSearchQueries("Joiner", ["", " "]), []);
   });
 });

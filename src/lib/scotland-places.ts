@@ -213,7 +213,20 @@ const CITIES: PlaceEntry[] = [
   { name: "Aberdeen", aliases: ["aberdeen", "aberdeen city"], towns: ["Aberdeen", "Westhill", "Portlethen", "Stonehaven", "Inverurie", "Ellon"] },
   { name: "Dundee", aliases: ["dundee", "dundee city"], towns: ["Dundee", "Broughty Ferry", "Monifieth", "Carnoustie", "Newport-on-Tay", "Invergowrie"] },
   { name: "Inverness", aliases: ["inverness"], towns: ["Inverness", "Nairn", "Dingwall", "Aviemore"] },
-  { name: "Perth", aliases: ["perth"], towns: ["Perth", "Scone", "Bridge of Earn", "Crieff", "Auchterarder", "Stanley"] },
+  // Ordered by distance from the city, because the search fans out in order
+  // and the nearest towns are where a Perth business is most likely to be.
+  // Six towns was too few: a joinery run never reached Methven, Kinross,
+  // Errol, Coupar Angus, Blairgowrie or Dunkeld, all of which are an ordinary
+  // working radius from Perth.
+  {
+    name: "Perth",
+    aliases: ["perth"],
+    towns: [
+      "Perth", "Scone", "Bridge of Earn", "Methven", "Errol", "Stanley",
+      "Abernethy", "Dunning", "Kinross", "Coupar Angus", "Auchterarder",
+      "Crieff", "Blairgowrie", "Dunkeld",
+    ],
+  },
   { name: "Stirling", aliases: ["stirling"], towns: ["Stirling", "Bridge of Allan", "Dunblane", "Bannockburn", "Callander"] },
   { name: "Paisley", aliases: ["paisley"], towns: ["Paisley", "Renfrew", "Johnstone", "Glasgow"] },
   { name: "Dunfermline", aliases: ["dunfermline"], towns: ["Dunfermline", "Rosyth", "Inverkeithing", "Cowdenbeath", "Dalgety Bay"] },

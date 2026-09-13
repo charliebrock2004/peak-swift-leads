@@ -229,3 +229,61 @@ describe("runPlannedSearch", () => {
     assert.ok(result.prospects.length >= 1);
   });
 });
+
+describe("the discovery funnel a run reports", () => {
+  const plan = { location: "Perth", businessType: "Joiner", limit: 20 };
+
+  function research(funnel?: Partial<{ queriesSent: number; rawTotal: number; unique: number;
+    duplicatesMerged: number; droppedToLimit: number; withWebsite: number;
+    withoutWebsite: number; withListedEmail: number }>) {
+    return async (input: { location: string }) => ({
+      ok: true as const,
+      prospects: [prospect({ businessName: `${input.location} Joinery`, town: input.location })],
+      location: input.location,
+      businessType: "Joiner",
+      funnel: {
+        queriesSent: 0, towns: [], rawBySource: { nominatim: 0, photon: 0, bizdata: 0, companiesHouse: 0 },
+        rawTotal: 0, unique: 0, duplicatesMerged: 0, droppedToLimit: 0,
+        withWebsite: 0, withoutWebsite: 0, withListedEmail: 0, returned: 1, ...funnel,
+      },
+    });
+  }
+
+  it("sums the counters across every area searched", async () => {
+    const result = await runPlannedSearch({
+      ...plan,
+      research: research({ queriesSent: 5, rawTotal: 12, unique: 9, duplicatesMerged: 3, withWebsite: 4 }),
+    });
+    assert.ok(result.funnel.areas >= 1);
+    assert.equal(result.funnel.queriesSent, 5 * result.funnel.areas);
+    assert.equal(result.funnel.rawTotal, 12 * result.funnel.areas);
+    assert.equal(result.funnel.duplicatesMerged, 3 * result.funnel.areas);
+  });
+
+  it("reports businesses cut by the caller's own target", async () => {
+    // The number that separates "this area is thin" from "we asked for too
+    // few" — opposite diagnoses that would otherwise look identical.
+    const result = await runPlannedSearch({ ...plan, research: research({ droppedToLimit: 7 }) });
+    assert.equal(result.funnel.droppedToLimit, 7 * result.funnel.areas);
+  });
+
+  it("counts zeros rather than going missing when a source returns nothing", async () => {
+    const result = await runPlannedSearch({ ...plan, research: research() });
+    assert.equal(result.funnel.rawTotal, 0);
+    assert.ok(result.funnel.areas >= 1, "an area that found nothing is still an area searched");
+  });
+
+  it("survives a research function that reports no funnel at all", async () => {
+    const result = await runPlannedSearch({
+      ...plan,
+      research: async (input: { location: string }) => ({
+        ok: true as const,
+        prospects: [prospect({ businessName: `${input.location} Joinery`, town: input.location })],
+        location: input.location,
+        businessType: "Joiner",
+      }),
+    });
+    assert.equal(result.funnel.areas, 0);
+    assert.ok(result.prospects.length > 0, "the run still works without diagnostics");
+  });
+});

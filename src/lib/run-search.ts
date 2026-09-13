@@ -25,6 +25,25 @@ export type PlannedSearchResult = {
   errors: string[];
   plan: ResearchPlan;
   cancelled: boolean;
+  /**
+   * Every area's funnel, summed.
+   *
+   * A planned search covers several towns, so the interesting numbers are the
+   * totals: how many queries went out, how many rows came back, how many were
+   * duplicates, and how many businesses the caller's own target cut off. That
+   * last one separates "the area is thin" from "we asked for too few".
+   */
+  funnel: {
+    areas: number;
+    queriesSent: number;
+    rawTotal: number;
+    unique: number;
+    duplicatesMerged: number;
+    droppedToLimit: number;
+    withWebsite: number;
+    withoutWebsite: number;
+    withListedEmail: number;
+  };
 };
 
 export type ResearchFn = (input: SearchInput) => Promise<ResearchResult>;
@@ -73,6 +92,18 @@ export async function runPlannedSearch(options: {
   let found: Prospect[] = [];
   const errors: string[] = [];
   let cancelled = false;
+  /** Summed across every area, so the whole run can be diagnosed at once. */
+  const totals = {
+    areas: 0,
+    queriesSent: 0,
+    rawTotal: 0,
+    unique: 0,
+    duplicatesMerged: 0,
+    droppedToLimit: 0,
+    withWebsite: 0,
+    withoutWebsite: 0,
+    withListedEmail: 0,
+  };
   let nextIndex = 0;
   let pauseUntil = 0;
   const active = new Set<string>();
@@ -133,6 +164,17 @@ export async function runPlannedSearch(options: {
           if (/rate limit|429/i.test(result.error)) pauseUntil = Date.now() + rateLimitPauseMs;
         } else {
           found = mergeProspects(found, result.prospects, target);
+          if (result.funnel) {
+            totals.areas += 1;
+            totals.queriesSent += result.funnel.queriesSent;
+            totals.rawTotal += result.funnel.rawTotal;
+            totals.unique += result.funnel.unique;
+            totals.duplicatesMerged += result.funnel.duplicatesMerged;
+            totals.droppedToLimit += result.funnel.droppedToLimit;
+            totals.withWebsite += result.funnel.withWebsite;
+            totals.withoutWebsite += result.funnel.withoutWebsite;
+            totals.withListedEmail += result.funnel.withListedEmail;
+          }
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : "Search failed";
@@ -158,5 +200,5 @@ export async function runPlannedSearch(options: {
     errors: [...errors],
     active: [],
   });
-  return { prospects, errors, plan, cancelled };
+  return { prospects, errors, plan, cancelled, funnel: totals };
 }

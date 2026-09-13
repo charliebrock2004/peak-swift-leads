@@ -288,6 +288,12 @@ export function useAutoRun(onFinished?: () => void, campaignId = "") {
         const perTrade = tradeBreadth(searchFor, trades.length);
 
         const prospects: Prospect[] = [];
+        /** Discovery counters, summed across every trade and area searched. */
+        const funnelTotals = {
+          areas: 0, queriesSent: 0, rawTotal: 0, unique: 0,
+          duplicatesMerged: 0, droppedToLimit: 0,
+          withWebsite: 0, withoutWebsite: 0, withListedEmail: 0,
+        };
         const seenProspect = new Set<string>();
         const searchErrors: string[] = [];
         let areaCount = 0;
@@ -322,6 +328,9 @@ export function useAutoRun(onFinished?: () => void, campaignId = "") {
             },
           });
           searchErrors.push(...search.errors);
+          for (const key of Object.keys(funnelTotals) as (keyof typeof funnelTotals)[]) {
+            funnelTotals[key] += search.funnel[key];
+          }
           areaCount += search.plan.areas.length;
           planLabel = search.plan.label;
           for (const prospect of search.prospects) {
@@ -348,6 +357,28 @@ export function useAutoRun(onFinished?: () => void, campaignId = "") {
           );
           return;
         }
+        // The discovery funnel, in the run log. A thin run is otherwise
+        // indistinguishable from a thin area, and those need opposite fixes.
+        if (funnelTotals.areas > 0) {
+          log(
+            `Discovery: ${funnelTotals.queriesSent} queries across ${funnelTotals.areas} area` +
+              `${funnelTotals.areas === 1 ? "" : "s"} · ${funnelTotals.rawTotal} rows · ` +
+              `${funnelTotals.unique} unique · ${funnelTotals.duplicatesMerged} duplicates merged.`,
+          );
+          log(
+            `Of those: ${funnelTotals.withWebsite} had a website on the listing, ` +
+              `${funnelTotals.withoutWebsite} had none, ` +
+              `${funnelTotals.withListedEmail} already carried an address.`,
+          );
+          if (funnelTotals.droppedToLimit > 0) {
+            log(
+              `${funnelTotals.droppedToLimit} more business${funnelTotals.droppedToLimit === 1 ? "" : "es"} ` +
+                `were found and cut by your target — raise it to keep them.`,
+              "warn",
+            );
+          }
+        }
+
         const found = { prospects, location: planLabel };
         count({ found: found.prospects.length });
         log(

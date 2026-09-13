@@ -7,7 +7,12 @@ import {
   type Priority,
   type WebsiteStatus,
 } from "@/lib/leads";
-import { discoverBusinesses, listingWebsiteHint, type DiscoveredPlace } from "@/lib/osm-discover";
+import {
+  discoverBusinesses,
+  listingWebsiteHint,
+  type DiscoveredPlace,
+  type DiscoveryFunnel,
+} from "@/lib/osm-discover";
 
 export type Prospect = {
   businessName: string;
@@ -33,7 +38,15 @@ export type Prospect = {
 };
 
 export type ResearchResult =
-  | { ok: true; prospects: Prospect[]; location: string; businessType: string; warnings?: string[] }
+  | {
+      ok: true;
+      prospects: Prospect[];
+      location: string;
+      businessType: string;
+      warnings?: string[];
+      /** Counted at every stage, so a thin run can be diagnosed rather than guessed at. */
+      funnel?: DiscoveryFunnel;
+    }
   | { ok: false; error: string };
 
 function asString(value: unknown): string {
@@ -188,5 +201,8 @@ export const researchProspects = createServerFn({ method: "POST" })
       location: found.locationLabel || data.location,
       businessType: data.businessType,
       warnings: found.warnings,
+      // Passed straight through so a run can report where its funnel leaked
+      // rather than only how many businesses came out of it.
+      funnel: found.funnel,
     };
   });

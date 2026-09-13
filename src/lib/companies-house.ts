@@ -17,7 +17,15 @@ export type CompanyHit = {
 const USER_AGENT = "PeakSwiftLeads/1.0 (https://peak-swift-leads.vercel.app)";
 const CH_SEARCH = "https://find-and-update.company-information.service.gov.uk/search/companies";
 const EARTH_MILES = 3958.8;
-const MAX_QUERIES = 4;
+/**
+ * Ceiling on Companies House calls for one discovery run.
+ *
+ * Was 4, which for joinery meant one search word across three towns and no
+ * room for "joiners" or "carpentry" at all. Raised so every naming style of a
+ * trade gets searched in the main town and the nearest few — still bounded,
+ * because each query is a real request.
+ */
+const MAX_QUERIES = 14;
 
 const SKIP_STATUS = /dissolved|liquidation|administration|converted|closed|receivership|insolvency|removed|wound.?up/i;
 
@@ -40,24 +48,34 @@ type TradeSpec = {
 };
 
 const TRADE_SPECS: Array<{ match: RegExp; spec: TradeSpec }> = [
-  { match: /join|carpent/, spec: { queries: ["joinery"], tokens: ["joinery", "joiner", "joiners", "carpenter", "carpentry"] } },
-  { match: /plumb/, spec: { queries: ["plumbing"], tokens: ["plumbing", "plumber", "plumbers"] } },
-  { match: /electric/, spec: { queries: ["electrical"], tokens: ["electrical", "electrician", "electricians"] } },
+  {
+    match: /join|carpent/,
+    // `queries` are what is SEARCHED FOR; `tokens` only filter what comes back.
+    // Searching the single word "joinery" missed every company registered as
+    // "… Joiners", "… Carpentry" or "… Cabinet Makers", because a name filter
+    // cannot find a company the search never returned.
+    spec: {
+      queries: ["joinery", "joiners", "carpentry", "cabinet makers"],
+      tokens: ["joinery", "joiner", "joiners", "carpenter", "carpentry", "cabinet"],
+    },
+  },
+  { match: /plumb/, spec: { queries: ["plumbing", "plumbers", "heating"], tokens: ["plumbing", "plumber", "plumbers", "heating"] } },
+  { match: /electric/, spec: { queries: ["electrical", "electricians", "electrics"], tokens: ["electrical", "electrician", "electricians", "electrics"] } },
   {
     match: /build/,
     spec: { queries: ["construction", "builders"], tokens: ["construction", "builder", "builders"] },
   },
-  { match: /roof/, spec: { queries: ["roofing"], tokens: ["roofing", "roofer", "roofers"] } },
+  { match: /roof/, spec: { queries: ["roofing", "roofers"], tokens: ["roofing", "roofer", "roofers"] } },
   { match: /paint|decorat/, spec: { queries: ["decorator", "painter"], tokens: ["decorator", "decorators", "painter", "painters", "decorating"] } },
   { match: /landscap|garden/, spec: { queries: ["landscaping", "gardener"], tokens: ["landscaping", "landscaper", "gardener", "gardeners"] } },
   { match: /tree/, spec: { queries: ["arborist"], tokens: ["arborist", "tree surgeon", "treesurgeon"] } },
-  { match: /clean/, spec: { queries: ["cleaning"], tokens: ["cleaning", "cleaner", "cleaners"] } },
+  { match: /clean/, spec: { queries: ["cleaning", "cleaners"], tokens: ["cleaning", "cleaner", "cleaners"] } },
   { match: /mechan|garage/, spec: { queries: ["motors", "mechanic"], tokens: ["mechanic", "mechanics", "motors", "garage"] } },
   { match: /barber/, spec: { queries: ["barber"], tokens: ["barber", "barbers"] } },
   { match: /hair/, spec: { queries: ["hairdresser"], tokens: ["hairdresser", "hairdressers", "salon"] } },
   { match: /restaurant/, spec: { queries: ["restaurant"], tokens: ["restaurant", "restaurants"] } },
   { match: /cafe|café/, spec: { queries: ["cafe"], tokens: ["cafe", "café"] } },
-  { match: /tile|tiler/, spec: { queries: ["tiling"], tokens: ["tiling", "tiler", "tilers"] } },
+  { match: /tile|tiler/, spec: { queries: ["tiling", "tilers"], tokens: ["tiling", "tiler", "tilers"] } },
   { match: /floor/, spec: { queries: ["flooring"], tokens: ["flooring", "floorer"] } },
   { match: /\bgym\b|fitness/, spec: { queries: ["fitness"], tokens: ["fitness", "gym"] } },
   { match: /beaut/, spec: { queries: ["beauty"], tokens: ["beauty", "beautician"] } },
@@ -242,8 +260,19 @@ export function chSearchQueries(trade: string, towns: string[]): string[] {
   const spec = specForTrade(trade);
   const queries: string[] = [];
   const uniqueTowns = [...new Set(towns.map((town) => town.trim()).filter((town) => town.length >= 2))];
-  for (const word of spec.queries) {
-    for (const town of uniqueTowns) {
+
+  // Every naming style in the main town, then one word per outlying town.
+  //
+  // The old order ran the first word through every town and hit the ceiling
+  // before the second word was tried at all — so a joinery search ran
+  // "joinery Perth/Scone/Bridge of Earn" and never once searched "joiners" or
+  // "carpentry" anywhere. Spending the budget this way instead covers both
+  // the naming styles where the businesses are densest and a far wider ring of
+  // towns, for the same number of calls.
+  const primary = spec.queries[0];
+  for (const [index, town] of uniqueTowns.entries()) {
+    const words = index === 0 ? spec.queries : primary ? [primary] : [];
+    for (const word of words) {
       queries.push(`${word} ${town}`);
       if (queries.length >= MAX_QUERIES) return queries;
     }
