@@ -867,7 +867,13 @@ export const findLeadEmail = createServerFn({ method: "POST" })
       failure ??= "POSSIBLE_WEBSITE_NO_EMAIL";
     }
 
-    const result = decide({ candidates, context, sourcesChecked, attempts, failure, sawContactPage });
+    const result = decide({
+      candidates, context, sourcesChecked, attempts, failure, sawContactPage,
+      rejectedEmails: rejectedEmails.length,
+      // Pages were still worth reading when the budget ran out, so "nothing
+      // publishes an address" would be the wrong thing to report.
+      budgetExhausted: emailPages >= MAX_PAGES && !sawContactPage,
+    });
     return {
       ok: true,
       found: toFoundEmail(result),

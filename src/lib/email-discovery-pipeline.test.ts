@@ -228,7 +228,7 @@ describe("directories, social, competitors — what must not be trusted", () => 
     const r = verdict(harvest(html, "https://clarkjoinery.co.uk/contact", "OFFICIAL_CONTACT_PAGE"));
     assert.equal(r.status, "NOT_FOUND");
     assert.equal(r.email, null);
-    assert.equal(r.reason, "CONTACT_PAGE_NO_EMAIL");
+    assert.equal(r.reason, "CONTACT_PAGES_CHECKED_NO_EMAIL");
     assert.equal(r.nextAction, "CALL");
   });
 });

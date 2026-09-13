@@ -420,6 +420,38 @@ function plainReport(
   for (const url of result.sourcesChecked) add(`    - ${url}`);
   add();
 
+  add("EMAIL DISCOVERY");
+  add(`  Website: ${report?.website?.url ?? result.sourceUrl ?? "none verified"}`);
+  add(`  Pages checked (${result.attempts} fetched):`);
+  for (const url of result.sourcesChecked.filter((entry) => !entry.startsWith("search:"))) {
+    add(`    ${url}`);
+  }
+  add("  Emails discovered:");
+  if (result.email) {
+    add(
+      `    ${result.email} — accepted — ${result.confidence} confidence — ` +
+        `${result.source?.toLowerCase().replace(/_/g, " ")}`,
+    );
+  }
+  for (const alt of result.alternatives) {
+    add(
+      `    ${alt.email} — accepted — ${alt.confidence} confidence — ` +
+        `${alt.method.toLowerCase().replace(/_/g, " ")}`,
+    );
+  }
+  if (!result.email && result.alternatives.length === 0) add("    (none)");
+  add("  Rejected:");
+  if (!report?.rejectedEmails?.length) add("    (none)");
+  for (const entry of report?.rejectedEmails ?? []) {
+    add(`    ${entry.email} — rejected — ${entry.why}`);
+  }
+  const accepted = (result.email ? 1 : 0) + result.alternatives.length;
+  add(
+    `  Result: ${accepted > 0 ? `${accepted} valid email${accepted === 1 ? "" : "s"} found` : "No valid public email found"}`,
+  );
+  if (result.reason) add(`  Reason: ${result.reason}`);
+  add();
+
   add("6. EMAILS FOUND");
   if (!result.email && result.alternatives.length === 0 && !report?.rejectedEmails?.length) {
     add("  (none published on any page read)");

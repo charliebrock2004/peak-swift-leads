@@ -295,7 +295,7 @@ describe("the verdict an agent reads", () => {
 
   it("names why nothing was found, and never just says no email", () => {
     const cases: { input: Parameters<typeof decide>[0]; reason: string }[] = [
-      { input: { candidates: [], context: ctx, sourcesChecked: ["a"], attempts: 1, sawContactPage: true }, reason: "CONTACT_PAGE_NO_EMAIL" },
+      { input: { candidates: [], context: ctx, sourcesChecked: ["a"], attempts: 1, sawContactPage: true }, reason: "CONTACT_PAGES_CHECKED_NO_EMAIL" },
       { input: { candidates: [], context: ctx, sourcesChecked: ["a"], attempts: 1 }, reason: "NO_CONTACT_PAGE" },
       { input: { candidates: [], context: ctx, sourcesChecked: [], attempts: 1, failure: "WEBSITE_UNREACHABLE" }, reason: "WEBSITE_UNREACHABLE" },
       { input: { candidates: [], context: ctx, sourcesChecked: [], attempts: 1, failure: "BLOCKED_BY_SITE" }, reason: "BLOCKED_BY_SITE" },
@@ -346,7 +346,7 @@ describe("NEVER GUESS", () => {
     });
     assert.equal(r.status, "NOT_FOUND");
     assert.equal(r.email, null);
-    assert.equal(r.reason, "CONTACT_PAGE_NO_EMAIL");
+    assert.equal(r.reason, "CONTACT_PAGES_CHECKED_NO_EMAIL");
   });
 
   it("never manufactures info@ from the domain", () => {

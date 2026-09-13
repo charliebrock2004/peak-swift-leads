@@ -62,6 +62,19 @@ export const DISCOVERY_REASONS = [
    * identity bar so it was not attached as the business's website.
    */
   "POSSIBLE_WEBSITE_NO_EMAIL",
+  /**
+   * The next five separate outcomes that otherwise collapse into "no email".
+   *
+   * They call for completely different responses — a site that would not load
+   * is worth retrying, a site whose contact pages genuinely publish nothing is
+   * a phone call, and an address found and then refused is a scoring question.
+   * One code for all three makes a run's biggest problem invisible.
+   */
+  "WEBSITE_NOT_REACHABLE",
+  "CONTACT_PAGES_CHECKED_NO_EMAIL",
+  "EMAILS_FOUND_BUT_REJECTED",
+  "EMAIL_DISCOVERY_EXHAUSTED",
+  "NO_PUBLIC_EMAIL_FOUND",
 ] as const;
 export type DiscoveryReason = (typeof DISCOVERY_REASONS)[number];
 
@@ -137,6 +150,7 @@ export const CANDIDATE_PATHS = [
   "/find-us",
   "/about",
   "/about-us",
+  "/services",
   "/quote",
   "/request-a-quote",
   "/book",
@@ -155,7 +169,8 @@ const CONTACT_HREF =
   /contact|get-?in-?touch|enquir|quote|book|about|team|staff|reach-?us|services?|find-?us|where-?to-?find|meet-the-team|our-team|privacy|terms|legal/i;
 
 /** Junk that is never a business mailbox. */
-const SKIP_LOCAL = /^(noreply|no-reply|no_reply|donotreply|privacy|legal|webmaster|hostmaster|postmaster|mailer-daemon|abuse|sentry|test|example|user|username|email|your|name)$/i;
+const SKIP_LOCAL =
+  /^(noreply|no-reply|no_reply|donotreply|do-not-reply|privacy|legal|webmaster|hostmaster|postmaster|mailer-daemon|mailer|mail-daemon|bounce|bounces|notification|notifications|alerts?|tracking|analytics|unsubscribe|optout|opt-out|automated|system|robot|daemon|abuse|sentry|test|example|user|username|email|your|name)$/i;
 const SKIP_HOSTS = [
   "sentry.io", "wixpress.com", "wordpress.com", "example.com", "example.org",
   "schema.org", "google.com", "gstatic.com", "w3.org", "cloudflare.com",
@@ -250,7 +265,13 @@ export function decodeCfEmail(encoded: string): string {
   for (let i = 2; i < hex.length; i += 2) {
     const byte = Number.parseInt(hex.slice(i, i + 2), 16);
     if (!Number.isFinite(byte)) return "";
-    out += String.fromCharCode(byte ^ key);
+    const char = String.fromCharCode(byte ^ key);
+    // Only characters that are legal in an address. A wrong key decodes to
+    // spaces and control bytes, and decoding those anyway would emit a
+    // plausible-looking address nobody ever published — the one thing this
+    // pipeline must never do.
+    if (!/[A-Za-z0-9._%+@-]/.test(char)) return "";
+    out += char;
   }
   return out;
 }
@@ -367,10 +388,27 @@ export function extractCandidates(
     }, rejected);
   }
 
+  /**
+   * A Cloudflare decode only counts on the site's own domain.
+   *
+   * A wrong key can decode to characters that all happen to be legal, yielding
+   * a plausible-looking address nobody published. Cloudflare obfuscates the
+   * SITE'S OWN mailto links, so a decode landing on an unrelated domain is
+   * noise rather than a discovery. A consumer mailbox is allowed through
+   * because a small business genuinely may publish one.
+   */
+  const cfBelongsHere = (email: string): boolean => {
+    const site = hostnameOf(pageUrl);
+    const host = email.slice(email.lastIndexOf("@") + 1).toLowerCase();
+    if (!site) return true;
+    if (host === site || host.endsWith(`.${site}`) || site.endsWith(`.${host}`)) return true;
+    return PERSONAL_HOSTS.has(host);
+  };
+
   // 1b. Cloudflare email protection — a published address, XOR-obfuscated.
   for (const m of html.matchAll(/data-cfemail=["']([0-9a-fA-F]+)["']/gi)) {
     const decoded = decodeCfEmail(m[1] ?? "");
-    if (!decoded) continue;
+    if (!decoded || !cfBelongsHere(decoded)) continue;
     push(out, seen, decoded, {
       source, sourceUrl: pageUrl, method: "DEOBFUSCATED",
       evidence: "Decoded from Cloudflare email protection on the page",
@@ -378,7 +416,7 @@ export function extractCandidates(
   }
   for (const m of html.matchAll(/cdn-cgi\/l\/email-protection#([0-9a-fA-F]+)/gi)) {
     const decoded = decodeCfEmail(m[1] ?? "");
-    if (!decoded) continue;
+    if (!decoded || !cfBelongsHere(decoded)) continue;
     push(out, seen, decoded, {
       source, sourceUrl: pageUrl, method: "DEOBFUSCATED",
       evidence: "Decoded from Cloudflare email protection on the page",
@@ -668,6 +706,10 @@ export type DecideInput = {
   sawContactPage?: boolean;
   /** True when text looked like an obfuscated address but would not decode. */
   sawUnreadableObfuscation?: boolean;
+  /** How many addresses were seen on a page and then refused. */
+  rejectedEmails?: number;
+  /** True when the page budget ran out with contact pages still unread. */
+  budgetExhausted?: boolean;
 };
 
 /**
@@ -687,13 +729,20 @@ export function decide(input: DecideInput): DiscoveryResult {
   };
 
   if (ranked.length === 0) {
+    // Say precisely which kind of nothing this is. These outcomes need
+    // different responses from whoever reads them — a retry, a phone call, or
+    // a look at the scoring — and collapsing them hides a run's real problem.
     const reason: DiscoveryReason =
       input.failure ??
-      (input.sawUnreadableObfuscation
-        ? "EMAIL_OBFUSCATED_UNREADABLE"
-        : input.sawContactPage
-          ? "CONTACT_PAGE_NO_EMAIL"
-          : "NO_CONTACT_PAGE");
+      (input.rejectedEmails && input.rejectedEmails > 0
+        ? "EMAILS_FOUND_BUT_REJECTED"
+        : input.sawUnreadableObfuscation
+          ? "EMAIL_OBFUSCATED_UNREADABLE"
+          : input.budgetExhausted
+            ? "EMAIL_DISCOVERY_EXHAUSTED"
+            : input.sawContactPage
+              ? "CONTACT_PAGES_CHECKED_NO_EMAIL"
+              : "NO_CONTACT_PAGE");
     return {
       status: input.failure === "BLOCKED_BY_SITE" || input.failure === "RATE_LIMITED" ? "BLOCKED" : "NOT_FOUND",
       email: null, confidence: null, score: null, source: null, sourceUrl: "",
@@ -853,6 +902,11 @@ export const REASON_LABELS: Record<DiscoveryReason, string> = {
   SEARCH_QUOTA_EXHAUSTED: "The search provider's quota is used up — no more searches until it resets",
   ONLY_DIRECTORY_LISTINGS_FOUND: "Only directory and social listings were found, never the business's own site",
   POSSIBLE_WEBSITE_NO_EMAIL: "A possible site was crawled but never proved it belonged to this business, and published no address",
+  WEBSITE_NOT_REACHABLE: "The verified website would not load, so nothing could be read",
+  CONTACT_PAGES_CHECKED_NO_EMAIL: "Contact pages were read and none publishes an address",
+  EMAILS_FOUND_BUT_REJECTED: "Addresses were found on the site and every one was refused",
+  EMAIL_DISCOVERY_EXHAUSTED: "The page budget ran out before every contact page could be read",
+  NO_PUBLIC_EMAIL_FOUND: "Nothing on the site publishes an address",
 };
 
 /** Where most of this run's addresses came from, for the one-line summary. */
