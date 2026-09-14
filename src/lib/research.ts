@@ -1,3 +1,4 @@
+import { DISCOVERY_SAFETY } from "./discovery-limits.ts";
 import { createServerFn } from "@tanstack/react-start";
 import {
   classifyWebsiteUrl,
@@ -151,13 +152,20 @@ function websiteStatusForPlace(
   return { status: "No Website Found", extra: "" };
 }
 
+/** Websites live-checked per area, for priority scoring only. */
+const WEBSITE_INSPECTION_PER_AREA = 30;
+
 export const researchProspects = createServerFn({ method: "POST" })
   .validator((input: unknown) => {
     if (!input || typeof input !== "object") throw new Error("Enter a location and business type");
     const location = asString((input as { location?: unknown }).location).slice(0, 80);
     const businessType = asString((input as { businessType?: unknown }).businessType).slice(0, 80);
     const rawLimit = Number((input as { limit?: unknown }).limit);
-    const limit = Number.isFinite(rawLimit) ? Math.min(100, Math.max(1, Math.round(rawLimit))) : 25;
+    // A per-area fetch budget, so it is bounded by the fetch budget and not by
+    // the user's target — those are different numbers and must stay that way.
+    const limit = Number.isFinite(rawLimit)
+      ? Math.min(DISCOVERY_SAFETY.fetchPerArea, Math.max(1, Math.round(rawLimit)))
+      : 25;
     const rawRadius = Number((input as { radiusMiles?: unknown }).radiusMiles);
     const radiusMiles = Number.isFinite(rawRadius) ? Math.min(80, Math.max(5, Math.round(rawRadius))) : 25;
     if (location.length < 2) throw new Error("Enter a location");
@@ -168,10 +176,13 @@ export const researchProspects = createServerFn({ method: "POST" })
     const found = await discoverBusinesses(data);
     if (!found.ok) return { ok: false, error: found.error };
 
+    // Live-checking a website costs an HTTP round trip, so one area inspects at
+    // most this many. It only sharpens priority scoring — email discovery runs
+    // later, over the leads themselves, and is not gated by this budget.
     const toInspect = found.places
       .map((place) => place.website)
       .filter((url) => Boolean(url))
-      .slice(0, Math.min(30, data.limit * 2));
+      .slice(0, WEBSITE_INSPECTION_PER_AREA);
     const inspected = await Promise.all(toInspect.map((url) => inspectWebsite(url)));
     const byUrl = new Map(toInspect.map((url, index) => [url, inspected[index]!]));
 

@@ -1,5 +1,11 @@
-import { findDuplicate, type Priority } from "./leads.ts";
-import { planSearch, RESEARCH_BATCH_MAX, type ResearchPlan } from "./scotland-places.ts";
+import { findDuplicate, type LeadIdentity, type Priority } from "./leads.ts";
+import {
+  createProspectPool,
+  DISCOVERY_SAFETY,
+  type PoolDiagnostics,
+  type ProspectPool,
+} from "./prospect-pool.ts";
+import { planSearch, type ResearchPlan } from "./scotland-places.ts";
 import type { Prospect, ResearchResult } from "./research.ts";
 
 export type SearchInput = {
@@ -22,28 +28,33 @@ export type SearchProgress = {
 
 export type PlannedSearchResult = {
   prospects: Prospect[];
+  /** Rediscovered copies of leads already on the sheet, for field-filling only. */
+  knownMatches: Prospect[];
   errors: string[];
   plan: ResearchPlan;
   cancelled: boolean;
   /**
-   * Every area's funnel, summed.
+   * Every area's funnel, summed — what the *sources* returned.
    *
-   * A planned search covers several towns, so the interesting numbers are the
-   * totals: how many queries went out, how many rows came back, how many were
-   * duplicates, and how many businesses the caller's own target cut off. That
-   * last one separates "the area is thin" from "we asked for too few".
+   * These are raw-discovery numbers: queries sent, rows back, duplicates the
+   * source itself merged. They say how much the engine found. What survives
+   * to become a prospect is the pool's business, and lives in `pool`.
    */
   funnel: {
     areas: number;
     queriesSent: number;
     rawTotal: number;
+    /** Rows each source contributed, so a dead source is visible as a zero. */
+    rawBySource: { nominatim: number; photon: number; bizdata: number; companiesHouse: number };
     unique: number;
     duplicatesMerged: number;
-    droppedToLimit: number;
+    droppedToFetchBudget: number;
     withWebsite: number;
     withoutWebsite: number;
     withListedEmail: number;
   };
+  /** Cross-area dedupe, existing-lead removal, ranking and the target. */
+  pool: PoolDiagnostics;
 };
 
 export type ResearchFn = (input: SearchInput) => Promise<ResearchResult>;
@@ -74,8 +85,21 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Fan a location+limit into town batches, research each, merge and stop at
- * `limit` unique genuine businesses. Partial failures keep successful towns.
+ * Fan a location into town batches and pool everything they find.
+ *
+ * The order here is the whole point, and it used to be wrong. Each town was
+ * previously capped at a hard-coded twelve rows *before* anything looked across
+ * towns, so fourteen towns around Perth each kept their nearest twelve — mostly
+ * the same firms — and 428 distinct businesses were binned by a constant the
+ * user's target could not reach. A run asking for 60 delivered 31, of which 0
+ * were new.
+ *
+ * Now every area feeds one pool at a generous fetch budget, the pool dedupes
+ * across areas and drops anything already on the sheet, and only then is the
+ * target applied — to genuinely new businesses, ranked best-first. The target
+ * is the only thing that decides how many come back; the named limits in
+ * DISCOVERY_SAFETY are the only things that can stop it, and each one reports
+ * itself when it bites.
  */
 export async function runPlannedSearch(options: {
   location: string;
@@ -86,20 +110,44 @@ export async function runPlannedSearch(options: {
   onProgress?: (progress: SearchProgress) => void;
   concurrency?: number;
   rateLimitPauseMs?: number;
+  /** Leads already on the sheet. Excluded before the target is applied. */
+  known?: readonly LeadIdentity[];
+  suppressed?: readonly LeadIdentity[];
+  contacted?: readonly LeadIdentity[];
+  /** Test hook. Production uses DISCOVERY_SAFETY.poolCeiling. */
+  ceiling?: number;
 }): Promise<PlannedSearchResult> {
-  const target = Math.min(100, Math.max(1, Math.round(options.limit) || 8));
+  const target = Math.min(DISCOVERY_SAFETY.targetMax, Math.max(1, Math.round(options.limit) || 8));
   const plan = planSearch(options.location, target);
-  let found: Prospect[] = [];
+  const areas = plan.areas.slice(0, DISCOVERY_SAFETY.maxAreas);
   const errors: string[] = [];
   let cancelled = false;
+
+  const pool: ProspectPool = createProspectPool({
+    target,
+    known: options.known,
+    suppressed: options.suppressed,
+    contacted: options.contacted,
+    tradeTerms: [options.businessType],
+    townTerms: areas.map((area) => area.name),
+    ceiling: options.ceiling,
+  });
+  /**
+   * Names already pooled, offered to later towns so a source can skip them.
+   * A courtesy to the source only — dedupe is the pool's job, and correctness
+   * never depends on this list being complete.
+   */
+  const pooledNames: string[] = [];
+
   /** Summed across every area, so the whole run can be diagnosed at once. */
   const totals = {
     areas: 0,
     queriesSent: 0,
     rawTotal: 0,
+    rawBySource: { nominatim: 0, photon: 0, bizdata: 0, companiesHouse: 0 },
     unique: 0,
     duplicatesMerged: 0,
-    droppedToLimit: 0,
+    droppedToFetchBudget: 0,
     withWebsite: 0,
     withoutWebsite: 0,
     withListedEmail: 0,
@@ -107,7 +155,7 @@ export async function runPlannedSearch(options: {
   let nextIndex = 0;
   let pauseUntil = 0;
   const active = new Set<string>();
-  const total = plan.areas.length;
+  const total = areas.length;
   const workers = Math.max(1, Math.min(options.concurrency ?? 1, total));
   const rateLimitPauseMs = options.rateLimitPauseMs ?? 8000;
 
@@ -117,11 +165,19 @@ export async function runPlannedSearch(options: {
       area,
       index,
       total,
-      found: found.length,
+      found: pool.size,
       target,
       errors: [...errors],
       active: [...active],
     });
+  };
+
+  const collect = (prospects: readonly Prospect[]) => {
+    pool.offer(prospects);
+    for (const prospect of prospects) {
+      if (pooledNames.length >= 40) break;
+      pooledNames.push(prospect.businessName);
+    }
   };
 
   async function worker() {
@@ -130,47 +186,52 @@ export async function runPlannedSearch(options: {
         cancelled = true;
         return;
       }
-      if (found.length >= target) return;
+      // The only reason to stop early. Reaching the target is NOT a reason:
+      // a later town may hold a better prospect than one already pooled, and
+      // ranking can only choose between candidates it has actually seen.
+      if (pool.full) return;
       const index = nextIndex;
       nextIndex += 1;
-      if (index >= plan.areas.length) return;
-      const area = plan.areas[index]!;
-      const remaining = target - found.length;
-      if (remaining <= 0) return;
-      const quota = Math.min(RESEARCH_BATCH_MAX, Math.max(6, Math.min(area.quota, remaining + 4)));
+      if (index >= areas.length) return;
+      const area = areas[index]!;
       const wait = pauseUntil - Date.now();
       if (wait > 0) await sleep(wait);
       if (options.shouldCancel?.()) {
         cancelled = true;
         return;
       }
-      if (found.length >= target) return;
+      if (pool.full) return;
       active.add(area.name);
       emit(area.name, index + 1);
       try {
         const result = await options.research({
           location: area.name,
           businessType: options.businessType,
-          limit: quota,
-          excludeNames: found.map((item) => item.businessName).slice(0, 40),
+          // A fetch budget, not the target. Every row this returns joins the
+          // pool; none of it is thrown away before cross-area dedupe.
+          limit: area.quota,
+          excludeNames: [...pooledNames],
         });
         if (options.shouldCancel?.()) {
           cancelled = true;
-          if (result.ok) found = mergeProspects(found, result.prospects, target);
+          if (result.ok) collect(result.prospects);
           return;
         }
         if (!result.ok) {
           errors.push(`${area.name}: ${result.error}`);
           if (/rate limit|429/i.test(result.error)) pauseUntil = Date.now() + rateLimitPauseMs;
         } else {
-          found = mergeProspects(found, result.prospects, target);
+          collect(result.prospects);
           if (result.funnel) {
             totals.areas += 1;
             totals.queriesSent += result.funnel.queriesSent;
             totals.rawTotal += result.funnel.rawTotal;
+            for (const key of Object.keys(totals.rawBySource) as (keyof typeof totals.rawBySource)[]) {
+              totals.rawBySource[key] += result.funnel.rawBySource[key];
+            }
             totals.unique += result.funnel.unique;
             totals.duplicatesMerged += result.funnel.duplicatesMerged;
-            totals.droppedToLimit += result.funnel.droppedToLimit;
+            totals.droppedToFetchBudget += result.funnel.droppedToFetchBudget;
             totals.withWebsite += result.funnel.withWebsite;
             totals.withoutWebsite += result.funnel.withoutWebsite;
             totals.withListedEmail += result.funnel.withListedEmail;
@@ -189,7 +250,7 @@ export async function runPlannedSearch(options: {
 
   await Promise.all(Array.from({ length: workers }, () => worker()));
 
-  const prospects = sortProspects(found).slice(0, target);
+  const { prospects, knownMatches, diagnostics } = pool.result();
   options.onProgress?.({
     phase: "done",
     area: "",
@@ -200,5 +261,5 @@ export async function runPlannedSearch(options: {
     errors: [...errors],
     active: [],
   });
-  return { prospects, errors, plan, cancelled, funnel: totals };
+  return { prospects, knownMatches, errors, plan, cancelled, funnel: totals, pool: diagnostics };
 }

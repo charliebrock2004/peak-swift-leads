@@ -1,3 +1,4 @@
+import { DISCOVERY_SAFETY } from "../discovery-limits.ts";
 /**
  * AI Outreach — the run, as data.
  *
@@ -74,8 +75,17 @@ export type AutoRunConfig = {
  * ceiling, not the default.
  */
 export const AUTO_DAILY_MAX = 30;
-/** More than this in one run is a research session, not outreach. */
-export const AUTO_TARGET_MAX = 50;
+/**
+ * The most new businesses one run may ask for.
+ *
+ * This silently clamped a requested 60 down to 50, which is exactly the class
+ * of hidden cap that made the target box meaningless. It is raised because the
+ * target now buys *new* businesses — duplicates and everything already on the
+ * sheet are removed before it is applied — so a bigger number is honest work
+ * rather than a bigger pile of things already seen. The engine's own ceiling
+ * (DISCOVERY_SAFETY.targetMax) sits above this and is reported when it bites.
+ */
+export const AUTO_TARGET_MAX = 200;
 
 export const DEFAULT_AUTO_CONFIG: AutoRunConfig = {
   location: "Crieff",
@@ -478,13 +488,17 @@ export function mergePatches(
 /**
  * How many businesses to look at, to end up with `target` worth contacting.
  *
- * Most businesses a search finds cannot be emailed at all: the ones with the
- * highest opportunity are exactly the ones with no website, and a business with
- * no website has nowhere to publish a contact address. Looking at only `target`
- * of them is how a run ends with nothing to send.
+ * The target means one thing: up to this many genuinely new, relevant
+ * businesses. It used to be multiplied by four here, on the reasoning that
+ * most businesses cannot be emailed at all — true, but it made the number in
+ * the box mean nothing in particular, and it hid the real problem, which was a
+ * per-town cap throwing away hundreds of businesses further down. Discovery now
+ * removes duplicates and everything already on the sheet before this number is
+ * applied, so `target` new businesses is exactly what comes back, and the run
+ * log says how many more were available.
  */
 export function searchBreadth(target: number): number {
-  return Math.min(100, Math.max(12, Math.round(target) * 4));
+  return Math.min(DISCOVERY_SAFETY.targetMax, Math.max(1, Math.round(target) || 1));
 }
 
 /** "20 found · 12 qualified · 8 prepared" — the one-line summary of a finished run. */

@@ -3,6 +3,7 @@ import { findDuplicate, fillMissingLead, liveLeads, newLeadId, type Lead } from 
 import { emailPatch, websitePatch, discoveredWebsitePatch } from "@/lib/qualify";
 import { checkLeadWebsite, findLeadEmail } from "@/lib/qualify-server";
 import { researchProspects, type Prospect } from "@/lib/research";
+import { DISCOVERY_SAFETY, stopReason } from "@/lib/prospect-pool";
 import { runPlannedSearch } from "@/lib/run-search";
 import {
   checkReplies,
@@ -287,13 +288,35 @@ export function useAutoRun(onFinished?: () => void, campaignId = "") {
         const searchFor = searchBreadth(config.target);
         const perTrade = tradeBreadth(searchFor, trades.length);
 
+        // What discovery must not hand back: everything already on the sheet,
+        // plus anything unsubscribed. Passed IN to the search so it is removed
+        // from the candidate pool before the target is applied, rather than
+        // subtracted afterwards — the old order let 31 already-known businesses
+        // eat an entire run and leave 0 new.
+        const before = useLeadsStore.getState().leads;
+        const known = liveLeads(before);
+        const suppressedLeads = before.filter((lead) => lead.unsubscribed.trim());
+        const contactedLeads = known.filter((lead) => lead.lastEmailedAt.trim());
+
         const prospects: Prospect[] = [];
+        /** Rediscovered leads, kept aside to top up blank fields only. */
+        const rediscovered: Prospect[] = [];
         /** Discovery counters, summed across every trade and area searched. */
         const funnelTotals = {
           areas: 0, queriesSent: 0, rawTotal: 0, unique: 0,
-          duplicatesMerged: 0, droppedToLimit: 0,
+          duplicatesMerged: 0, droppedToFetchBudget: 0,
           withWebsite: 0, withoutWebsite: 0, withListedEmail: 0,
         };
+        /** Rows per source, so a source that returned nothing shows as a zero. */
+        const bySource = { companiesHouse: 0, nominatim: 0, photon: 0, bizdata: 0 };
+        /** Pool counters: dedupe, exclusions, ranking and the target. */
+        const poolTotals = {
+          collected: 0, duplicatesAcrossAreas: 0, alreadyKnown: 0,
+          suppressed: 0, alreadyContacted: 0, newCandidates: 0,
+          targetRequested: 0, targetAchieved: 0, remainingAfterTarget: 0,
+          droppedToSafetyCeiling: 0,
+        };
+        let ceilingHit = false;
         const seenProspect = new Set<string>();
         const searchErrors: string[] = [];
         let areaCount = 0;
@@ -305,6 +328,12 @@ export function useAutoRun(onFinished?: () => void, campaignId = "") {
             location: config.location,
             businessType: trade,
             limit: perTrade,
+            // Earlier trades' finds join the exclusion list, so one business
+            // listed as both a joiner and a carpenter uses one slot, not two,
+            // and is matched on full identity rather than on a name string.
+            known: [...known, ...prospects],
+            suppressed: suppressedLeads,
+            contacted: contactedLeads,
             shouldCancel: shouldStop,
             concurrency: 2,
             onProgress: (progress) => {
@@ -331,9 +360,20 @@ export function useAutoRun(onFinished?: () => void, campaignId = "") {
           for (const key of Object.keys(funnelTotals) as (keyof typeof funnelTotals)[]) {
             funnelTotals[key] += search.funnel[key];
           }
+          for (const key of Object.keys(poolTotals) as (keyof typeof poolTotals)[]) {
+            poolTotals[key] += search.pool[key];
+          }
+          for (const key of Object.keys(bySource) as (keyof typeof bySource)[]) {
+            bySource[key] += search.funnel.rawBySource[key];
+          }
+          rediscovered.push(...search.knownMatches);
+          ceilingHit = ceilingHit || search.pool.ceilingHit;
           areaCount += search.plan.areas.length;
           planLabel = search.plan.label;
           for (const prospect of search.prospects) {
+            // A belt-and-braces key on top of the identity exclusion above:
+            // cheap, and it cannot merge two businesses that are genuinely
+            // distinct because it only ever skips an exact repeat.
             const key = (prospect.placeId || `${prospect.businessName}|${prospect.town}`).toLowerCase();
             if (seenProspect.has(key)) continue;
             seenProspect.add(key);
@@ -361,20 +401,50 @@ export function useAutoRun(onFinished?: () => void, campaignId = "") {
         // indistinguishable from a thin area, and those need opposite fixes.
         if (funnelTotals.areas > 0) {
           log(
-            `Discovery: ${funnelTotals.queriesSent} queries across ${funnelTotals.areas} area` +
+            `Raw discovery: ${funnelTotals.queriesSent} queries across ${funnelTotals.areas} area` +
               `${funnelTotals.areas === 1 ? "" : "s"} · ${funnelTotals.rawTotal} rows · ` +
-              `${funnelTotals.unique} unique · ${funnelTotals.duplicatesMerged} duplicates merged.`,
+              `${funnelTotals.unique} unique in-area · ${funnelTotals.duplicatesMerged} merged by source.`,
           );
           log(
-            `Of those: ${funnelTotals.withWebsite} had a website on the listing, ` +
+            `Listings: ${funnelTotals.withWebsite} had a website, ` +
               `${funnelTotals.withoutWebsite} had none, ` +
               `${funnelTotals.withListedEmail} already carried an address.`,
           );
-          if (funnelTotals.droppedToLimit > 0) {
-            log(
-              `${funnelTotals.droppedToLimit} more business${funnelTotals.droppedToLimit === 1 ? "" : "es"} ` +
-                `were found and cut by your target — raise it to keep them.`,
-              "warn",
+          log(
+            `By source: ${bySource.companiesHouse} Companies House · ` +
+              `${bySource.nominatim} Nominatim · ${bySource.photon} Photon · ` +
+              `${bySource.bizdata} BizData.`,
+          );
+          log(
+            `Pooled: ${poolTotals.collected} offered · ` +
+              `${poolTotals.duplicatesAcrossAreas} were the same business listed in more than one town.`,
+          );
+          log(
+            `Already on file: ${poolTotals.alreadyKnown} on your sheet · ` +
+              `${poolTotals.alreadyContacted} already contacted · ` +
+              `${poolTotals.suppressed} suppressed. None of these used a slot.`,
+          );
+          log(
+            `Genuinely new: ${poolTotals.newCandidates} candidate` +
+              `${poolTotals.newCandidates === 1 ? "" : "s"} · ` +
+              `target ${poolTotals.targetRequested} · delivered ${poolTotals.targetAchieved}.`,
+            poolTotals.targetAchieved > 0 ? "good" : "warn",
+          );
+          // Exactly one sentence about what stopped the pipeline, and it has to
+          // be true: "raise your target" is only ever printed when raising the
+          // target would genuinely return more businesses.
+          const stopped = stopReason({
+            ...poolTotals,
+            ceilingHit,
+            withWebsite: 0,
+            withoutWebsite: 0,
+            withListedEmail: 0,
+          });
+          if (stopped) log(stopped, "warn");
+          if (funnelTotals.droppedToFetchBudget > 0) {
+            detail(
+              `${funnelTotals.droppedToFetchBudget} row${funnelTotals.droppedToFetchBudget === 1 ? "" : "s"} ` +
+                `sat past the per-area fetch budget of ${DISCOVERY_SAFETY.fetchPerArea}.`,
             );
           }
         }
@@ -393,9 +463,11 @@ export function useAutoRun(onFinished?: () => void, campaignId = "") {
         const merges: { id: string; patch: Partial<Lead> }[] = [];
         const runLeadIds = new Set<string>();
         for (const prospect of found.prospects) {
+          // Discovery already removed everything on the sheet, so this is the
+          // second line of defence rather than the first: it catches a lead
+          // added by another device while the search was running.
           const duplicate = findDuplicate(prospect, sheet);
           if (duplicate) {
-            // Already on the sheet. Fill any empty fields, keep outreach history.
             runLeadIds.add(duplicate.lead.id);
             const incoming = leadFromProspect(prospect);
             const patch = fillMissingLead(duplicate.lead, incoming);
@@ -406,15 +478,27 @@ export function useAutoRun(onFinished?: () => void, campaignId = "") {
           fresh.push(lead);
           runLeadIds.add(lead.id as string);
         }
+        // Businesses already on the sheet that discovery saw again. They took
+        // no slot and join no run, but a phone number or address published
+        // since last time is worth keeping. Blank fields only — never outreach
+        // status, call notes or unsubscribes.
+        const patched = new Set(merges.map((item) => item.id));
+        for (const prospect of rediscovered) {
+          const duplicate = findDuplicate(prospect, sheet);
+          if (!duplicate || patched.has(duplicate.lead.id)) continue;
+          const patch = fillMissingLead(duplicate.lead, leadFromProspect(prospect));
+          if (patch) {
+            patched.add(duplicate.lead.id);
+            merges.push({ id: duplicate.lead.id, patch });
+          }
+        }
         trackedIds = runLeadIds;
         if (fresh.length > 0) useLeadsStore.getState().addLeads(fresh);
         if (merges.length > 0) useLeadsStore.getState().updateLeads(merges);
         log(
           `${fresh.length} new to your sheet` +
-            (merges.length > 0 ? ` · ${merges.length} updated` : "") +
-            (found.prospects.length - fresh.length - merges.length > 0
-              ? ` · ${found.prospects.length - fresh.length} already there`
-              : ""),
+            (merges.length > 0 ? ` · ${merges.length} existing lead${merges.length === 1 ? "" : "s"} topped up` : ""),
+          fresh.length > 0 ? "good" : "warn",
         );
 
         const pushed = await pushSheet();

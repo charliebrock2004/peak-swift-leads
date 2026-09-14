@@ -234,7 +234,7 @@ describe("the discovery funnel a run reports", () => {
   const plan = { location: "Perth", businessType: "Joiner", limit: 20 };
 
   function research(funnel?: Partial<{ queriesSent: number; rawTotal: number; unique: number;
-    duplicatesMerged: number; droppedToLimit: number; withWebsite: number;
+    duplicatesMerged: number; droppedToFetchBudget: number; withWebsite: number;
     withoutWebsite: number; withListedEmail: number }>) {
     return async (input: { location: string }) => ({
       ok: true as const,
@@ -243,7 +243,7 @@ describe("the discovery funnel a run reports", () => {
       businessType: "Joiner",
       funnel: {
         queriesSent: 0, towns: [], rawBySource: { nominatim: 0, photon: 0, bizdata: 0, companiesHouse: 0 },
-        rawTotal: 0, unique: 0, duplicatesMerged: 0, droppedToLimit: 0,
+        rawTotal: 0, unique: 0, duplicatesMerged: 0, droppedToFetchBudget: 0,
         withWebsite: 0, withoutWebsite: 0, withListedEmail: 0, returned: 1, ...funnel,
       },
     });
@@ -263,8 +263,8 @@ describe("the discovery funnel a run reports", () => {
   it("reports businesses cut by the caller's own target", async () => {
     // The number that separates "this area is thin" from "we asked for too
     // few" — opposite diagnoses that would otherwise look identical.
-    const result = await runPlannedSearch({ ...plan, research: research({ droppedToLimit: 7 }) });
-    assert.equal(result.funnel.droppedToLimit, 7 * result.funnel.areas);
+    const result = await runPlannedSearch({ ...plan, research: research({ droppedToFetchBudget: 7 }) });
+    assert.equal(result.funnel.droppedToFetchBudget, 7 * result.funnel.areas);
   });
 
   it("counts zeros rather than going missing when a source returns nothing", async () => {
@@ -285,5 +285,149 @@ describe("the discovery funnel a run reports", () => {
     });
     assert.equal(result.funnel.areas, 0);
     assert.ok(result.prospects.length > 0, "the run still works without diagnostics");
+  });
+});
+
+/**
+ * The Perth failure, at the level of the runner rather than the pool.
+ *
+ * A run asking for 60 delivered 31, of which 0 were new, because every town
+ * was capped at 12 rows before anything looked across towns or at the sheet.
+ * These tests hold the corrected order: collect every area, dedupe, drop what
+ * is already known, then apply the target.
+ */
+describe("discovery collects before it caps", () => {
+  function prospectIn(town: string, index: number, shared = false): Prospect {
+    return prospect({
+      businessName: shared ? `Perthshire Joinery ${index} Ltd` : `${town} Joinery ${index} Ltd`,
+      town,
+      phone: shared
+        ? `01738 ${String(200000 + index).slice(-6)}`
+        : `01738 ${String(300000 + town.length * 1000 + index).slice(-6)}`,
+    });
+  }
+
+  /** Every town surfaces the same prominent firms first, then its own. */
+  const research: ResearchFn = async (input) => ({
+    ok: true,
+    location: input.location,
+    businessType: "Joiner",
+    prospects: [
+      ...Array.from({ length: 12 }, (_, i) => prospectIn(input.location, i, true)),
+      ...Array.from({ length: 20 }, (_, i) => prospectIn(input.location, i)),
+    ],
+  });
+
+  it("never asks an area for a slice of the target", async () => {
+    const limits: number[] = [];
+    const result = await runPlannedSearch({
+      location: "Perthshire",
+      businessType: "Joiner",
+      limit: 60,
+      concurrency: 1,
+      rateLimitPauseMs: 0,
+      research: async (input) => {
+        limits.push(input.limit);
+        return research(input);
+      },
+    });
+    assert.ok(limits.length > 1);
+    // Identical for every area, and unrelated to the target or to what is left.
+    assert.equal(new Set(limits).size, 1);
+    assert.notEqual(limits[0], 12);
+    assert.ok(result.prospects.length > 0);
+  });
+
+  it("keeps searching every planned area after the target is reachable", async () => {
+    let areasSearched = 0;
+    const result = await runPlannedSearch({
+      location: "Perthshire",
+      businessType: "Joiner",
+      limit: 10,
+      concurrency: 1,
+      rateLimitPauseMs: 0,
+      research: async (input) => {
+        areasSearched += 1;
+        return research(input);
+      },
+    });
+    // Stopping at the first area that satisfied the target would let a worse
+    // prospect win a slot a later town could have filled better.
+    assert.equal(areasSearched, result.plan.areas.length);
+    assert.equal(result.prospects.length, 10);
+  });
+
+  it("delivers the full target from towns that mostly overlap", async () => {
+    const result = await runPlannedSearch({
+      location: "Perthshire",
+      businessType: "Joiner",
+      limit: 60,
+      concurrency: 1,
+      rateLimitPauseMs: 0,
+      research,
+    });
+    assert.equal(result.prospects.length, 60);
+    assert.equal(result.pool.targetAchieved, 60);
+    assert.ok(result.pool.duplicatesAcrossAreas > 0);
+    const names = new Set(result.prospects.map((item) => item.businessName));
+    assert.equal(names.size, 60);
+  });
+
+  it("does not let businesses already on the sheet consume the target", async () => {
+    const known = Array.from({ length: 12 }, (_, i) => ({
+      businessName: `Perthshire Joinery ${i} Ltd`,
+      town: "Perth",
+      phone: `01738 ${String(200000 + i).slice(-6)}`,
+      mapsLink: "",
+    }));
+    const result = await runPlannedSearch({
+      location: "Perthshire",
+      businessType: "Joiner",
+      limit: 60,
+      concurrency: 1,
+      rateLimitPauseMs: 0,
+      research,
+      known,
+    });
+
+    assert.equal(result.prospects.length, 60);
+    assert.equal(result.pool.alreadyKnown, 12);
+    for (const item of result.prospects) {
+      assert.ok(
+        !known.some((lead) => lead.businessName === item.businessName),
+        `${item.businessName} was already on the sheet`,
+      );
+    }
+  });
+
+  it("reports the safety ceiling rather than pretending the target was met", async () => {
+    const result = await runPlannedSearch({
+      location: "Perthshire",
+      businessType: "Joiner",
+      limit: 200,
+      concurrency: 1,
+      rateLimitPauseMs: 0,
+      research,
+      ceiling: 40,
+    });
+    assert.equal(result.pool.ceilingHit, true);
+    assert.ok(result.pool.droppedToSafetyCeiling > 0);
+    assert.equal(result.prospects.length, 40);
+  });
+
+  it("excludes suppressed businesses from discovery entirely", async () => {
+    const result = await runPlannedSearch({
+      location: "Perthshire",
+      businessType: "Joiner",
+      limit: 60,
+      concurrency: 1,
+      rateLimitPauseMs: 0,
+      research,
+      suppressed: [
+        { businessName: "Perthshire Joinery 0 Ltd", town: "Perth", phone: "01738 200000", mapsLink: "" },
+      ],
+    });
+    assert.equal(result.pool.suppressed, 1);
+    assert.ok(!result.prospects.some((item) => item.businessName === "Perthshire Joinery 0 Ltd"));
   });
 });

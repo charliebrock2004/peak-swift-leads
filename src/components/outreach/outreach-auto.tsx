@@ -219,7 +219,7 @@ export function OutreachAuto({
           </Field>
 
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field label={`Businesses to target (max ${AUTO_TARGET_MAX})`}>
+            <Field label={`New businesses to find (max ${AUTO_TARGET_MAX})`}>
               <Input
                 className="mt-2 h-11"
                 type="number"
@@ -227,7 +227,7 @@ export function OutreachAuto({
                 max={AUTO_TARGET_MAX}
                 value={form.target}
                 onChange={(event) => set("target", Number(event.target.value))}
-                aria-label="Businesses to target"
+                aria-label="New businesses to find"
               />
             </Field>
             <Field label={`Daily sending limit (max ${AUTO_DAILY_MAX})`}>

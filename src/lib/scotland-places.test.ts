@@ -1,3 +1,4 @@
+import { DISCOVERY_SAFETY } from "./discovery-limits.ts";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
@@ -69,7 +70,16 @@ describe("planSearch", () => {
       plan.areas.map((area) => area.name),
       ["Crieff"],
     );
-    assert.equal(plan.areas[0]?.quota, 8);
+    // A fetch budget, not the target. The two used to be the same number,
+    // which is how a 14-town search for 60 businesses kept 12 per town.
+    assert.equal(plan.areas[0]?.quota, DISCOVERY_SAFETY.fetchPerArea);
+  });
+
+  it("never lets the target decide how many rows an area returns", () => {
+    const small = planSearch("Crieff", 1);
+    const large = planSearch("Crieff", 200);
+    assert.equal(small.areas[0]?.quota, large.areas[0]?.quota);
+    assert.equal(small.areas[0]?.quota, DISCOVERY_SAFETY.fetchPerArea);
   });
 
   it("keeps a small city job as a single request", () => {

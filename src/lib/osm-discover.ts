@@ -52,8 +52,15 @@ export type DiscoveryFunnel = {
   /** Distinct businesses after merging. */
   unique: number;
   duplicatesMerged: number;
-  /** Businesses found and then cut by the caller's own target. */
-  droppedToLimit: number;
+  /**
+   * Businesses this area found and then cut by the per-area fetch budget.
+   *
+   * Not the user's target — the target is applied once, to the pooled results
+   * of every area, after cross-area dedupe. Saying otherwise is what made the
+   * old run log advise "raise your target" about a cap the target could not
+   * reach.
+   */
+  droppedToFetchBudget: number;
   withWebsite: number;
   withoutWebsite: number;
   /** Businesses whose listing already carried an address. */
@@ -1241,10 +1248,10 @@ export async function discoverBusinesses(options: {
     rawTotal,
     unique: places.length,
     duplicatesMerged: Math.max(0, rawTotal - places.length),
-    // What the caller's own cap threw away. A non-zero number here means more
-    // businesses existed and the target was the binding constraint, not the
-    // search — which is the opposite diagnosis from "we could not find any".
-    droppedToLimit: Math.max(0, places.length - kept.length),
+    // What this area's fetch budget threw away. Non-zero means the area holds
+    // more than one page of businesses — useful, but never a reason to tell
+    // the user to raise a target that does not control this number.
+    droppedToFetchBudget: Math.max(0, places.length - kept.length),
     withWebsite: kept.filter((place) => place.website).length,
     withoutWebsite: kept.filter((place) => !place.website).length,
     withListedEmail: kept.filter((place) => place.email).length,

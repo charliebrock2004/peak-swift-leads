@@ -1,3 +1,4 @@
+import { DISCOVERY_SAFETY } from "../discovery-limits.ts";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { computeOpportunity, createLead, type Lead } from "../leads.ts";
@@ -449,20 +450,21 @@ describe("keeping both halves of the qualify step", () => {
 });
 
 describe("how wide a run searches", () => {
-  it("looks at several times the number it expects to contact", () => {
-    // Most businesses found cannot be emailed at all, so searching for exactly
-    // the target is how a run ends with nothing to send.
-    assert.ok(searchBreadth(8) > 8);
-    assert.equal(searchBreadth(8), 32);
+  it("asks for exactly the number of new businesses the user typed", () => {
+    // The target used to be multiplied by four here, which made the number in
+    // the box mean nothing in particular. It now means what it says.
+    assert.equal(searchBreadth(8), 8);
+    assert.equal(searchBreadth(60), 60);
   });
 
-  it("never asks for fewer than one full batch", () => {
-    assert.equal(searchBreadth(1), 12);
+  it("never asks for fewer than one", () => {
+    assert.equal(searchBreadth(1), 1);
+    assert.equal(searchBreadth(0), 1);
   });
 
-  it("stays within what the search itself accepts", () => {
-    assert.equal(searchBreadth(50), 100);
-    assert.equal(searchBreadth(9999), 100);
+  it("stays within the engine's own ceiling", () => {
+    assert.equal(searchBreadth(50), 50);
+    assert.equal(searchBreadth(9999), DISCOVERY_SAFETY.targetMax);
   });
 });
 
