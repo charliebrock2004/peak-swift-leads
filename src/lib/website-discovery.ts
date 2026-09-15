@@ -29,18 +29,71 @@ const STOPWORDS = new Set([
   "services", "service", "group", "uk", "scotland",
 ]);
 
-/** Trade words worth appending, since many small firms include them. */
-const TRADE_SUFFIXES: Record<string, string[]> = {
-  hairdresser: ["hair", "hairdressing", "salon"],
-  barber: ["barbers", "barbershop"],
-  joiner: ["joinery"],
-  plumber: ["plumbing"],
-  electrician: ["electrical"],
-  builder: ["builders", "construction"],
-  roofer: ["roofing"],
-  painter: ["decorating"],
-  landscaper: ["landscaping", "gardens"],
-};
+/**
+ * Trade words that mean the same trade, grouped.
+ *
+ * A firm trading as "Smith Joiners" very often registers smithjoinery.co.uk.
+ * Appending the trade word to the whole name — the previous behaviour — asked
+ * for smithjoinersjoinery.co.uk, which essentially never exists, and spent a
+ * probe slot proving it. The real domain was never tried at all. So a name that
+ * already contains a trade word gets its siblings SUBSTITUTED in, and only a
+ * name with no trade word in it gets one appended.
+ */
+/**
+ * Order within a family is the order the domains get tried, so each family is
+ * written most-likely-domain first: the trade noun ("joinery", "plumbing")
+ * before the plural tradesperson ("joiners") before the singular ("joiner").
+ * Small firms register smithjoinery.co.uk far more often than smithjoiner.co.uk.
+ */
+const TRADE_FAMILIES: string[][] = [
+  ["hairdressing", "hair", "salon", "hairdressers", "hairdresser"],
+  ["barbers", "barbershop", "barber"],
+  ["joinery", "joiners", "carpentry", "woodwork", "woodworking", "joiner", "carpenters", "carpenter"],
+  ["plumbing", "heating", "plumbers", "plumber"],
+  ["electrical", "electrics", "electricians", "electrician"],
+  ["building", "construction", "builders", "builder"],
+  ["roofing", "roofers", "roofer"],
+  ["decorating", "painting", "decorators", "painters", "decorator", "painter"],
+  ["landscaping", "gardens", "gardening", "landscapers", "landscaper"],
+  ["plastering", "plasterers", "plasterer"],
+  ["tiling", "tilers", "tiler"],
+];
+
+/** The family a trade or name word belongs to, or null. */
+function familyOf(word: string): string[] | null {
+  const key = word.trim().toLowerCase();
+  if (!key) return null;
+  return TRADE_FAMILIES.find((family) => family.includes(key)) ?? null;
+}
+
+/**
+ * Stems built by swapping a trade word in the name for each of its siblings.
+ *
+ * "Smith Joiners" yields smithjoinery, smithcarpentry, smithwoodwork and so on
+ * — every one of which is a domain a real joiner might hold, and none of which
+ * the old append-only rule could reach. Nothing here is attached to a lead: a
+ * stem only becomes a website after `scoreWebsiteMatch` corroborates it.
+ */
+function substitutedStems(parts: string[]): string[] {
+  const out: string[] = [];
+  for (const [index, part] of parts.entries()) {
+    const family = familyOf(part);
+    if (!family) continue;
+    for (const sibling of family) {
+      if (sibling === part) continue;
+      const swapped = [...parts];
+      swapped[index] = sibling;
+      const joined = swapped.join("");
+      if (joined.length >= 4 && joined.length <= 40 && !out.includes(joined)) out.push(joined);
+    }
+    // Also the name with the trade word removed entirely: "Strathearn Joiners"
+    // is sometimes just strathearn.co.uk. Only when what remains is long
+    // enough to identify a business on its own.
+    const without = parts.filter((_, at) => at !== index).join("");
+    if (without.length >= 7 && !out.includes(without)) out.push(without);
+  }
+  return out;
+}
 
 function words(value: string): string[] {
   return value
@@ -75,10 +128,23 @@ export function candidateDomains(
 
   const stems: string[] = [joined];
   if (parts.length > 1) stems.push(parts.join("-"));
+
+  // Sibling trade words, substituted into the name. Ahead of the town form,
+  // because a firm is likelier to hold smithjoinery.co.uk than
+  // smithjoinersperth.co.uk.
+  const swapped = substitutedStems(parts);
+  stems.push(...swapped);
+
   const townWord = words(town)[0];
   if (townWord && !joined.includes(townWord)) stems.push(`${joined}${townWord}`);
-  for (const suffix of TRADE_SUFFIXES[trade.trim().toLowerCase()] ?? []) {
-    if (!joined.includes(suffix)) stems.push(`${joined}${suffix}`);
+
+  // Appending only makes sense when the name carries no trade word of its own.
+  // When it does, `substitutedStems` has already covered the sensible forms and
+  // appending would only produce "...joinersjoinery".
+  if (swapped.length === 0) {
+    for (const sibling of familyOf(trade) ?? []) {
+      if (!joined.includes(sibling)) stems.push(`${joined}${sibling}`);
+    }
   }
 
   const out: string[] = [];

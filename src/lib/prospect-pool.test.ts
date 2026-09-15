@@ -5,8 +5,10 @@ import { DISCOVERY_SAFETY } from "./discovery-limits.ts";
 import {
   buildProspectPool,
   createProspectPool,
+  funnelReconciles,
   rankProspects,
   scoreProspect,
+  sourceKeyOf,
   stopReason,
 } from "./prospect-pool.ts";
 import type { Prospect } from "./research.ts";
@@ -419,6 +421,8 @@ describe("the Perth regression", () => {
     assert.ok(diagnostics.newCandidates > 500);
     assert.ok(diagnostics.duplicatesAcrossAreas > 300);
     assert.equal(diagnostics.targetAchieved, 60);
+    // And the report a person reads adds up: nothing is unaccounted for.
+    assert.ok(funnelReconciles(diagnostics), JSON.stringify(diagnostics, null, 2));
   });
 
   it("still delivers 60 new when the previous run's 31 are already on the sheet", () => {
@@ -484,5 +488,126 @@ describe("rediscovered leads are kept for field-filling, not for slots", () => {
     );
     const { knownMatches } = buildProspectPool(listings, { target: 60, known });
     assert.equal(knownMatches.length, 1);
+  });
+});
+
+describe("the target means new businesses, under every arrangement", () => {
+  it("returns the 60 new ones when 60 known and 60 new candidates exist", () => {
+    const known = Array.from({ length: 60 }, (_, i) => distinct(i));
+    const fresh = Array.from({ length: 60 }, (_, i) => distinct(1000 + i));
+    const { prospects, diagnostics } = buildProspectPool([...known, ...fresh], { target: 60, known });
+    assert.equal(prospects.length, 60);
+    assert.equal(diagnostics.alreadyKnown, 60);
+    for (const item of prospects) assert.ok(item.placeId.startsWith("place-1"));
+  });
+
+  it("does not let 20 known candidates arriving first eat the 60", () => {
+    // Order is the trap: the old pipeline capped as it went, so whoever
+    // arrived first won the slot whether or not they were new.
+    const known = Array.from({ length: 20 }, (_, i) => distinct(i));
+    const fresh = Array.from({ length: 60 }, (_, i) => distinct(1000 + i));
+    const { prospects, diagnostics } = buildProspectPool([...known, ...fresh], { target: 60, known });
+    assert.equal(prospects.length, 60);
+    assert.equal(diagnostics.newCandidates, 60);
+    assert.equal(diagnostics.remainingAfterTarget, 0);
+  });
+
+  it("returns 60 of 200 genuinely new and says 140 are unused", () => {
+    const candidates = Array.from({ length: 200 }, (_, i) => distinct(i));
+    const { prospects, diagnostics } = buildProspectPool(candidates, { target: 60 });
+    assert.equal(prospects.length, 60);
+    assert.equal(diagnostics.remainingAfterTarget, 140);
+    assert.match(stopReason(diagnostics) ?? "", /raise it to keep them/i);
+  });
+
+  it("returns 150 for a target of 200 and reports the pool as exhausted", () => {
+    const candidates = Array.from({ length: 150 }, (_, i) => distinct(i));
+    const { prospects, diagnostics } = buildProspectPool(candidates, { target: 200 });
+    assert.equal(prospects.length, 150);
+    assert.equal(diagnostics.targetRequested, 200);
+    assert.equal(diagnostics.remainingAfterTarget, 0);
+    assert.match(stopReason(diagnostics) ?? "", /out of new businesses/i);
+  });
+
+  it("a repeated search of the same area returns nothing the first one did", () => {
+    const area = Array.from({ length: 80 }, (_, i) => distinct(i));
+    const first = buildProspectPool(area, { target: 60 });
+    const second = buildProspectPool(area, { target: 60, known: first.prospects });
+    assert.equal(first.prospects.length, 60);
+    assert.equal(second.prospects.length, 20);
+    for (const item of second.prospects) {
+      assert.ok(!first.prospects.some((seen) => seen.placeId === item.placeId));
+    }
+  });
+
+  it("a known business that has since gained an email still takes no slot", () => {
+    const stale = prospect({ businessName: "Tay Joinery", town: "Perth", phone: "01738 555111" });
+    const enriched = prospect({
+      businessName: "Tay Joinery",
+      town: "Perth",
+      phone: "01738 555111",
+      email: "hello@tayjoinery.co.uk",
+      website: "https://tayjoinery.co.uk",
+    });
+    const { prospects, knownMatches, diagnostics } = buildProspectPool(
+      [enriched, distinct(1)],
+      { target: 60, known: [stale] },
+    );
+    assert.equal(diagnostics.alreadyKnown, 1);
+    assert.equal(prospects.length, 1);
+    assert.equal(knownMatches[0]?.email, "hello@tayjoinery.co.uk");
+  });
+});
+
+describe("source contribution is measured after de-duplication", () => {
+  it("credits a source only for businesses it actually added", () => {
+    // Companies House returns 3 firms; Nominatim returns the same 3 plus 1.
+    // Raw rows say 3 and 4; contribution says 3 and 1.
+    const shared = [0, 1, 2].map((i) =>
+      prospect({
+        businessName: `Shared Joinery ${i} Ltd`,
+        phone: `01738 ${String(400000 + i).slice(-6)}`,
+        source: "Companies House",
+      }),
+    );
+    const osmCopies = shared.map((item) => ({ ...item, source: "OpenStreetMap via Nominatim" }));
+    const osmOnly = prospect({
+      businessName: "Nominatim Only Joinery Ltd",
+      phone: "01738 499999",
+      source: "OpenStreetMap via Nominatim",
+    });
+    const { diagnostics } = buildProspectPool([...shared, ...osmCopies, osmOnly], { target: 60 });
+
+    assert.equal(diagnostics.newBySource.companiesHouse, 3);
+    assert.equal(diagnostics.newBySource.nominatim, 1);
+    assert.equal(diagnostics.newCandidates, 4);
+  });
+
+  it("maps every label the discovery engine stamps to a named source", () => {
+    const labels = [
+      "Companies House",
+      "Companies House + OpenStreetMap",
+      "OpenStreetMap via Nominatim",
+      "OpenStreetMap via Overpass",
+      "OpenStreetMap via BizData",
+      "OpenStreetMap",
+    ];
+    for (const label of labels) {
+      assert.notEqual(sourceKeyOf(label), "other", `${label} fell through to "other"`);
+    }
+    assert.equal(sourceKeyOf("Companies House"), "companiesHouse");
+    assert.equal(sourceKeyOf("Companies House + OpenStreetMap"), "companiesHouse");
+    assert.equal(sourceKeyOf("OpenStreetMap"), "photon");
+    assert.equal(sourceKeyOf("something new"), "other");
+  });
+
+  it("counts delivered businesses by source too", () => {
+    const candidates = Array.from({ length: 10 }, (_, i) => ({
+      ...distinct(i),
+      source: i < 6 ? "Companies House" : "OpenStreetMap via Nominatim",
+    }));
+    const { diagnostics } = buildProspectPool(candidates, { target: 4 });
+    const delivered = diagnostics.deliveredBySource;
+    assert.equal(delivered.companiesHouse + delivered.nominatim, 4);
   });
 });

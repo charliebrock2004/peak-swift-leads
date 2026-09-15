@@ -8,6 +8,41 @@ export { DISCOVERY_SAFETY };
 /** Why a discovered business never became a prospect. */
 export type PoolExclusion = "duplicate" | "known" | "suppressed" | "contacted";
 
+/**
+ * The sources a business can come from, as diagnostic buckets.
+ *
+ * `other` exists so an unrecognised label is visible rather than silently
+ * dropped; `source-labels.test.ts` asserts every label the discovery engine
+ * actually stamps maps to one of the named keys, so `other` staying at zero is
+ * a checked property and not a hope.
+ */
+export const SOURCE_KEYS = ["companiesHouse", "nominatim", "photon", "bizdata", "overpass", "other"] as const;
+export type SourceKey = (typeof SOURCE_KEYS)[number];
+export type SourceTally = Record<SourceKey, number>;
+
+export function emptySourceTally(): SourceTally {
+  return { companiesHouse: 0, nominatim: 0, photon: 0, bizdata: 0, overpass: 0, other: 0 };
+}
+
+/**
+ * Which source a prospect came from, from the label discovery stamped on it.
+ *
+ * Checked most specific first: "Companies House + OpenStreetMap" is a company
+ * record that OSM later enriched, and it is the registry that found the
+ * business, so it counts to Companies House.
+ */
+export function sourceKeyOf(source: string): SourceKey {
+  const value = source.toLowerCase();
+  if (value.includes("companies house")) return "companiesHouse";
+  if (value.includes("bizdata")) return "bizdata";
+  if (value.includes("nominatim")) return "nominatim";
+  if (value.includes("overpass")) return "overpass";
+  // Plain "OpenStreetMap" is what the Photon search stamps; the other OSM
+  // paths all name their own provider, so they are already handled above.
+  if (value.includes("openstreetmap")) return "photon";
+  return "other";
+}
+
 export type PoolDiagnostics = {
   /** Businesses offered to the pool, across every area and source. */
   collected: number;
@@ -34,7 +69,40 @@ export type PoolDiagnostics = {
   withWebsite: number;
   withoutWebsite: number;
   withListedEmail: number;
+  /**
+   * Genuinely new businesses each source contributed, counted after dedupe.
+   *
+   * Raw row counts flatter a source that returns the same firms every source
+   * already had. This is the number that says whether a source is worth its
+   * request budget: how many businesses reached the pool because of it and
+   * would not otherwise have been there at all.
+   */
+  newBySource: SourceTally;
+  /** Of the businesses actually delivered, which source found each. */
+  deliveredBySource: SourceTally;
 };
+
+/**
+ * Prove the funnel adds up.
+ *
+ * Every business offered left by exactly one door: it became a candidate, or
+ * it was a duplicate, or it was excluded for a named reason, or the safety
+ * ceiling refused it. If this ever returns false a number on the run report is
+ * lying, so the tests assert it over every fixture.
+ */
+export function funnelReconciles(d: PoolDiagnostics): boolean {
+  const accountedFor =
+    d.newCandidates +
+    d.duplicatesAcrossAreas +
+    d.alreadyKnown +
+    d.suppressed +
+    d.alreadyContacted +
+    d.droppedToSafetyCeiling;
+  if (accountedFor !== d.collected) return false;
+  if (d.targetAchieved + d.remainingAfterTarget !== d.newCandidates) return false;
+  if (d.withWebsite + d.withoutWebsite !== d.targetAchieved) return false;
+  return true;
+}
 
 export type ProspectPoolOptions = {
   /** The user's requested number of genuinely new prospects. */
@@ -190,6 +258,7 @@ export function createProspectPool(options: ProspectPoolOptions): ProspectPool {
   const seen: IdentityIndex<Prospect> = createIdentityIndex<Prospect>();
   const kept: Prospect[] = [];
   const knownMatches: Prospect[] = [];
+  const newBySource = emptySourceTally();
 
   const counts = {
     collected: 0,
@@ -234,6 +303,7 @@ export function createProspectPool(options: ProspectPoolOptions): ProspectPool {
           continue;
         }
         kept.push(prospect);
+        newBySource[sourceKeyOf(prospect.source)] += 1;
       }
     },
     get size() {
@@ -263,6 +333,11 @@ export function createProspectPool(options: ProspectPoolOptions): ProspectPool {
           withWebsite: prospects.filter((item) => independentHost(item.website)).length,
           withoutWebsite: prospects.filter((item) => !independentHost(item.website)).length,
           withListedEmail: prospects.filter((item) => item.email.trim()).length,
+          newBySource,
+          deliveredBySource: prospects.reduce((tally, item) => {
+            tally[sourceKeyOf(item.source)] += 1;
+            return tally;
+          }, emptySourceTally()),
         },
       };
     },
@@ -285,7 +360,18 @@ export function buildProspectPool(
  * Returns null when nothing did. The rule this encodes: only say "raise your
  * target" when raising the target would genuinely return more businesses.
  */
-export function stopReason(diagnostics: PoolDiagnostics): string | null {
+export type StopFacts = Pick<
+  PoolDiagnostics,
+  | "ceilingHit"
+  | "droppedToSafetyCeiling"
+  | "remainingAfterTarget"
+  | "targetRequested"
+  | "targetAchieved"
+  | "alreadyKnown"
+  | "duplicatesAcrossAreas"
+>;
+
+export function stopReason(diagnostics: StopFacts): string | null {
   if (diagnostics.ceilingHit) {
     return (
       `Discovery stopped at the ${DISCOVERY_SAFETY.poolCeiling}-business safety ceiling ` +

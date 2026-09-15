@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { DISCOVERY_SAFETY } from "./discovery-limits.ts";
 import { decide, scoreCandidate, type EmailCandidate, type ScoreContext } from "./email-discovery.ts";
 import { buildProspectPool } from "./prospect-pool.ts";
+import { scoreWebsiteMatch, WEBSITE_MIN_SCORE } from "./website-discovery.ts";
 import { AUTO_DAILY_MAX, AUTO_TARGET_MAX, clampAutoConfig, DEFAULT_AUTO_CONFIG } from "./outreach/auto-run.ts";
 import { sanitizeSettings } from "./outreach/limits.ts";
 import { DEFAULT_SETTINGS } from "./outreach/types.ts";
@@ -201,5 +202,57 @@ describe("what reaches email discovery", () => {
     );
     assert.equal(prospects[0]?.businessName, "Real Site Joinery");
     assert.equal(prospects[1]?.businessName, "No Site Joinery");
+  });
+});
+
+describe("widening the domain guess did not widen what gets attached", () => {
+  const identity = {
+    businessName: "Smith Joiners",
+    town: "Perth",
+    trade: "Joiner",
+    phone: "01738 555111",
+    address: "1 Mill Street, Perth, PH1 5HZ",
+  };
+
+  it("refuses a substituted domain that carries none of the business's details", () => {
+    // smithjoinery.co.uk is now generated as a candidate. That must change
+    // nothing about whether it can be attached: a page with no matching phone,
+    // postcode or address is somebody else's business.
+    const match = scoreWebsiteMatch(
+      {
+        url: "https://smithjoinery.co.uk",
+        text: "Quality joinery in Aberdeen. Call 01224 999888. 4 Union Street, Aberdeen, AB10 1BA.",
+        title: "Smith Joinery Aberdeen",
+      },
+      identity,
+    );
+    assert.ok(match.score < WEBSITE_MIN_SCORE, `scored ${match.score}: ${match.evidence.join("; ")}`);
+  });
+
+  it("accepts a substituted domain that does corroborate the business", () => {
+    const match = scoreWebsiteMatch(
+      {
+        url: "https://smithjoinery.co.uk",
+        text: "Smith Joiners, Perth. Call 01738 555111. 1 Mill Street, Perth, PH1 5HZ.",
+        title: "Smith Joiners Perth",
+      },
+      identity,
+    );
+    assert.ok(match.score >= WEBSITE_MIN_SCORE, `scored ${match.score}: ${match.evidence.join("; ")}`);
+  });
+
+  it("a name resemblance alone is never enough", () => {
+    const match = scoreWebsiteMatch(
+      { url: "https://smithjoinery.co.uk", text: "Smith Joinery", title: "Smith Joinery" },
+      identity,
+    );
+    assert.ok(match.score < WEBSITE_MIN_SCORE, `scored ${match.score}: ${match.evidence.join("; ")}`);
+  });
+
+  it("keeps the probe budget and the candidate list the same size", () => {
+    // Generating candidates nothing ever fetches is how the real domain got
+    // missed; probing more than were generated would be a wasted request.
+    const source = readFileSync(new URL("./qualify-server.ts", import.meta.url), "utf8");
+    assert.match(source, /const WEBSITE_PROBES = MAX_WEBSITE_CANDIDATES;/);
   });
 });

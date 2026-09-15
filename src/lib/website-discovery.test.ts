@@ -56,6 +56,49 @@ describe("guessing where to look", () => {
     assert.deepEqual(candidateDomains("Ltd", "Cupar", ""), []);
   });
 
+  it("tries the trade-noun form of a name that already names the trade", () => {
+    // The live blocker: "Smith Joiners" very often holds smithjoinery.co.uk.
+    // Appending gave smithjoinersjoinery.co.uk — a string that essentially
+    // never exists — and the real domain was never tried at all.
+    const domains = candidateDomains("Smith Joiners", "Perth", "Joiner");
+    assert.ok(domains.includes("smithjoinery.co.uk"), domains.join(", "));
+    assert.ok(!domains.some((d) => /joinersjoinery/.test(d)), domains.join(", "));
+  });
+
+  it("substitutes sibling trade words in both directions", () => {
+    const fromPlural = candidateDomains("Strathearn Joiners Ltd", "Crieff", "Joiner");
+    assert.ok(fromPlural.includes("strathearnjoinery.co.uk"), fromPlural.join(", "));
+    const fromNoun = candidateDomains("Tay Joinery", "Perth", "Joiner");
+    assert.ok(fromNoun.includes("tayjoiners.co.uk"), fromNoun.join(", "));
+    const fromCarpentry = candidateDomains("MacDonald Carpentry", "Scone", "Joiner");
+    assert.ok(fromCarpentry.includes("macdonaldjoinery.co.uk"), fromCarpentry.join(", "));
+  });
+
+  it("still appends the trade when the name does not carry one", () => {
+    const domains = candidateDomains("Cutting Edge", "Cupar", "Hairdresser", 12);
+    assert.ok(domains.some((d) => /hair|salon/.test(d)), domains.join(", "));
+  });
+
+  it("puts the literal name ahead of any substituted form", () => {
+    const domains = candidateDomains("Smith Joiners", "Perth", "Joiner");
+    assert.equal(domains[0], "smithjoiners.co.uk");
+  });
+
+  it("never substitutes its way to a stem too short to identify a business", () => {
+    // Dropping the trade word from "AB Joiners" leaves "ab", which would match
+    // any number of unrelated sites. A guess that weak must not be generated.
+    const domains = candidateDomains("AB Joiners", "Dundee", "Joiner", 12);
+    assert.ok(!domains.includes("ab.co.uk"), domains.join(", "));
+    for (const domain of domains) {
+      assert.ok(domain.split(".")[0]!.length >= 4, domain);
+    }
+  });
+
+  it("stays inside its budget with substitution in play", () => {
+    assert.ok(candidateDomains("Smith Joiners", "Perth", "Joiner").length <= MAX_WEBSITE_CANDIDATES);
+    assert.ok(candidateDomains("Bridgend Woodworking", "Perth", "Joiner").length <= MAX_WEBSITE_CANDIDATES);
+  });
+
   it("stays inside its budget", () => {
     assert.ok(candidateDomains("Gary Wightman Hairdressing Salon", "Dundee", "Hairdresser").length <= MAX_WEBSITE_CANDIDATES);
   });

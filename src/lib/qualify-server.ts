@@ -52,6 +52,7 @@ import {
   emailsAllowedFromMatch,
   isSingleBusinessListing,
   listingClearlyMatches,
+  MAX_WEBSITE_CANDIDATES,
   pageText,
   pageTitle,
   scoreWebsiteMatch,
@@ -235,7 +236,16 @@ async function fetchWithFallbacks(
  * deliberately small because the corroboration check, not the breadth of the
  * guessing, is what makes this safe.
  */
-const WEBSITE_PROBES = 4;
+/**
+ * Domain guesses tried for one lead when search found no site.
+ *
+ * Matched to `MAX_WEBSITE_CANDIDATES` so the whole candidate list is actually
+ * used: it was 4 against a list of 6, so the last two forms — which is where
+ * the substituted trade-word domains live — were generated and then never
+ * fetched. They run concurrently, so this costs no extra wall-clock time, and
+ * every one still has to clear `scoreWebsiteMatch` before it can be attached.
+ */
+const WEBSITE_PROBES = MAX_WEBSITE_CANDIDATES;
 
 
 /**

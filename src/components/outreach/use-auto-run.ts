@@ -3,7 +3,7 @@ import { findDuplicate, fillMissingLead, liveLeads, newLeadId, type Lead } from 
 import { emailPatch, websitePatch, discoveredWebsitePatch } from "@/lib/qualify";
 import { checkLeadWebsite, findLeadEmail } from "@/lib/qualify-server";
 import { researchProspects, type Prospect } from "@/lib/research";
-import { DISCOVERY_SAFETY, stopReason } from "@/lib/prospect-pool";
+import { DISCOVERY_SAFETY, emptySourceTally, SOURCE_KEYS, stopReason } from "@/lib/prospect-pool";
 import { runPlannedSearch } from "@/lib/run-search";
 import {
   checkReplies,
@@ -309,6 +309,8 @@ export function useAutoRun(onFinished?: () => void, campaignId = "") {
         };
         /** Rows per source, so a source that returned nothing shows as a zero. */
         const bySource = { companiesHouse: 0, nominatim: 0, photon: 0, bizdata: 0 };
+        /** Genuinely new businesses per source, counted after de-duplication. */
+        const newBySource = emptySourceTally();
         /** Pool counters: dedupe, exclusions, ranking and the target. */
         const poolTotals = {
           collected: 0, duplicatesAcrossAreas: 0, alreadyKnown: 0,
@@ -366,6 +368,7 @@ export function useAutoRun(onFinished?: () => void, campaignId = "") {
           for (const key of Object.keys(bySource) as (keyof typeof bySource)[]) {
             bySource[key] += search.funnel.rawBySource[key];
           }
+          for (const key of SOURCE_KEYS) newBySource[key] += search.pool.newBySource[key];
           rediscovered.push(...search.knownMatches);
           ceilingHit = ceilingHit || search.pool.ceilingHit;
           areaCount += search.plan.areas.length;
@@ -397,49 +400,51 @@ export function useAutoRun(onFinished?: () => void, campaignId = "") {
           );
           return;
         }
-        // The discovery funnel, in the run log. A thin run is otherwise
-        // indistinguishable from a thin area, and those need opposite fixes.
+        // The discovery funnel, in the run log, as three reconciling blocks.
+        // A thin run is otherwise indistinguishable from a thin area, and those
+        // need opposite fixes. Every business offered leaves by exactly one
+        // door, and each door is named.
         if (funnelTotals.areas > 0) {
           log(
-            `Raw discovery: ${funnelTotals.queriesSent} queries across ${funnelTotals.areas} area` +
-              `${funnelTotals.areas === 1 ? "" : "s"} · ${funnelTotals.rawTotal} rows · ` +
-              `${funnelTotals.unique} unique in-area · ${funnelTotals.duplicatesMerged} merged by source.`,
+            `DISCOVERY — ${funnelTotals.queriesSent} queries across ${funnelTotals.areas} area` +
+              `${funnelTotals.areas === 1 ? "" : "s"} · ${funnelTotals.rawTotal} raw rows · ` +
+              `${funnelTotals.unique} unique in-area · ` +
+              `${poolTotals.duplicatesAcrossAreas} cross-area duplicates.`,
           );
           log(
-            `Listings: ${funnelTotals.withWebsite} had a website, ` +
-              `${funnelTotals.withoutWebsite} had none, ` +
-              `${funnelTotals.withListedEmail} already carried an address.`,
-          );
-          log(
-            `By source: ${bySource.companiesHouse} Companies House · ` +
+            `  Raw by source: ${bySource.companiesHouse} Companies House · ` +
               `${bySource.nominatim} Nominatim · ${bySource.photon} Photon · ` +
               `${bySource.bizdata} BizData.`,
           );
           log(
-            `Pooled: ${poolTotals.collected} offered · ` +
-              `${poolTotals.duplicatesAcrossAreas} were the same business listed in more than one town.`,
+            `  New by source: ${newBySource.companiesHouse} Companies House · ` +
+              `${newBySource.nominatim} Nominatim · ${newBySource.photon} Photon · ` +
+              `${newBySource.bizdata} BizData · ${newBySource.overpass} Overpass` +
+              (newBySource.other > 0 ? ` · ${newBySource.other} other` : "") +
+              ` — after de-duplication, so this is what each source actually added.`,
           );
           log(
-            `Already on file: ${poolTotals.alreadyKnown} on your sheet · ` +
+            `FILTERING — ${poolTotals.collected} offered · ` +
+              `${poolTotals.alreadyKnown} already on your sheet · ` +
               `${poolTotals.alreadyContacted} already contacted · ` +
-              `${poolTotals.suppressed} suppressed. None of these used a slot.`,
+              `${poolTotals.suppressed} suppressed · ` +
+              `${poolTotals.duplicatesAcrossAreas} duplicates` +
+              (poolTotals.droppedToSafetyCeiling > 0
+                ? ` · ${poolTotals.droppedToSafetyCeiling} past the safety ceiling`
+                : "") +
+              ` = ${poolTotals.newCandidates} genuinely new.`,
           );
           log(
-            `Genuinely new: ${poolTotals.newCandidates} candidate` +
-              `${poolTotals.newCandidates === 1 ? "" : "s"} · ` +
-              `target ${poolTotals.targetRequested} · delivered ${poolTotals.targetAchieved}.`,
+            `SELECTION — target ${poolTotals.targetRequested} · ` +
+              `selected ${poolTotals.targetAchieved} · ` +
+              `${poolTotals.remainingAfterTarget} new candidate` +
+              `${poolTotals.remainingAfterTarget === 1 ? "" : "s"} unused.`,
             poolTotals.targetAchieved > 0 ? "good" : "warn",
           );
           // Exactly one sentence about what stopped the pipeline, and it has to
           // be true: "raise your target" is only ever printed when raising the
           // target would genuinely return more businesses.
-          const stopped = stopReason({
-            ...poolTotals,
-            ceilingHit,
-            withWebsite: 0,
-            withoutWebsite: 0,
-            withListedEmail: 0,
-          });
+          const stopped = stopReason({ ...poolTotals, ceilingHit });
           if (stopped) log(stopped, "warn");
           if (funnelTotals.droppedToFetchBudget > 0) {
             detail(
@@ -620,13 +625,23 @@ export function useAutoRun(onFinished?: () => void, campaignId = "") {
           const { bestSource, biggestBottleneck } = await import("@/lib/email-discovery");
           const top = bestSource(discovery);
           const stuck = biggestBottleneck(discovery);
+          // WEBSITE, as its own line, because the last real run's blocker was
+          // here and not in extraction: 11 of 17 never got a site of their own,
+          // so email discovery had nothing to crawl for them.
+          const withSite = discovery.websiteEmails + discovery.verifiedWebsiteNoEmail;
           log(
-            `Email discovery: ${discovery.found} found of ${discovery.searched} searched` +
+            `WEBSITE — ${discovery.searched} searched · ` +
+              `${withSite} official website${withSite === 1 ? "" : "s"} found · ` +
+              `${discovery.noVerifiedWebsite} with no verified website.`,
+            withSite > 0 ? "good" : "warn",
+          );
+          log(
+            `EMAIL — ${discovery.found} found of ${discovery.searched} searched` +
               (discovery.cached > 0 ? ` (${discovery.cached} already known)` : "") +
-              ` · ${discovery.high} high, ${discovery.medium} medium confidence`,
+              ` · ${discovery.high} HIGH · ${discovery.medium} MEDIUM · ${discovery.low} CALL.`,
             discovery.found > 0 ? "good" : "warn",
           );
-          if (top) log(`Best source: ${top.source.toLowerCase().replace(/_/g, " ")} (${top.count}).`);
+          if (top) log(`  Best source: ${top.source.toLowerCase().replace(/_/g, " ")} (${top.count}).`);
           if (
             discovery.websiteEmails ||
             discovery.directoryEmails ||
@@ -635,13 +650,15 @@ export function useAutoRun(onFinished?: () => void, campaignId = "") {
             discovery.noVerifiedWebsite
           ) {
             log(
-              `Sources: ${discovery.websiteEmails} website, ${discovery.directoryEmails} directory, ${discovery.profileEmails} profile. ` +
-                `No email: ${discovery.verifiedWebsiteNoEmail} had a verified site, ${discovery.noVerifiedWebsite} had none.`,
+              `  Where from: ${discovery.websiteEmails} website, ${discovery.directoryEmails} directory, ` +
+                `${discovery.profileEmails} profile. ` +
+                `No email: ${discovery.verifiedWebsiteNoEmail} had a verified site, ` +
+                `${discovery.noVerifiedWebsite} had none.`,
             );
           }
           if (stuck) {
             log(
-              `Biggest blocker: ${DISCOVERY_REASON_LABELS[stuck.reason as keyof typeof DISCOVERY_REASON_LABELS] ?? stuck.reason} (${stuck.count}).`,
+              `  Biggest blocker: ${DISCOVERY_REASON_LABELS[stuck.reason as keyof typeof DISCOVERY_REASON_LABELS] ?? stuck.reason} (${stuck.count}).`,
               "warn",
             );
           }
