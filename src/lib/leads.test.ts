@@ -6,7 +6,6 @@ import {
   computePriority,
   createLead,
   extractIndependentUrl,
-  findDuplicate,
   fillMissingLead,
   leadsToCsv,
   mergeWebsiteEvidence,
@@ -23,6 +22,7 @@ import {
   websiteSignal,
   type Lead,
 } from "./leads.ts";
+import { findDuplicate } from "./identity.ts";
 
 function lead(partial: Partial<Lead>): Lead {
   return createLead(partial);
@@ -254,12 +254,33 @@ describe("duplicates", () => {
     assert.equal(websiteSignal(""), "unclear");
   });
 
-  it("matches a distinctive name even in another town", () => {
+  it("no longer matches a name alone across towns", () => {
+    // Changed deliberately in Phase 14. A shared trading name in a different
+    // town is not evidence of one business — it was merging two real firms,
+    // and a Companies House record has little else to be matched on.
     const match = findDuplicate(
       { businessName: "W B Dodds Limited", town: "Perth", phone: "", mapsLink: "" },
       existing,
     );
-    assert.equal(match?.via, "name");
+    assert.equal(match, null);
+  });
+
+  it("still matches the same name in the same town", () => {
+    const sheet = [lead({ id: "a", businessName: "W B Dodds Limited", town: "Perth" })];
+    const match = findDuplicate(
+      { businessName: "W B Dodds Ltd", town: "Perth", phone: "", mapsLink: "" },
+      sheet,
+    );
+    assert.equal(match?.via, "name+town");
+  });
+
+  it("refuses a same-name same-town merge when the phones disagree", () => {
+    const sheet = [lead({ id: "a", businessName: "Bell Joinery", town: "Perth", phone: "01738 111111" })];
+    const match = findDuplicate(
+      { businessName: "Bell Joinery", town: "Perth", phone: "01738 999999", mapsLink: "" },
+      sheet,
+    );
+    assert.equal(match, null);
   });
 
   it("matches on place id before name", () => {

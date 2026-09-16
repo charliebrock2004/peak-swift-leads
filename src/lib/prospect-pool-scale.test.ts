@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { findDuplicate } from "./leads.ts";
+import { findDuplicate } from "./identity.ts";
 import {
   buildProspectPool,
   funnelReconciles,
@@ -200,5 +200,46 @@ describe("the pipeline does not become quadratic", () => {
     assert.ok(Date.now() - started < 2000, "pooling 4,000 candidates should take well under two seconds");
     assert.equal(diagnostics.newCandidates, 4000);
     assert.ok(funnelReconciles(diagnostics as PoolDiagnostics));
+  });
+});
+
+describe("the name bucket cannot become an unbounded cost", () => {
+  /** Every row shares a name and town and contradicts every other. */
+  function sameName(count: number): Prospect[] {
+    return Array.from({ length: count }, (_, i) =>
+      prospect({
+        businessName: "Joinery",
+        town: "Perth",
+        phone: `01738 ${String(100000 + i).slice(-6)}`,
+      }),
+    );
+  }
+
+  it("keeps every one of them, because they are different businesses", () => {
+    const { diagnostics } = buildProspectPool(sameName(500), { target: 500, ceiling: 2000 });
+    assert.equal(diagnostics.newCandidates, 500);
+    assert.equal(diagnostics.duplicatesAcrossAreas, 0);
+  });
+
+  it("stays inside a request budget at the pool ceiling", () => {
+    // The pathological shape: one bucket, no merges possible, so every lookup
+    // walks the whole bucket. Bounded by the ceiling, and measured here at
+    // roughly 40ms so a regression that made it seconds would fail.
+    const rows = sameName(2000);
+    buildProspectPool(rows, { target: 200, ceiling: 2000 });
+    const started = Date.now();
+    buildProspectPool(rows, { target: 200, ceiling: 2000 });
+    const elapsed = Date.now() - started;
+    assert.ok(elapsed < 1000, `2,000 same-name rows took ${elapsed}ms`);
+  });
+
+  it("is unaffected when the names differ, which is the real-world shape", () => {
+    const rows = Array.from({ length: 2000 }, (_, i) =>
+      prospect({ businessName: `Firm Number ${i} Ltd`, town: "Perth", phone: `01738 ${String(100000 + i).slice(-6)}` }),
+    );
+    buildProspectPool(rows, { target: 200 });
+    const started = Date.now();
+    buildProspectPool(rows, { target: 200 });
+    assert.ok(Date.now() - started < 300, "distinct names must stay comfortably linear");
   });
 });

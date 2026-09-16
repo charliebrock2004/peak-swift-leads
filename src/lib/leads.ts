@@ -813,11 +813,6 @@ export type LeadIdentity = Pick<Lead, "businessName" | "town" | "phone" | "mapsL
   email?: string;
 };
 
-export type DuplicateMatch<T extends LeadIdentity = Lead> = {
-  lead: T;
-  via: "place" | "phone" | "email" | "website" | "maps" | "name" | "name+town";
-};
-
 /** Independent business host, or "" for social/directory/empty. */
 export function independentHost(url: string | undefined): string {
   const value = (url ?? "").trim();
@@ -827,46 +822,11 @@ export function independentHost(url: string | undefined): string {
   return hostnameOf(value);
 }
 
-function normalizeEmailAddress(value: string | undefined): string {
-  return (value ?? "").trim().toLowerCase();
-}
-
-export function findDuplicate<T extends LeadIdentity>(
-  candidate: LeadIdentity,
-  leads: readonly T[],
-): DuplicateMatch<T> | null {
-  const placeId = candidate.placeId?.trim() ?? "";
-  const phone = normalizePhone(candidate.phone);
-  const maps = candidate.mapsLink.trim() ? normalizeMaps(candidate.mapsLink) : "";
-  const name = normalizeName(candidate.businessName);
-  const town = candidate.town.trim().toLowerCase();
-  const email = normalizeEmailAddress(candidate.email);
-  const host = independentHost(candidate.website);
-
-  for (const lead of leads) {
-    const leadPlace = lead.placeId?.trim() ?? "";
-    if (placeId && leadPlace && placeId === leadPlace) return { lead, via: "place" };
-    const leadPhone = normalizePhone(lead.phone);
-    if (phone.length >= 10 && leadPhone.length >= 10 && phone === leadPhone) {
-      return { lead, via: "phone" };
-    }
-    const leadEmail = normalizeEmailAddress(lead.email);
-    if (email && leadEmail && email === leadEmail) return { lead, via: "email" };
-    const leadHost = independentHost(lead.website);
-    if (host && leadHost && host === leadHost) return { lead, via: "website" };
-    const leadMaps = lead.mapsLink.trim() ? normalizeMaps(lead.mapsLink) : "";
-    if (maps && leadMaps && maps === leadMaps) return { lead, via: "maps" };
-    const sameName = name.length >= 3 && name === normalizeName(lead.businessName);
-    const sameTown = town && lead.town.trim().toLowerCase() === town;
-    if (sameName && sameTown) return { lead, via: "name+town" };
-  }
-
-  for (const lead of leads) {
-    const sameName = name.length >= 8 && name.includes(" ") && name === normalizeName(lead.businessName);
-    if (sameName) return { lead, via: "name" };
-  }
-  return null;
-}
+/**
+ * Duplicate detection lives in `identity.ts`, which is the single authority
+ * for "is this the same business?". It imports the normalisers above; keeping
+ * the decision there is what stopped discovery and the sheet drifting apart.
+ */
 
 /**
  * Fill empty fields on an existing lead from a newly discovered copy.

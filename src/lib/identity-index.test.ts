@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { createIdentityIndex, identityKeys, indexOf } from "./identity-index.ts";
-import { findDuplicate, type LeadIdentity } from "./leads.ts";
+import { findDuplicate, type LeadIdentity } from "./identity.ts";
 
 function identity(partial: Partial<LeadIdentity> & { businessName: string }): LeadIdentity {
   return { town: "Perth", phone: "", mapsLink: "", ...partial };
@@ -45,10 +45,13 @@ const CASES: { name: string; stored: LeadIdentity[]; candidate: LeadIdentity; du
     duplicate: false,
   },
   {
-    name: "same long multi-word name in a different town",
+    // Changed deliberately in Phase 14. A trading name shared across two towns
+    // is not evidence of one business, and this rule was merging a Companies
+    // House record in one town into an unrelated firm in another.
+    name: "same long multi-word name in a different town — no longer merged",
     stored: [identity({ businessName: "Strathearn Joinery Limited", town: "Crieff" })],
     candidate: identity({ businessName: "Strathearn Joinery Ltd", town: "Perth" }),
-    duplicate: true,
+    duplicate: false,
   },
   {
     name: "same short name in a different town — not merged",
@@ -107,18 +110,18 @@ describe("identityKeys", () => {
 
   it("orders strong signals ahead of the loose name rule", () => {
     const keys = identityKeys(
-      identity({ businessName: "Strathearn Joinery Limited", phone: "01764 652211", placeId: "p1" }),
+      identity({ businessName: "Strathearn Joinery Limited", town: "Crieff", phone: "01764 652211", placeId: "p1" }),
     );
-    assert.equal(keys[0]?.via, "place");
-    assert.equal(keys[1]?.via, "phone");
-    assert.equal(keys.at(-1)?.via, "name");
+    assert.equal(keys[0]?.via, "PLACE_ID");
+    assert.equal(keys[1]?.via, "PHONE");
+    assert.equal(keys.at(-1)?.via, "NAME_TOWN");
   });
 
   it("ignores a directory URL as an identity", () => {
     const keys = identityKeys(
       identity({ businessName: "AB", town: "", website: "https://yell.com/biz/ab" }),
     );
-    assert.ok(!keys.some((key) => key.via === "website"));
+    assert.ok(!keys.some((key) => key.via === "DOMAIN"));
   });
 });
 

@@ -18,7 +18,6 @@ import {
   CALL_RESULT_OPTIONS,
   WEBSITE_STATUS_OPTIONS,
   classifyWebsiteUrl,
-  findDuplicate,
   hasWebsite,
   parseNumberInput,
   type CallResult,
@@ -26,6 +25,7 @@ import {
   type Lead,
   type WebsiteStatus,
 } from "./leads.ts";
+import { findDuplicate } from "./identity.ts";
 
 /** Lead fields a spreadsheet column can feed. */
 export const IMPORT_FIELDS = [

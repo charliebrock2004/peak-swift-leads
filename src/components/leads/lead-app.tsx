@@ -27,7 +27,6 @@ import {
   computeOpportunity,
   computePriority,
   downloadCsv,
-  findDuplicate,
   fillMissingLead,
   isFollowUpDue,
   liveLeads,
@@ -51,6 +50,7 @@ import type { Prospect } from "@/lib/research";
 import { useLeadSync } from "@/lib/use-lead-sync";
 import { cn } from "@/lib/utils";
 import { useLeadsStore } from "@/store/leads-store";
+import { findDuplicate } from "@/lib/identity";
 
 const PRIORITY_FILTERS: { id: "ALL" | Priority; label: string }[] = [
   { id: "ALL", label: "All" },

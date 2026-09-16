@@ -10,6 +10,7 @@
  * Places adapter behind the same DiscoveredPlace shape.
  */
 
+import { contradicts, evidenceOf, strongMatch } from "./identity.ts";
 import { normalizeName } from "./leads.ts";
 import { chSearchTowns } from "./scotland-places.ts";
 import { chSearchQueries, searchCompaniesHouse, type CompanyHit } from "./companies-house.ts";
@@ -993,40 +994,68 @@ function fillMissing(target: DiscoveredPlace, extra: DiscoveredPlace): Discovere
   };
 }
 
+/**
+ * Fold one source's rows into another's, within a single area.
+ *
+ * This used to carry its own idea of identity — any two records whose folded
+ * names matched in four characters were one business, with no space required,
+ * no regard for town and no check on contradicting evidence. "Tays" in Perth
+ * and "Tays" in Crieff became one row before the candidate pool ever saw them,
+ * and because this runs first, nothing downstream could tell. It now asks the
+ * same authority the sheet and the pool ask, so there is one definition of
+ * identity in the codebase rather than a strict one and a lax one.
+ *
+ * Field-filling on a match is unchanged: the first record keeps everything it
+ * has and only gains what it was missing.
+ */
 export function mergePlaces(existing: DiscoveredPlace[], incoming: DiscoveredPlace[]): DiscoveredPlace[] {
   const next = [...existing];
+  const evidence = next.map(evidenceOf);
 
   for (const item of incoming) {
-    const name = item.businessName.trim().toLowerCase();
-    const foldedName = normalizeName(item.businessName);
-    const phone = item.phone.replace(/\D/g, "").slice(-10);
-    const placeId = item.placeId.trim();
-
-    const matchIndex = next.findIndex((row) => {
-      const rowId = row.placeId.trim();
-      if (placeId && rowId && placeId === rowId) return true;
-      if (phone.length >= 10) {
-        const rowPhone = row.phone.replace(/\D/g, "").slice(-10);
-        if (rowPhone.length >= 10 && rowPhone === phone) return true;
+    const mine = evidenceOf(item);
+    let matchIndex = -1;
+    for (const [index, other] of evidence.entries()) {
+      if (strongMatch(mine, other)) {
+        matchIndex = index;
+        break;
       }
-      if (name && row.businessName.trim().toLowerCase() === name) return true;
-      const rowFolded = normalizeName(row.businessName);
-      return foldedName.length >= 4 && rowFolded === foldedName;
-    });
+    }
+    if (matchIndex < 0) {
+      for (const [index, other] of evidence.entries()) {
+        if (
+          mine.name.length >= 3 &&
+          mine.name === other.name &&
+          mine.town &&
+          mine.town === other.town &&
+          !contradicts(mine, other)
+        ) {
+          matchIndex = index;
+          break;
+        }
+      }
+    }
 
     if (matchIndex >= 0) {
       next[matchIndex] = fillMissing(next[matchIndex]!, item);
+      // The row gained fields, so its evidence has to be recomputed or a later
+      // record could miss a phone number this merge just supplied.
+      evidence[matchIndex] = evidenceOf(next[matchIndex]!);
       continue;
     }
 
     next.push(item);
+    evidence.push(mine);
   }
   return next;
 }
 
 /**
- * Companies House has no website field. Empty is not proof they have no site
- * unless we also found the same business on OSM and inspected its tags.
+ * What a listing says about the business's own website, if anything.
+ *
+ * "osm-none" means OSM was inspected and recorded no site; "unconfirmed" means
+ * the record came from Companies House, which never carries one. The two need
+ * different follow-up, so they are not collapsed.
  */
 export function listingWebsiteHint(
   place: Pick<DiscoveredPlace, "website" | "source" | "osmChecked">,

@@ -1,8 +1,10 @@
 import { useCallback, useRef, useState } from "react";
-import { findDuplicate, fillMissingLead, liveLeads, newLeadId, type Lead } from "@/lib/leads";
+import { fillMissingLead, liveLeads, newLeadId, type Lead } from "@/lib/leads";
+import { findDuplicate } from "@/lib/identity";
 import { emailPatch, websitePatch, discoveredWebsitePatch } from "@/lib/qualify";
 import { checkLeadWebsite, findLeadEmail } from "@/lib/qualify-server";
 import { researchProspects, type Prospect } from "@/lib/research";
+import { MATCH_REASONS, type MatchReason } from "@/lib/identity";
 import { DISCOVERY_SAFETY, emptySourceTally, SOURCE_KEYS, stopReason } from "@/lib/prospect-pool";
 import { runPlannedSearch } from "@/lib/run-search";
 import {
@@ -311,6 +313,10 @@ export function useAutoRun(onFinished?: () => void, campaignId = "") {
         const bySource = { companiesHouse: 0, nominatim: 0, photon: 0, bizdata: 0 };
         /** Genuinely new businesses per source, counted after de-duplication. */
         const newBySource = emptySourceTally();
+        /** Why duplicates were duplicates, so 700 of them can be explained. */
+        const dupReasons: Record<MatchReason, number> = {
+          PLACE_ID: 0, PHONE: 0, EMAIL: 0, DOMAIN: 0, MAPS_URL: 0, NAME_TOWN: 0,
+        };
         /** Pool counters: dedupe, exclusions, ranking and the target. */
         const poolTotals = {
           collected: 0, duplicatesAcrossAreas: 0, alreadyKnown: 0,
@@ -369,6 +375,7 @@ export function useAutoRun(onFinished?: () => void, campaignId = "") {
             bySource[key] += search.funnel.rawBySource[key];
           }
           for (const key of SOURCE_KEYS) newBySource[key] += search.pool.newBySource[key];
+          for (const key of MATCH_REASONS) dupReasons[key] += search.pool.duplicatesByReason[key];
           rediscovered.push(...search.knownMatches);
           ceilingHit = ceilingHit || search.pool.ceilingHit;
           areaCount += search.plan.areas.length;
@@ -422,6 +429,16 @@ export function useAutoRun(onFinished?: () => void, campaignId = "") {
               `${newBySource.bizdata} BizData · ${newBySource.overpass} Overpass` +
               (newBySource.other > 0 ? ` · ${newBySource.other} other` : "") +
               ` — after de-duplication, so this is what each source actually added.`,
+          );
+          // Which rule merged each duplicate. A run that merges mostly on
+          // PLACE_ID is de-duplicating exact map objects; one that merges
+          // mostly on NAME_TOWN is leaning on the weakest evidence we accept,
+          // and that is worth seeing rather than inferring.
+          log(
+            `  Duplicates by rule: ` +
+              MATCH_REASONS.filter((key) => dupReasons[key] > 0)
+                .map((key) => `${dupReasons[key]} ${key}`)
+                .join(" · ") || "  Duplicates by rule: none",
           );
           log(
             `FILTERING — ${poolTotals.collected} offered · ` +

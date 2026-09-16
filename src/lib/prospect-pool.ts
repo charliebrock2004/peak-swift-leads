@@ -1,4 +1,5 @@
-import { independentHost, type LeadIdentity } from "./leads.ts";
+import { independentHost } from "./leads.ts";
+import { type LeadIdentity, type MatchReason } from "./identity.ts";
 import { createIdentityIndex, indexOf, type IdentityIndex } from "./identity-index.ts";
 import { DISCOVERY_SAFETY } from "./discovery-limits.ts";
 import type { Prospect } from "./research.ts";
@@ -43,6 +44,25 @@ export function sourceKeyOf(source: string): SourceKey {
   return "other";
 }
 
+/**
+ * One duplicate decision, kept so "724 duplicates" can be explained.
+ *
+ * The previous funnel reported a single integer, which made it impossible to
+ * tell a legitimate cross-town sighting from a false merge without re-running
+ * the search. These say which rule fired and on what.
+ */
+export type DuplicateNote = {
+  incoming: string;
+  existing: string;
+  incomingSource: string;
+  existingSource: string;
+  reason: MatchReason;
+  town: string;
+};
+
+/** How many duplicate decisions are kept as samples. Counters are unbounded. */
+export const DUPLICATE_SAMPLE_MAX = 40;
+
 export type PoolDiagnostics = {
   /** Businesses offered to the pool, across every area and source. */
   collected: number;
@@ -80,6 +100,16 @@ export type PoolDiagnostics = {
   newBySource: SourceTally;
   /** Of the businesses actually delivered, which source found each. */
   deliveredBySource: SourceTally;
+  /** Every duplicate decision, counted by the rule that made it. */
+  duplicatesByReason: Record<MatchReason, number>;
+  /**
+   * A bounded sample of duplicate decisions, newest last.
+   *
+   * Capped at DUPLICATE_SAMPLE_MAX so a run that merges thousands of rows does
+   * not carry thousands of records back to the browser. The counters above are
+   * exact; this is for reading, not for arithmetic.
+   */
+  duplicateSamples: DuplicateNote[];
 };
 
 /**
@@ -259,6 +289,10 @@ export function createProspectPool(options: ProspectPoolOptions): ProspectPool {
   const kept: Prospect[] = [];
   const knownMatches: Prospect[] = [];
   const newBySource = emptySourceTally();
+  const duplicatesByReason: Record<MatchReason, number> = {
+    PLACE_ID: 0, PHONE: 0, EMAIL: 0, DOMAIN: 0, MAPS_URL: 0, NAME_TOWN: 0,
+  };
+  const duplicateSamples: DuplicateNote[] = [];
 
   const counts = {
     collected: 0,
@@ -276,8 +310,20 @@ export function createProspectPool(options: ProspectPoolOptions): ProspectPool {
         counts.collected += 1;
         // Cross-area dedupe first: a business listed in Perth, Scone and
         // Auchterarder is one candidate, and consumes one slot, not three.
-        if (seen.find(prospect)) {
+        const already = seen.find(prospect);
+        if (already) {
           counts.duplicates += 1;
+          duplicatesByReason[already.via] += 1;
+          if (duplicateSamples.length < DUPLICATE_SAMPLE_MAX) {
+            duplicateSamples.push({
+              incoming: prospect.businessName,
+              existing: already.entry.businessName,
+              incomingSource: prospect.source,
+              existingSource: already.entry.source,
+              reason: already.via,
+              town: prospect.town,
+            });
+          }
           continue;
         }
         seen.add(prospect, prospect);
@@ -290,6 +336,11 @@ export function createProspectPool(options: ProspectPoolOptions): ProspectPool {
         }
         if (contacted.find(prospect)) {
           counts.contacted += 1;
+          // Already emailed, so it takes no slot — but it is still on the
+          // sheet, and a phone number or address published since we wrote to
+          // it is worth keeping. Field-filling only; the caller never touches
+          // outreach status, notes, suppression or unsubscribe state.
+          knownMatches.push(prospect);
           continue;
         }
         if (known.find(prospect)) {
@@ -334,6 +385,8 @@ export function createProspectPool(options: ProspectPoolOptions): ProspectPool {
           withoutWebsite: prospects.filter((item) => !independentHost(item.website)).length,
           withListedEmail: prospects.filter((item) => item.email.trim()).length,
           newBySource,
+          duplicatesByReason,
+          duplicateSamples,
           deliveredBySource: prospects.reduce((tally, item) => {
             tally[sourceKeyOf(item.source)] += 1;
             return tally;

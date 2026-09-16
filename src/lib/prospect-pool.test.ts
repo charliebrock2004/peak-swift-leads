@@ -611,3 +611,59 @@ describe("source contribution is measured after de-duplication", () => {
     assert.equal(delivered.companiesHouse + delivered.nominatim, 4);
   });
 });
+
+describe("an already-contacted business is enriched but never re-run", () => {
+  it("hands back a contacted business's fresh copy for field-filling", () => {
+    // It used to return before reaching knownMatches, so a business we had
+    // emailed could never gain a website or address discovered later.
+    const contacted = [prospect({ businessName: "Written To Ltd", town: "Perth", phone: "01738 909090" })];
+    const rediscovered = prospect({
+      businessName: "Written To Ltd",
+      town: "Perth",
+      phone: "01738 909090",
+      email: "hello@writtento.co.uk",
+      website: "https://writtento.co.uk",
+      address: "9 Mill Street, Perth",
+    });
+    const { prospects, knownMatches, diagnostics } = buildProspectPool(
+      [rediscovered, distinct(1)],
+      { target: 60, contacted },
+    );
+
+    assert.equal(diagnostics.alreadyContacted, 1);
+    assert.equal(prospects.length, 1, "a contacted business must not consume a slot");
+    assert.ok(!prospects.some((item) => item.businessName === "Written To Ltd"));
+    assert.equal(knownMatches.length, 1);
+    assert.equal(knownMatches[0]?.email, "hello@writtento.co.uk");
+    assert.equal(knownMatches[0]?.website, "https://writtento.co.uk");
+    assert.equal(knownMatches[0]?.address, "9 Mill Street, Perth");
+  });
+
+  it("carries no outreach state on the enrichment copy", () => {
+    // The copy is a freshly discovered Prospect. It has no outreach status, no
+    // notes and no unsubscribe field to overwrite, which is what keeps
+    // field-filling from touching contact history.
+    const contacted = [prospect({ businessName: "Written To Ltd", town: "Perth", phone: "01738 909090" })];
+    const { knownMatches } = buildProspectPool(
+      [prospect({ businessName: "Written To Ltd", town: "Perth", phone: "01738 909090", email: "a@b.co.uk" })],
+      { target: 60, contacted },
+    );
+    const copy = knownMatches[0]!;
+    assert.ok(!("outreachStatus" in copy));
+    assert.ok(!("unsubscribed" in copy));
+    assert.ok(!("lastEmailedAt" in copy));
+    assert.ok(!("called" in copy));
+  });
+
+  it("still refuses to hand back a suppressed business", () => {
+    const one = prospect({ businessName: "Unsub Joinery", town: "Perth", phone: "01738 121212" });
+    const { knownMatches, diagnostics } = buildProspectPool([one], {
+      target: 60,
+      suppressed: [one],
+      contacted: [one],
+    });
+    assert.equal(diagnostics.suppressed, 1);
+    assert.equal(diagnostics.alreadyContacted, 0);
+    assert.equal(knownMatches.length, 0);
+  });
+});

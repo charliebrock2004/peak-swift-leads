@@ -1,4 +1,5 @@
-import { findDuplicate, type LeadIdentity, type Priority } from "./leads.ts";
+import { type Priority } from "./leads.ts";
+import { findDuplicate, type LeadIdentity } from "./identity.ts";
 import {
   createProspectPool,
   DISCOVERY_SAFETY,
