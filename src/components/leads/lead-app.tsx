@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { Download, FileUp, Loader2, Mail, Plus, Search, Send, SlidersHorizontal } from "lucide-react";
+import { Download, FileUp, Loader2, Mail, Plus, Search, SlidersHorizontal } from "lucide-react";
 import { toast } from "sonner";
 import { FindLeadsPanel } from "@/components/leads/find-leads";
 import { ImportPanel } from "@/components/leads/import-panel";
-import { OutreachPanel } from "@/components/outreach/outreach-panel";
 import { LeadCards } from "@/components/leads/lead-cards";
 import { LeadFormDialog } from "@/components/leads/lead-form";
 import { LeadTable } from "@/components/leads/lead-table";
@@ -90,7 +89,6 @@ export function LeadApp() {
   const [pendingDelete, setPendingDelete] = useState<Lead | null>(null);
   const [finding, setFinding] = useState(false);
   const [importing, setImporting] = useState(false);
-  const [outreachOpen, setOutreachOpen] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [summaryKey, setSummaryKey] = useState<keyof LeadSummary | null>(null);
   const [hydrated, setHydrated] = useState(true);
@@ -482,8 +480,8 @@ export function LeadApp() {
   }
 
   return (
-    <div className="flex min-h-dvh flex-col bg-bg text-fg md:h-dvh md:overflow-hidden">
-      <div className="mx-auto flex w-full max-w-screen-2xl flex-1 flex-col gap-4 px-4 pt-[max(1rem,env(safe-area-inset-top))] pb-6 md:min-h-0 md:gap-5 md:px-6 md:py-8">
+    <div className="flex min-h-full flex-1 flex-col bg-bg text-fg md:h-dvh md:overflow-hidden">
+      <div className="mx-auto flex w-full max-w-screen-2xl flex-1 flex-col gap-4 px-4 pt-[max(1.25rem,env(safe-area-inset-top))] pb-6 md:min-h-0 md:gap-5 md:px-8 md:py-8">
         <header className="flex shrink-0 flex-col gap-4 md:flex-row md:items-end md:justify-between">
           <div className="min-w-0">
             <div className="flex w-full items-center gap-2">
@@ -495,7 +493,7 @@ export function LeadApp() {
               Leads
             </h1>
             <p className="mt-1.5 hidden max-w-xl text-sm text-muted md:block">
-              Find local businesses without a proper website, import the good ones, then call them.
+              Every lead on this device, local-first — it works offline and syncs to your account. Import spreadsheets and edit anything here.
             </p>
           </div>
           <div className="flex flex-col gap-2 sm:flex-row">
@@ -522,10 +520,6 @@ export function LeadApp() {
                 <span className="hidden sm:inline">Export CSV</span>
               </Button>
             </div>
-            <Button variant="secondary" className="h-12 sm:h-10" onClick={() => setOutreachOpen(true)}>
-              <Send />
-              Outreach
-            </Button>
           </div>
         </header>
 
@@ -845,7 +839,7 @@ export function LeadApp() {
       </div>
 
       {selectedIds.size > 0 || job ? (
-        <div className="sticky bottom-0 z-20 border-t border-border bg-surface px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-6">
+        <div className="sticky bottom-[calc(4rem+env(safe-area-inset-bottom))] z-20 border-t border-border bg-surface px-4 py-3 md:bottom-0 md:px-6 md:pb-[max(0.75rem,env(safe-area-inset-bottom))]">
           <div className="mx-auto flex w-full max-w-screen-2xl flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <p className="text-sm text-muted">
               {job
@@ -891,17 +885,6 @@ export function LeadApp() {
 
       {importing ? (
         <ImportPanel leads={leads} onClose={() => setImporting(false)} onApply={applySpreadsheet} />
-      ) : null}
-
-      {/* Outreach reads and writes on the server, so closing it re-syncs the
-          sheet: a lead marked Sent or Unsubscribed there has to show up here. */}
-      {outreachOpen ? (
-        <OutreachPanel
-          onClose={() => {
-            setOutreachOpen(false);
-            void useLeadsStore.getState().sync();
-          }}
-        />
       ) : null}
 
       {pendingDelete ? (

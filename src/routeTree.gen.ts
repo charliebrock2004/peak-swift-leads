@@ -9,21 +9,82 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as IndexRouteImport } from './routes/index'
+import { Route as AppRouteImport } from './routes/_app'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as AppIndexRouteImport } from './routes/_app.index'
+import { Route as AppAnalyticsRouteImport } from './routes/_app.analytics'
+import { Route as AppCallsRouteImport } from './routes/_app.calls'
+import { Route as AppCampaignsRouteImport } from './routes/_app.campaigns'
+import { Route as AppFindRouteImport } from './routes/_app.find'
+import { Route as AppLeadsRouteImport } from './routes/_app.leads'
+import { Route as AppProspectsRouteImport } from './routes/_app.prospects'
+import { Route as AppRepliesRouteImport } from './routes/_app.replies'
+import { Route as AppSendRouteImport } from './routes/_app.send'
+import { Route as AppSettingsRouteImport } from './routes/_app.settings'
 import { Route as AdminOwnerEmailRouteImport } from './routes/admin.owner-email'
 import { Route as OauthGmailRouteImport } from './routes/oauth.gmail'
+import { Route as AppRunsIndexRouteImport } from './routes/_app.runs.index'
+import { Route as AppRunsRunIdRouteImport } from './routes/_app.runs.$runId'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 
-const IndexRoute = IndexRouteImport.update({
-  id: '/',
-  path: '/',
+const AppRoute = AppRouteImport.update({
+  id: '/_app',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
   getParentRoute: () => rootRouteImport,
+} as any)
+const AppIndexRoute = AppIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppAnalyticsRoute = AppAnalyticsRouteImport.update({
+  id: '/analytics',
+  path: '/analytics',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppCallsRoute = AppCallsRouteImport.update({
+  id: '/calls',
+  path: '/calls',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppCampaignsRoute = AppCampaignsRouteImport.update({
+  id: '/campaigns',
+  path: '/campaigns',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppFindRoute = AppFindRouteImport.update({
+  id: '/find',
+  path: '/find',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppLeadsRoute = AppLeadsRouteImport.update({
+  id: '/leads',
+  path: '/leads',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppProspectsRoute = AppProspectsRouteImport.update({
+  id: '/prospects',
+  path: '/prospects',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppRepliesRoute = AppRepliesRouteImport.update({
+  id: '/replies',
+  path: '/replies',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppSendRoute = AppSendRouteImport.update({
+  id: '/send',
+  path: '/send',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppSettingsRoute = AppSettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
+  getParentRoute: () => AppRoute,
 } as any)
 const AdminOwnerEmailRoute = AdminOwnerEmailRouteImport.update({
   id: '/admin/owner-email',
@@ -35,6 +96,16 @@ const OauthGmailRoute = OauthGmailRouteImport.update({
   path: '/oauth/gmail',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AppRunsIndexRoute = AppRunsIndexRouteImport.update({
+  id: '/runs/',
+  path: '/runs/',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppRunsRunIdRoute = AppRunsRunIdRouteImport.update({
+  id: '/runs/$runId',
+  path: '/runs/$runId',
+  getParentRoute: () => AppRoute,
+} as any)
 const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   id: '/api/auth/$',
   path: '/api/auth/$',
@@ -42,44 +113,121 @@ const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
 } as any)
 
 export interface FileRoutesByFullPath {
-  '/': typeof IndexRoute
+  '/': typeof AppIndexRoute
   '/login': typeof LoginRoute
+  '/analytics': typeof AppAnalyticsRoute
+  '/calls': typeof AppCallsRoute
+  '/campaigns': typeof AppCampaignsRoute
+  '/find': typeof AppFindRoute
+  '/leads': typeof AppLeadsRoute
+  '/prospects': typeof AppProspectsRoute
+  '/replies': typeof AppRepliesRoute
+  '/send': typeof AppSendRoute
+  '/settings': typeof AppSettingsRoute
   '/admin/owner-email': typeof AdminOwnerEmailRoute
   '/oauth/gmail': typeof OauthGmailRoute
+  '/runs/$runId': typeof AppRunsRunIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/runs/': typeof AppRunsIndexRoute
 }
 export interface FileRoutesByTo {
-  '/': typeof IndexRoute
   '/login': typeof LoginRoute
+  '/analytics': typeof AppAnalyticsRoute
+  '/calls': typeof AppCallsRoute
+  '/campaigns': typeof AppCampaignsRoute
+  '/find': typeof AppFindRoute
+  '/leads': typeof AppLeadsRoute
+  '/prospects': typeof AppProspectsRoute
+  '/replies': typeof AppRepliesRoute
+  '/send': typeof AppSendRoute
+  '/settings': typeof AppSettingsRoute
   '/admin/owner-email': typeof AdminOwnerEmailRoute
   '/oauth/gmail': typeof OauthGmailRoute
+  '/': typeof AppIndexRoute
+  '/runs/$runId': typeof AppRunsRunIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/runs': typeof AppRunsIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
-  '/': typeof IndexRoute
+  '/_app': typeof AppRouteWithChildren
   '/login': typeof LoginRoute
+  '/_app/analytics': typeof AppAnalyticsRoute
+  '/_app/calls': typeof AppCallsRoute
+  '/_app/campaigns': typeof AppCampaignsRoute
+  '/_app/find': typeof AppFindRoute
+  '/_app/leads': typeof AppLeadsRoute
+  '/_app/prospects': typeof AppProspectsRoute
+  '/_app/replies': typeof AppRepliesRoute
+  '/_app/send': typeof AppSendRoute
+  '/_app/settings': typeof AppSettingsRoute
   '/admin/owner-email': typeof AdminOwnerEmailRoute
   '/oauth/gmail': typeof OauthGmailRoute
+  '/_app/': typeof AppIndexRoute
+  '/_app/runs/$runId': typeof AppRunsRunIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/_app/runs/': typeof AppRunsIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
-    '/' | '/login' | '/admin/owner-email' | '/oauth/gmail' | '/api/auth/$'
-  fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/login' | '/admin/owner-email' | '/oauth/gmail' | '/api/auth/$'
-  id:
-    | '__root__'
     | '/'
     | '/login'
+    | '/analytics'
+    | '/calls'
+    | '/campaigns'
+    | '/find'
+    | '/leads'
+    | '/prospects'
+    | '/replies'
+    | '/send'
+    | '/settings'
     | '/admin/owner-email'
     | '/oauth/gmail'
+    | '/runs/$runId'
     | '/api/auth/$'
+    | '/runs/'
+  fileRoutesByTo: FileRoutesByTo
+  to:
+    | '/login'
+    | '/analytics'
+    | '/calls'
+    | '/campaigns'
+    | '/find'
+    | '/leads'
+    | '/prospects'
+    | '/replies'
+    | '/send'
+    | '/settings'
+    | '/admin/owner-email'
+    | '/oauth/gmail'
+    | '/'
+    | '/runs/$runId'
+    | '/api/auth/$'
+    | '/runs'
+  id:
+    | '__root__'
+    | '/_app'
+    | '/login'
+    | '/_app/analytics'
+    | '/_app/calls'
+    | '/_app/campaigns'
+    | '/_app/find'
+    | '/_app/leads'
+    | '/_app/prospects'
+    | '/_app/replies'
+    | '/_app/send'
+    | '/_app/settings'
+    | '/admin/owner-email'
+    | '/oauth/gmail'
+    | '/_app/'
+    | '/_app/runs/$runId'
+    | '/api/auth/$'
+    | '/_app/runs/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
-  IndexRoute: typeof IndexRoute
+  AppRoute: typeof AppRouteWithChildren
   LoginRoute: typeof LoginRoute
   AdminOwnerEmailRoute: typeof AdminOwnerEmailRoute
   OauthGmailRoute: typeof OauthGmailRoute
@@ -88,11 +236,11 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/': {
-      id: '/'
-      path: '/'
+    '/_app': {
+      id: '/_app'
+      path: ''
       fullPath: '/'
-      preLoaderRoute: typeof IndexRouteImport
+      preLoaderRoute: typeof AppRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/login': {
@@ -101,6 +249,76 @@ declare module '@tanstack/react-router' {
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/_app/': {
+      id: '/_app/'
+      path: '/'
+      fullPath: '/'
+      preLoaderRoute: typeof AppIndexRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/analytics': {
+      id: '/_app/analytics'
+      path: '/analytics'
+      fullPath: '/analytics'
+      preLoaderRoute: typeof AppAnalyticsRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/calls': {
+      id: '/_app/calls'
+      path: '/calls'
+      fullPath: '/calls'
+      preLoaderRoute: typeof AppCallsRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/campaigns': {
+      id: '/_app/campaigns'
+      path: '/campaigns'
+      fullPath: '/campaigns'
+      preLoaderRoute: typeof AppCampaignsRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/find': {
+      id: '/_app/find'
+      path: '/find'
+      fullPath: '/find'
+      preLoaderRoute: typeof AppFindRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/leads': {
+      id: '/_app/leads'
+      path: '/leads'
+      fullPath: '/leads'
+      preLoaderRoute: typeof AppLeadsRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/prospects': {
+      id: '/_app/prospects'
+      path: '/prospects'
+      fullPath: '/prospects'
+      preLoaderRoute: typeof AppProspectsRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/replies': {
+      id: '/_app/replies'
+      path: '/replies'
+      fullPath: '/replies'
+      preLoaderRoute: typeof AppRepliesRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/send': {
+      id: '/_app/send'
+      path: '/send'
+      fullPath: '/send'
+      preLoaderRoute: typeof AppSendRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/settings': {
+      id: '/_app/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof AppSettingsRouteImport
+      parentRoute: typeof AppRoute
     }
     '/admin/owner-email': {
       id: '/admin/owner-email'
@@ -116,6 +334,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof OauthGmailRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_app/runs/': {
+      id: '/_app/runs/'
+      path: '/runs'
+      fullPath: '/runs/'
+      preLoaderRoute: typeof AppRunsIndexRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/runs/$runId': {
+      id: '/_app/runs/$runId'
+      path: '/runs/$runId'
+      fullPath: '/runs/$runId'
+      preLoaderRoute: typeof AppRunsRunIdRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/api/auth/$': {
       id: '/api/auth/$'
       path: '/api/auth/$'
@@ -126,8 +358,40 @@ declare module '@tanstack/react-router' {
   }
 }
 
+interface AppRouteChildren {
+  AppAnalyticsRoute: typeof AppAnalyticsRoute
+  AppCallsRoute: typeof AppCallsRoute
+  AppCampaignsRoute: typeof AppCampaignsRoute
+  AppFindRoute: typeof AppFindRoute
+  AppLeadsRoute: typeof AppLeadsRoute
+  AppProspectsRoute: typeof AppProspectsRoute
+  AppRepliesRoute: typeof AppRepliesRoute
+  AppSendRoute: typeof AppSendRoute
+  AppSettingsRoute: typeof AppSettingsRoute
+  AppIndexRoute: typeof AppIndexRoute
+  AppRunsRunIdRoute: typeof AppRunsRunIdRoute
+  AppRunsIndexRoute: typeof AppRunsIndexRoute
+}
+
+const AppRouteChildren: AppRouteChildren = {
+  AppAnalyticsRoute: AppAnalyticsRoute,
+  AppCallsRoute: AppCallsRoute,
+  AppCampaignsRoute: AppCampaignsRoute,
+  AppFindRoute: AppFindRoute,
+  AppLeadsRoute: AppLeadsRoute,
+  AppProspectsRoute: AppProspectsRoute,
+  AppRepliesRoute: AppRepliesRoute,
+  AppSendRoute: AppSendRoute,
+  AppSettingsRoute: AppSettingsRoute,
+  AppIndexRoute: AppIndexRoute,
+  AppRunsRunIdRoute: AppRunsRunIdRoute,
+  AppRunsIndexRoute: AppRunsIndexRoute,
+}
+
+const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
-  IndexRoute: IndexRoute,
+  AppRoute: AppRouteWithChildren,
   LoginRoute: LoginRoute,
   AdminOwnerEmailRoute: AdminOwnerEmailRoute,
   OauthGmailRoute: OauthGmailRoute,

@@ -387,54 +387,83 @@ export function computePriority(
   return "COLD";
 }
 
+type OpportunityInput = Pick<
+  Lead,
+  | "website"
+  | "websiteStatus"
+  | "websiteQuality"
+  | "email"
+  | "phone"
+  | "businessStatus"
+  | "reviews"
+  | "rating"
+  | "called"
+  | "callResult"
+>;
+
+export type OpportunityPoint = { label: string; points: number };
+
+/**
+ * The opportunity score, with every point accounted for.
+ *
+ * `computeOpportunity` is derived from this, so the number on a card and the
+ * reasons listed under it can never disagree: each line is a rule that fired
+ * and what it added or took away.
+ */
+export function explainOpportunity(lead: OpportunityInput): { score: number; points: OpportunityPoint[]; capped: string } {
+  const points: OpportunityPoint[] = [{ label: "Local business", points: 25 }];
+  const status = resolveWebsiteStatus(lead);
+  const quality = lead.websiteQuality;
+
+  if (status === "No Website Found") points.push({ label: "No independent website", points: 38 });
+  else if (status === "Social Only") points.push({ label: "Only a social media page", points: 28 });
+  else if (status === "Directory Only") points.push({ label: "Only directory listings", points: 24 });
+  else if (quality === "poor") points.push({ label: "Website scored poorly", points: 30 });
+  else if (quality === "improve" || status === "Basic Website") points.push({ label: "Basic website that could do more", points: 18 });
+  else if (quality === "good") points.push({ label: "Already has a good website", points: -22 });
+  else if (status === "Proper Website") points.push({ label: "Already has a website", points: -15 });
+  else if (status === "Unclear") points.push({ label: "Website presence unclear", points: 10 });
+
+  if (lead.email.trim()) points.push({ label: "Public email address", points: 16 });
+  if ((lead.phone ?? "").replace(/\D/g, "").length >= 10) points.push({ label: "Phone number listed", points: 8 });
+  if (/active/i.test(lead.businessStatus ?? "")) points.push({ label: "Actively trading", points: 6 });
+
+  const reviews = typeof lead.reviews === "number" ? lead.reviews : 0;
+  const rating = typeof lead.rating === "number" ? lead.rating : 0;
+  if (reviews >= 20 && rating >= 4.5) points.push({ label: `${reviews} reviews at ${rating}`, points: 10 });
+  else if (reviews >= 8) points.push({ label: `${reviews} reviews`, points: 4 });
+
+  let score = points.reduce((sum, point) => sum + point.points, 0);
+  let capped = "";
+  if (lead.callResult === "Not Interested" || lead.called === "Not Interested") {
+    if (score > 22) capped = "Capped: they said not interested";
+    score = Math.min(score, 22);
+  }
+  if (lead.callResult === "Booked") {
+    if (score > 18) capped = "Capped: already booked";
+    score = Math.min(score, 18);
+  }
+  if (lead.callResult === "Wrong Number") {
+    if (score > 15) capped = "Capped: wrong number";
+    score = Math.min(score, 15);
+  }
+  return { score: Math.max(0, Math.min(100, Math.round(score))), points, capped };
+}
+
 /**
  * Rules-based website opportunity, 0–100. Not an AI prediction.
  * No website / poor site / public email push it up; a good existing site pulls it down.
  */
-export function computeOpportunity(
-  lead: Pick<
-    Lead,
-    | "website"
-    | "websiteStatus"
-    | "websiteQuality"
-    | "email"
-    | "phone"
-    | "businessStatus"
-    | "reviews"
-    | "rating"
-    | "called"
-    | "callResult"
-  >,
-): number {
-  let score = 25;
-  const status = resolveWebsiteStatus(lead);
-  const quality = lead.websiteQuality;
+export function computeOpportunity(lead: OpportunityInput): number {
+  return explainOpportunity(lead).score;
+}
 
-  if (status === "No Website Found") score += 38;
-  else if (status === "Social Only") score += 28;
-  else if (status === "Directory Only") score += 24;
-  else if (quality === "poor") score += 30;
-  else if (quality === "improve" || status === "Basic Website") score += 18;
-  else if (quality === "good") score -= 22;
-  else if (status === "Proper Website") score -= 15;
-  else if (status === "Unclear") score += 10;
-
-  if (lead.email.trim()) score += 16;
-  if ((lead.phone ?? "").replace(/\D/g, "").length >= 10) score += 8;
-  if (/active/i.test(lead.businessStatus ?? "")) score += 6;
-
-  const reviews = typeof lead.reviews === "number" ? lead.reviews : 0;
-  const rating = typeof lead.rating === "number" ? lead.rating : 0;
-  if (reviews >= 20 && rating >= 4.5) score += 10;
-  else if (reviews >= 8) score += 4;
-
-  if (lead.callResult === "Not Interested" || lead.called === "Not Interested") {
-    score = Math.min(score, 22);
-  }
-  if (lead.callResult === "Booked") score = Math.min(score, 18);
-  if (lead.callResult === "Wrong Number") score = Math.min(score, 15);
-
-  return Math.max(0, Math.min(100, Math.round(score)));
+/** The score in words, for the top of a prospect card. */
+export function opportunityLabel(score: number): string {
+  if (score >= 85) return "Excellent opportunity";
+  if (score >= 70) return "Strong opportunity";
+  if (score >= 45) return "Good opportunity";
+  return "Low opportunity";
 }
 
 export function opportunityBand(score: number): "High" | "Medium" | "Low" {
@@ -540,7 +569,10 @@ export function isFollowUpDue(lead: Lead): boolean {
  */
 export function callOutcomePatch(result: CallResult, lead: Pick<Lead, "followUpDate">): Partial<Lead> {
   const today = todayIso();
-  const keepOrSet = (days: number) => (lead.followUpDate ? lead.followUpDate : addDays(today, days));
+  // A date chosen by hand for later is kept. One that is today or already past
+  // is the call just made, so it moves on — otherwise the lead never leaves
+  // today's call list however many times it is rung.
+  const keepOrSet = (days: number) => (lead.followUpDate > today ? lead.followUpDate : addDays(today, days));
   switch (result) {
     case "No Answer":
       return { called: "No Answer", callResult: "No Answer", followUpDate: keepOrSet(2) };

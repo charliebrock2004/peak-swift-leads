@@ -405,6 +405,11 @@ describe("recording a call outcome in one tap", () => {
     assert.equal(patch.followUpDate, "2030-05-05");
   });
 
+  it("moves a follow-up that was due today or overdue, so the call leaves today's list", () => {
+    assert.equal(callOutcomePatch("No Answer", { followUpDate: todayIso() }).followUpDate, addDays(todayIso(), 2));
+    assert.equal(callOutcomePatch("Callback", { followUpDate: "2020-01-01" }).followUpDate, addDays(todayIso(), 1));
+  });
+
   it("clears the follow-up when the lead is closed out", () => {
     assert.equal(callOutcomePatch("Not Interested", { followUpDate: "2030-05-05" }).followUpDate, "");
     assert.equal(callOutcomePatch("Wrong Number", { followUpDate: "2030-05-05" }).followUpDate, "");

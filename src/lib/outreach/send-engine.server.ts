@@ -34,6 +34,7 @@ import { checkEmailQuality } from "./quality.ts";
 import { effectiveProfile, fromName, type BusinessProfile } from "./profile.ts";
 import { composeEmail, type AiGenerator } from "./compose.ts";
 import { campaignCanSend } from "./campaigns.ts";
+import { blockedSentence } from "./block-reasons.ts";
 import * as store from "./store.server.ts";
 import type { OutreachEmail, OutreachSettings } from "./types.ts";
 
@@ -400,7 +401,7 @@ export async function sendOne(deps: EngineDeps, emailId: string, options: SendOp
     reason:
       result.kind === "uncertain"
         ? `${result.error} Gmail has no record of it yet. Retry checks Gmail again first, so it cannot be sent twice.`
-        : `${result.error} Retry checks Gmail first, so it cannot be sent twice.`,
+        : `${result.status ? `Gmail was briefly unavailable (${result.status}: ${result.error})` : `Could not reach Gmail (${result.error})`}. Nothing was sent. Retry checks Gmail first, so it cannot be sent twice.`,
   };
 }
 
@@ -429,42 +430,6 @@ export function blockReason(
   });
   if (!verdict.ok) return verdict.problems[0]!.message.replace(/\.$/, "");
   return "";
-}
-
-/** The actionable sentence for each eligibility refusal. */
-export function blockedSentence(reason: string): string {
-  switch (reason) {
-    case "no-email":
-      return "there is no public email address for this business";
-    case "invalid-email":
-      return "the email address does not look valid";
-    case "low-confidence":
-      return "the public email could not be verified (confidence too low)";
-    case "guessed-email":
-      return "the email address was guessed, not found published";
-    case "unsubscribed":
-      return "this business asked not to be contacted";
-    case "suppressed":
-      return "this recipient has previously opted out (suppression list)";
-    case "already-contacted":
-      return "this business has already been emailed";
-    case "not-interested":
-      return "this business is marked Not Interested";
-    case "booked":
-      return "this business is already booked";
-    case "won":
-      return "this business is already a customer";
-    case "replied":
-      return "they have replied — answer them from Gmail instead";
-    case "no-opportunity":
-      return "their website is already good, so there is nothing honest to offer";
-    case "low-opportunity":
-      return "the opportunity is too low (turn on 'Include low opportunity' to allow it)";
-    case "manual-review":
-      return "this looks like a sole trader or personal mailbox, so it needs sending by hand";
-    default:
-      return reason;
-  }
 }
 
 /**
@@ -663,7 +628,7 @@ export async function runEndToEndTest(
   step(
     "Email written",
     true,
-    composed.generatedBy === "ai" ? "Written by AI from the test prospect's evidence." : `Template used${composed.fellBackBecause ? ` — ${composed.fellBackBecause}` : ""}.`,
+    composed.generatedBy === "ai" ? "Written by AI from the test prospect's evidence." : composed.fellBackBecause ? `Template used: ${composed.fellBackBecause.replace(/\s*—\s*used a template\.?$/, "")}.` : "Template used.",
   );
 
   const verdict = checkEmailQuality({

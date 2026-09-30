@@ -370,6 +370,15 @@ function sleep(ms: number): Promise<void> {
 }
 
 export async function geocodePlace(location: string): Promise<GeoPoint | null> {
+  return (await geocodeWithStatus(location)).point;
+}
+
+/**
+ * Geocode, and say whether either lookup service answered at all — so "that
+ * place does not exist" is never reported when the truth is "the lookup was
+ * unreachable", which sends people off retyping a town that was fine.
+ */
+export async function geocodeWithStatus(location: string): Promise<{ point: GeoPoint | null; reached: boolean; error: string }> {
   const query = /scotland/i.test(location) ? location.trim() : `${location.trim()}, Scotland`;
   const photon = await fetchJson(
     `https://photon.komoot.io/api/?q=${encodeURIComponent(query)}&limit=5`,
@@ -394,7 +403,7 @@ export async function geocodePlace(location: string): Promise<GeoPoint | null> {
         row.properties?.city ||
         row.properties?.county ||
         location.trim();
-      return { lat, lng, label };
+      return { point: { lat, lng, label }, reached: true, error: "" };
     }
   }
 
@@ -406,13 +415,24 @@ export async function geocodePlace(location: string): Promise<GeoPoint | null> {
     const hit = results[0];
     if (hit && Number.isFinite(hit.latitude) && Number.isFinite(hit.longitude)) {
       return {
-        lat: hit.latitude as number,
-        lng: hit.longitude as number,
-        label: [hit.name, hit.admin1].filter(Boolean).join(", ") || location.trim(),
+        point: {
+          lat: hit.latitude as number,
+          lng: hit.longitude as number,
+          label: [hit.name, hit.admin1].filter(Boolean).join(", ") || location.trim(),
+        },
+        reached: true,
+        error: "",
       };
     }
   }
-  return null;
+  // Only a proper answer means the place is unknown. A 403, a 5xx or a page
+  // that is not JSON is the service failing, not the town being wrong.
+  const failed = [photon, meteo].find((attempt) => !attempt.ok);
+  return {
+    point: null,
+    reached: photon.ok || meteo.ok,
+    error: failed ? (failed.status ? `HTTP ${failed.status}` : failed.error || "network error") : "",
+  };
 }
 
 type PhotonHit = {
@@ -1137,11 +1157,14 @@ export async function discoverBusinesses(options: {
   if (location.length < 2) return { ok: false, error: "Enter a location.", warnings: [] };
   if (trade.length < 2) return { ok: false, error: "Enter a business type.", warnings: [] };
 
-  const center = await geocodePlace(location);
+  const geo = await geocodeWithStatus(location);
+  const center = geo.point;
   if (!center) {
     return {
       ok: false,
-      error: `Could not find “${location}”. Try a town or city in Scotland.`,
+      error: geo.reached
+        ? `Could not find “${location}”. Try a town or city in Scotland.`
+        : `The map lookup service could not be reached${geo.error ? ` (${geo.error})` : ""}, so nothing was searched. Try again in a minute.`,
       warnings: [],
     };
   }

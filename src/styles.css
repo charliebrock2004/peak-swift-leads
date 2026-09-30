@@ -15,6 +15,11 @@
   --color-warm-lead: #c4a05a;
   --color-cold-lead: #8a8d93;
   --color-site: #7d9b78;
+  /* Semantic tones for status, used sparingly: they carry meaning, not decoration. */
+  --color-good: #8fb58a;
+  --color-warn: #d4a95c;
+  --color-bad: #e07a68;
+  --color-info: #8ea7c9;
   --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
   --font-display: "IBM Plex Serif", ui-serif, Georgia, serif;
   --font-mono: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
@@ -220,6 +225,69 @@
   position: fixed;
   inset: 0;
   z-index: 60;
+}
+
+/* ── App shell ─────────────────────────────────────────────────────────────── */
+
+:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--color-accent) 80%, transparent);
+  outline-offset: 2px;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.rise-in {
+  animation: rise-in var(--motion-fast) var(--ease-out) both;
+}
+
+@keyframes shimmer {
+  from {
+    background-position: -200% 0;
+  }
+  to {
+    background-position: 200% 0;
+  }
+}
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--color-surface) 0%,
+    var(--color-surface-2) 50%,
+    var(--color-surface) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.4s linear infinite;
+  border-radius: var(--radius-sm);
+}
+
+.scroll-x {
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.scroll-x::-webkit-scrollbar {
+  display: none;
+}
+
+.email-preview {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 0.875rem;
+  line-height: 1.6;
 }
 
 @media (prefers-reduced-motion: reduce) {
