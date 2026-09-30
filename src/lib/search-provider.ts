@@ -432,6 +432,8 @@ export const SEARCH_FAILURES = [
   "BAD_RESPONSE",
   "SERVER",
   "NETWORK",
+  /** This app's own daily cap on paid searches, not the provider's. */
+  "BUDGET",
 ] as const;
 export type SearchFailureKind = (typeof SEARCH_FAILURES)[number];
 
@@ -452,6 +454,7 @@ export const SEARCH_FAILURE_LABELS: Record<SearchFailureKind, string> = {
   BAD_RESPONSE: "The search provider returned something this app could not read.",
   SERVER: "The search provider returned an error.",
   NETWORK: "The search provider could not be reached.",
+  BUDGET: "Today's search budget is used up (Settings → Discovery). Searches resume tomorrow.",
 };
 
 /**

@@ -42,7 +42,7 @@ import {
   UNDEFINED_TABLE,
   type SetupReason,
 } from "./setup-state.ts";
-import { SENDER_STUDIO } from "./templates.ts";
+import type { BusinessProfile } from "./profile.ts";
 import {
   DEFAULT_SETTINGS,
   type EmailKind,
@@ -174,12 +174,12 @@ function aiGenerator(): ((prompt: string) => Promise<AiDraft | null>) | undefine
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
         signal: controller.signal,
         body: JSON.stringify({
-          model: "grok-4.20-0309-non-reasoning",
+          model: process.env.XAI_MODEL?.trim() || "grok-4.20-0309-non-reasoning",
           input: [
             {
               role: "system",
               content:
-                "You write short, honest, British-English cold emails for a small web design studio. You never invent facts and never insult anyone. Reply with JSON only.",
+                "You write short, honest, British-English cold emails for a one-person web design studio in Scotland. They read like a real person who has looked at the business, not like marketing. You never invent facts, numbers, conversations or compliments, and never insult anyone. Reply with JSON only.",
             },
             { role: "user", content: prompt },
           ],
@@ -226,8 +226,9 @@ async function usableToken(userId: string): Promise<UsableToken> {
 
   const sql = await getSql();
   const account = await store.loadGmailAccount(sql, userId);
+  if (account?.tokenProblem) return { ok: false, error: account.tokenProblem, needsAttention: true };
   if (!account || account.status === "disconnected" || !account.refresh_token) {
-    return { ok: false, error: "Gmail is not connected." };
+    return { ok: false, error: "Gmail is not connected. Connect it in Settings → Gmail." };
   }
   const expiresAt = account.expires_at
     ? account.expires_at instanceof Date
@@ -244,7 +245,9 @@ async function usableToken(userId: string): Promise<UsableToken> {
     if (refreshed.fatal) await store.markGmailProblem(sql, userId, refreshed.error);
     return {
       ok: false,
-      error: refreshed.fatal ? "Gmail connection needs attention. Reconnect the account." : refreshed.error,
+      error: refreshed.fatal
+        ? `Gmail is connected but the token refresh failed (${refreshed.error}). Reconnect Gmail in Settings.`
+        : `Could not refresh the Gmail token just now: ${refreshed.error}`,
       needsAttention: refreshed.fatal,
     };
   }
@@ -260,6 +263,14 @@ async function usableToken(userId: string): Promise<UsableToken> {
 
 export type OutreachState = {
   ok: true;
+  /** The studio profile with defaults filled in — what emails actually use. */
+  profile: BusinessProfile;
+  /** True once the owner has saved their own profile. */
+  profileSaved: boolean;
+  /** Paid calls spent today, against their budgets. */
+  usage: { search: number; ai: number; searchBudget: number; aiBudget: number };
+  /** Which web-search provider discovery will use, or "" when none is configured. */
+  searchProvider: string;
   campaigns: Campaign[];
   /** Which prospects belong to which campaign. Empty before the migration runs. */
   campaignMembers: { campaignId: string; leadId: string }[];
@@ -314,8 +325,27 @@ export const getOutreachState = createServerFn({ method: "GET" })
       // A deployment that has not run the campaigns migration yet simply has
       // none, which is true rather than an error.
       const { campaigns, campaignMembers } = await loadCampaignWorld(store, sql, context.userId);
+      const { effectiveProfile, profileIsSetUp } = await import("./profile.ts");
+      // 0009 may not be applied on a deploy that is mid-migration: a missing
+      // table reads as "nothing saved yet", never as an outage.
+      const storedProfile = await store.loadProfile(sql, context.userId).catch(() => null);
+      const used = await store.budgetUsed(sql, context.userId).catch(() => ({ search: 0, ai: 0 }));
       return {
         ok: true,
+        profile: effectiveProfile(storedProfile),
+        profileSaved: profileIsSetUp(storedProfile),
+        usage: {
+          ...used,
+          searchBudget: settings.searchDailyBudget ?? 300,
+          aiBudget: settings.aiDailyBudget ?? 150,
+        },
+        searchProvider: process.env.TAVILY_API_KEY?.trim()
+          ? "Tavily"
+          : process.env.BRAVE_SEARCH_API_KEY?.trim()
+            ? "Brave"
+            : process.env.BING_SEARCH_API_KEY?.trim()
+              ? "Bing"
+              : "",
         connection: store.publicConnection(account, config !== null, await clientIdentity(config)),
         settings,
         templates,
@@ -363,9 +393,10 @@ async function classifyStateFailure(error: unknown): Promise<SetupReason> {
 export const startGmailConnect = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((input: unknown) => ({ origin: str((input as { origin?: unknown })?.origin, 200) }))
-  .handler(async ({ data }): Promise<{ ok: true; url: string; state: string } | Fail> => {
+  .handler(async ({ data, context }): Promise<{ ok: true; url: string; state: string } | Fail> => {
     const gmail = await import("@/lib/gmail/client.server.ts");
-    const { buildAuthUrl, clientIdProblem, newState } = await import("@/lib/gmail/oauth.ts");
+    const { buildAuthUrl, clientIdProblem } = await import("@/lib/gmail/oauth.ts");
+    const { signOAuthState } = await import("@/lib/crypto/secrets.server");
     const config = gmail.googleConfig();
     if (!config) {
       return {
@@ -386,7 +417,9 @@ export const startGmailConnect = createServerFn({ method: "POST" })
     }
     const redirectUri = redirectUriFor(data.origin);
     if (!redirectUri) return { ok: false, error: "Could not work out the redirect URI." };
-    const state = newState();
+    // Signed to this account and timestamped, so the callback can prove — on
+    // the server — that this signed-in owner started this exact flow.
+    const state = signOAuthState(context.userId);
     return {
       ok: true,
       state,
@@ -420,11 +453,22 @@ function redirectUriFor(origin: string): string {
 export const completeGmailConnect = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((input: unknown) => {
-    const source = (input ?? {}) as { code?: unknown; origin?: unknown };
-    return { code: str(source.code, 512), origin: str(source.origin, 200) };
+    const source = (input ?? {}) as { code?: unknown; origin?: unknown; state?: unknown };
+    return { code: str(source.code, 512), origin: str(source.origin, 200), state: str(source.state, 200) };
   })
   .handler(async ({ data, context }): Promise<{ ok: true; connection: GmailConnection } | Fail> => {
     if (!data.code) return { ok: false, error: "Google did not return an authorisation code." };
+    const { verifyOAuthState } = await import("@/lib/crypto/secrets.server");
+    const stateCheck = verifyOAuthState(context.userId, data.state);
+    if (!stateCheck.ok) {
+      return {
+        ok: false,
+        error:
+          stateCheck.reason === "expired"
+            ? "That Google sign-in took too long and expired. Start again from Settings → Gmail."
+            : "That Google sign-in was not started by this account, so it was refused. Start again from Settings → Gmail.",
+      };
+    }
     const { getSql } = await import("@/lib/db");
     const store = await import("./store.server.ts");
     const gmail = await import("@/lib/gmail/client.server.ts");
@@ -482,22 +526,23 @@ export const sendTestEmail = createServerFn({ method: "POST" })
     const gmail = await import("@/lib/gmail/client.server.ts");
     const { buildRawMessage } = await import("@/lib/gmail/mime.ts");
     const to = data.to || token.email;
+    const { getSql: getTestSql } = await import("@/lib/db");
+    const testStore = await import("./store.server.ts");
+    const { effectiveProfile, fromName } = await import("./profile.ts");
+    const profile = effectiveProfile(await testStore.loadProfile(await getTestSql(), context.userId).catch(() => null));
     const raw = buildRawMessage({
       to,
       from: token.email,
-      fromName: SENDER_STUDIO,
+      fromName: fromName(profile),
       subject: "Peak Swift outreach — test email",
       body: `This is a test from Peak Swift Leads.\n\nIf you are reading this, the Gmail connection works and outreach can send from ${token.email}.\n\nNo prospect was contacted.`,
     });
     const sent = await gmail.sendMessage(token.accessToken, raw);
     if (!sent.ok) {
-      if (sent.fatal) {
-        const { getSql } = await import("@/lib/db");
-        const store = await import("./store.server.ts");
-        await store.markGmailProblem(await getSql(), context.userId, sent.error);
-      }
+      if (sent.fatal) await testStore.markGmailProblem(await getTestSql(), context.userId, sent.error);
       return { ok: false, error: sent.error, needsAttention: sent.fatal };
     }
+    await testStore.markGmailSent(await getTestSql(), context.userId).catch(() => undefined);
     return { ok: true, messageId: sent.messageId, to };
   });
 
@@ -531,6 +576,7 @@ export const generateEmails = createServerFn({ method: "POST" })
       mode?: unknown;
       kind?: unknown;
       campaignId?: unknown;
+      runId?: unknown;
     };
     const kind = str(source.kind, 20);
     return {
@@ -540,6 +586,7 @@ export const generateEmails = createServerFn({ method: "POST" })
       // A label on the draft, never a permission. Eligibility below is
       // unchanged and runs whether or not a campaign asked for this.
       campaignId: str(source.campaignId, 40),
+      runId: str(source.runId, 64),
     };
   })
   .handler(async ({ data, context }): Promise<{ ok: true; rows: GeneratedRow[] } | Fail> => {
@@ -547,7 +594,24 @@ export const generateEmails = createServerFn({ method: "POST" })
     try {
       const { sql, store, settings, emails, suppression, templates } = await loadWorld(context.userId);
       const eligibilityContext = contextFrom(emails, suppression, settings, data.kind);
-      const generate = aiGenerator();
+      const profile = await store.loadProfile(sql, context.userId).catch(() => null);
+      const { effectiveProfile } = await import("./profile.ts");
+      const studio = effectiveProfile(profile).businessName;
+      const baseGenerate = aiGenerator();
+      // Each AI draft spends one unit of today's AI budget, checked in the
+      // database before the call. Out of budget means the template is used,
+      // and the draft says so — it never means a runaway bill.
+      const aiBudget = settings.aiDailyBudget ?? 150;
+      const generate = baseGenerate
+        ? async (prompt: string) => {
+            const allowed = await store
+              .consumeBudget(sql, context.userId, "ai", 1, aiBudget)
+              .then((used) => used !== null)
+              .catch(() => true);
+            if (!allowed) throw new Error("AI budget reached");
+            return baseGenerate(prompt);
+          }
+        : undefined;
       const rows: GeneratedRow[] = [];
 
       for (const leadId of data.leadIds) {
@@ -567,34 +631,44 @@ export const generateEmails = createServerFn({ method: "POST" })
           mode: data.mode,
           templates,
           generate,
-        });
-
-        // A draft that cannot pass the gate is still stored, so it can be seen
-        // and edited — but it is stored as a draft, and the queue will refuse it.
-        const verdict = checkEmailQuality({
-          subject: composed.subject,
-          body: composed.body,
-          recipient: lead.email,
-          lead,
-          suppressed: suppression,
+          profile: profile ?? undefined,
         });
 
         const existing = await store.findDraft(sql, context.userId, leadId, data.kind);
         const id = existing?.id ?? newLeadId();
-        // A follow-up must land in the same Gmail thread as what it follows.
+        // A follow-up must land in the same Gmail thread as what it follows,
+        // with the subject Gmail and the recipient's mail client both use to
+        // thread it: "Re: " and the original subject.
         const previous = emails
-          .filter((email) => email.leadId === leadId && email.gmailThreadId)
+          .filter((email) => email.leadId === leadId && email.gmailThreadId && (email.status === "sent" || email.status === "replied"))
           .sort((a, b) => (b.sentAt || b.createdAt).localeCompare(a.sentAt || a.createdAt))[0];
+        const subject =
+          data.kind !== "initial" && previous
+            ? `Re: ${previous.subject.replace(/^\s*re:\s*/i, "")}`.slice(0, 120)
+            : composed.subject;
+
+        // A draft that cannot pass the gate is still stored, so it can be seen
+        // and edited — but it is stored as a draft, and the queue will refuse it.
+        const verdict = checkEmailQuality({
+          subject,
+          body: composed.body,
+          recipient: lead.email,
+          lead,
+          suppressed: suppression,
+          studio,
+        });
 
         const evidence = evidenceFor(lead);
         await store.upsertDraft(sql, context.userId, {
           id,
           personalisationEvidence: evidenceSummary(evidence),
+          personalisationNote: composed.personalisation,
           campaignId: data.campaignId,
+          runId: data.runId,
           leadId,
           businessName: lead.businessName,
           recipient: lead.email,
-          subject: composed.subject,
+          subject,
           body: composed.body,
           kind: data.kind,
           generatedBy: composed.generatedBy,
@@ -614,7 +688,7 @@ export const generateEmails = createServerFn({ method: "POST" })
           leadId,
           ok: true,
           emailId: id,
-          subject: composed.subject,
+          subject,
           body: composed.body,
           generatedBy: composed.generatedBy,
           evidence: evidence.map((item) => ({ kind: item.kind, text: item.text, source: item.source })),
@@ -680,6 +754,8 @@ export const setEmailDecision = createServerFn({ method: "POST" })
   .handler(async ({ data, context }): Promise<{ ok: true; changed: number; refused: string[] } | Fail> => {
     try {
       const { sql, store, settings, emails, suppression } = await loadWorld(context.userId);
+      const { effectiveProfile } = await import("./profile.ts");
+      const studio = effectiveProfile(await store.loadProfile(sql, context.userId).catch(() => null)).businessName;
       const refused: string[] = [];
       let changed = 0;
 
@@ -699,6 +775,7 @@ export const setEmailDecision = createServerFn({ method: "POST" })
             email?.kind ?? "initial",
           ),
           suppressed: suppression,
+          studio,
         });
 
         if (outcome.action === "refuse") {
@@ -760,8 +837,11 @@ export type SendReport = {
 export const sendQueued = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .handler(async ({ context }): Promise<SendReport | Fail> => {
+    // Kept for the older batch callers. Every email still goes through the
+    // same engine as the one-at-a-time Send screen: the second gate, the atomic
+    // claim inside the limits, classified failures and reconciliation.
     try {
-      const { sql, store, settings, emails, suppression } = await loadWorld(context.userId);
+      const { sql, store, settings, emails } = await loadWorld(context.userId);
       const room = allowance(emails, settings);
       if (room.atLimit) {
         return {
@@ -774,129 +854,67 @@ export const sendQueued = createServerFn({ method: "POST" })
           stopped: `Daily limit reached (${room.sent}/${room.limit}).`,
         };
       }
-
       const batch = nextBatch(emails, settings);
       if (batch.length === 0) {
         return { ok: true, sent: 0, failed: 0, skipped: 0, remaining: room.remaining, details: [] };
       }
-
-      const token = await usableToken(context.userId);
-      if (!token.ok) return token;
-
-      const gmail = await import("@/lib/gmail/client.server.ts");
-      const { buildRawMessage } = await import("@/lib/gmail/mime.ts");
+      const engine = await import("./send-engine.server.ts");
+      const deps = await engineDeps(context.userId);
+      const profile = await store.loadProfile(sql, context.userId).catch(() => null);
 
       const details: SendReport["details"] = [];
       let sent = 0;
       let failed = 0;
       let skipped = 0;
       let stopped: string | undefined;
-
       for (const email of batch) {
-        const lead = await store.loadLead(sql, context.userId, email.leadId);
-        if (!lead) {
-          await store.setEmailStatus(sql, context.userId, email.id, "skipped", { error: "Lead no longer exists." });
-          details.push({ id: email.id, businessName: email.businessName, status: "skipped", error: "Lead is gone" });
-          skipped += 1;
-          continue;
-        }
-
-        // The second gate. Everything here was already checked at approval; a
-        // lead can change in between, and this is the check that matters.
-        const eligibilityContext = contextFrom(
-          emails.filter((other) => other.id !== email.id),
-          suppression,
-          settings,
-          email.kind,
-        );
-        const eligibility = checkEligibility(lead, eligibilityContext, email.kind);
-        const verdict = checkEmailQuality({
-          subject: email.subject,
-          body: email.body,
-          recipient: email.recipient,
-          lead,
-          suppressed: suppression,
-        });
-        if (!eligibility.eligible || !verdict.ok) {
-          const why = !eligibility.eligible
-            ? eligibility.reasons[0]
-            : verdict.ok
-              ? "unknown"
-              : verdict.problems[0].message;
-          await store.setEmailStatus(sql, context.userId, email.id, "skipped", { error: why });
-          details.push({ id: email.id, businessName: email.businessName, status: "skipped", error: why });
-          skipped += 1;
-          continue;
-        }
-
-        // Claim it. If this returns false another pass already took it, which is
-        // what stops two concurrent sends producing two emails.
-        const claimed = await store.claimForSending(sql, context.userId, email.id);
-        if (!claimed) {
-          details.push({ id: email.id, businessName: email.businessName, status: "skipped", error: "Already sending" });
-          skipped += 1;
-          continue;
-        }
-
-        const raw = buildRawMessage({
-          to: email.recipient,
-          from: token.email,
-          fromName: SENDER_STUDIO,
-          subject: email.subject,
-          body: email.body,
-          inReplyTo: email.kind === "initial" ? undefined : email.gmailMessageId || undefined,
-        });
-        const result = await gmail.sendMessage(token.accessToken, raw, email.gmailThreadId || undefined);
-
-        if (result.ok) {
-          await store.markSent(sql, context.userId, email.id, {
-            messageId: result.messageId,
-            threadId: result.threadId,
-            account: token.email,
-          });
-          await store.updateLeadOutreach(sql, context.userId, email.leadId, {
-            outreachStatus: email.kind === "initial" ? "Sent" : "Followed up",
-            lastEmailedAt: new Date().toISOString(),
-          });
-          await store.recordActivity(sql, context.userId, {
-            id: newLeadId(),
-            type: "EMAIL_SENT",
-            leadId: email.leadId,
-            leadName: email.businessName,
-            result: email.recipient,
-          });
-          details.push({ id: email.id, businessName: email.businessName, status: "sent" });
+        const outcome = await engine.sendOne(deps, email.id, { settings, profile });
+        if (outcome.status === "sent" || outcome.status === "sent_unrecorded") {
           sent += 1;
-          continue;
-        }
-
-        await store.setEmailStatus(sql, context.userId, email.id, "failed", { error: result.error });
-        await store.recordActivity(sql, context.userId, {
-          id: newLeadId(),
-          type: "EMAIL_FAILED",
-          leadId: email.leadId,
-          leadName: email.businessName,
-          result: email.recipient,
-          error: result.error,
-        });
-        details.push({ id: email.id, businessName: email.businessName, status: "failed", error: result.error });
-        failed += 1;
-
-        // A dead token fails every remaining send identically. Stop, and say so.
-        if (result.fatal) {
-          await store.markGmailProblem(sql, context.userId, result.error);
-          stopped = "Gmail connection needs attention. The rest of the queue was left alone.";
-          break;
+          details.push({ id: email.id, businessName: email.businessName, status: "sent" });
+        } else if (outcome.status === "failed") {
+          failed += 1;
+          details.push({ id: email.id, businessName: email.businessName, status: "failed", error: outcome.reason });
+        } else {
+          skipped += 1;
+          details.push({ id: email.id, businessName: email.businessName, status: "skipped", error: "reason" in outcome ? outcome.reason : "" });
+          if (outcome.status === "not_sent") {
+            stopped = outcome.reason;
+            break;
+          }
         }
       }
-
       const after = await store.loadEmails(sql, context.userId);
       return { ok: true, sent, failed, skipped, remaining: allowance(after, settings).remaining, details, stopped };
     } catch (error) {
       console.error("[outreach] send failed:", error);
-      return { ok: false, error: "Sending failed. Nothing further was sent." };
+      return { ok: false, error: "Sending stopped on a server error. Anything sent before it is recorded; nothing further was sent." };
     }
   });
+
+/**
+ * The send engine's dependencies for one request: the database, the real Gmail
+ * client, and a token fetched (and refreshed) at most once.
+ */
+async function engineDeps(userId: string): Promise<import("./send-engine.server.ts").EngineDeps> {
+  const { getSql } = await import("@/lib/db");
+  const gmail = await import("@/lib/gmail/client.server.ts");
+  const sql = await getSql();
+  let token: Promise<import("./send-engine.server.ts").TokenResult> | null = null;
+  return {
+    sql,
+    userId,
+    gmail: {
+      sendMessage: gmail.sendMessage,
+      findSentMessage: gmail.findSentMessage,
+      getMessageMeta: gmail.getMessageMeta,
+    },
+    token: () =>
+      (token ??= usableToken(userId).then((result) =>
+        result.ok ? result : { ok: false as const, error: result.error, needsAttention: result.needsAttention },
+      )),
+  };
+}
 
 // ── Replies ──────────────────────────────────────────────────────────────────
 
@@ -926,6 +944,10 @@ export type ReplyReport = {
   checked: number;
   /** True when more were waiting than this pass could reach. */
   more: boolean;
+  /** Delivery failures found on threads — not replies. */
+  bounces?: number;
+  /** Out-of-office answers — recorded, not counted as replies. */
+  autoReplies?: number;
 };
 
 export const checkReplies = createServerFn({ method: "POST" })
@@ -950,6 +972,9 @@ export const checkReplies = createServerFn({ method: "POST" })
       let unsubscribes = 0;
       let ranOut = false;
 
+      const { decideThread } = await import("./replies.ts");
+      let bounces = 0;
+      let autoReplies = 0;
       for (const email of waiting) {
         if (Date.now() > deadline) {
           ranOut = true;
@@ -964,10 +989,50 @@ export const checkReplies = createServerFn({ method: "POST" })
           }
           continue;
         }
-        const theirs = thread.messages.filter((message) => !message.fromUs);
-        if (theirs.length === 0) continue;
+        // Only messages that arrived after ours count — an older message in the
+        // same thread is not an answer to this email.
+        const sentAt = Date.parse(email.sentAt) || 0;
+        const theirs = thread.messages.filter(
+          (message) => !message.fromUs && (!message.internalDate || Number(message.internalDate) >= sentAt - 60_000),
+        );
+        const decided = decideThread(theirs);
+        if (!decided) continue;
+        const { message, verdict } = decided;
+        const at = message.internalDate ? new Date(Number(message.internalDate)).toISOString() : undefined;
 
-        await store.markReplied(sql, context.userId, email.id);
+        if (verdict.kind === "bounce") {
+          // A delivery failure, not a reply: the address is dead. Suppress it so
+          // nothing is ever sent there again, and say so.
+          await store.markBounced(sql, context.userId, email.id, { from: message.from, subject: message.subject, snippet: message.snippet });
+          await store.suppress(sql, context.userId, {
+            email: email.recipient,
+            reason: "Bounced — the address does not accept email",
+            leadId: email.leadId,
+            businessName: email.businessName,
+          });
+          await store.updateLeadOutreach(sql, context.userId, email.leadId, { outreachStatus: "Bounced" });
+          await store.recordActivity(sql, context.userId, {
+            id: newLeadId(), type: "EMAIL_BOUNCED", leadId: email.leadId, leadName: email.businessName, result: email.recipient,
+          });
+          bounces += 1;
+          continue;
+        }
+        if (verdict.kind === "auto_reply") {
+          // An out-of-office is not a conversation. Recorded, shown, and
+          // follow-ups carry on as scheduled.
+          await store.markAutoReply(sql, context.userId, email.id, { from: message.from, subject: message.subject, snippet: message.snippet });
+          autoReplies += 1;
+          continue;
+        }
+
+        await store.markReplied(sql, context.userId, email.id, {
+          from: message.from,
+          subject: message.subject,
+          snippet: message.snippet,
+          kind: verdict.kind,
+          suggestion: verdict.suggestion,
+          at,
+        });
         await store.updateLeadOutreach(sql, context.userId, email.leadId, { outreachStatus: "Replied" });
         replies += 1;
         await store.recordActivity(sql, context.userId, {
@@ -976,10 +1041,10 @@ export const checkReplies = createServerFn({ method: "POST" })
           leadId: email.leadId,
           leadName: email.businessName,
           result: email.recipient,
+          reason: verdict.suggestion,
         });
 
-        const said = theirs.map((message) => message.snippet).join(" ");
-        if (readsAsUnsubscribe(said)) {
+        if (verdict.kind === "unsubscribe" || readsAsUnsubscribe(theirs.map((entry) => entry.snippet).join(" "))) {
           await store.suppress(sql, context.userId, {
             email: email.recipient,
             reason: "Asked to stop in a reply",
@@ -1000,6 +1065,8 @@ export const checkReplies = createServerFn({ method: "POST" })
         ok: true,
         replies,
         unsubscribes,
+        bounces,
+        autoReplies,
         checked: checkedIds.length,
         more: ranOut || waiting.length === REPLY_BATCH,
       };
@@ -1335,10 +1402,11 @@ export const saveCampaign = createServerFn({ method: "POST" })
     const source = (input ?? {}) as Record<string, unknown>;
     const action = str(source.action, 20);
     return {
-      action: (action === "status" || action === "prospects" ? action : "save") as
+      action: (action === "status" || action === "prospects" || action === "duplicate" ? action : "save") as
         | "save"
         | "status"
-        | "prospects",
+        | "prospects"
+        | "duplicate",
       id: str(source.id, 40),
       name: str(source.name, 60),
       locations: str(source.locations, 200),
@@ -1370,6 +1438,28 @@ export const saveCampaign = createServerFn({ method: "POST" })
           data.leadIds,
         );
         return { success: true as const, id: existing.id, added };
+      }
+
+      if (data.action === "duplicate") {
+        if (!existing) return agentFail("That campaign no longer exists.", "CAMPAIGN_MISSING");
+        // Same areas, trades and limits; a fresh name, no prospects and no
+        // history. Starts as a draft, so copying never starts anything.
+        const copy = clampCampaign(
+          {
+            ...newCampaign(newLeadId(), now),
+            name: `${existing.name} (copy)`.slice(0, 60),
+            locations: existing.locations,
+            trades: existing.trades,
+            targetProspects: existing.targetProspects,
+            dailyTarget: existing.dailyTarget,
+            batchSize: existing.batchSize,
+            sendMode: "prepare",
+          },
+          limits,
+          now,
+        );
+        await store.upsertCampaign(sql, context.userId, copy);
+        return { success: true as const, id: copy.id, campaign: copy };
       }
 
       if (data.action === "status") {
@@ -1508,5 +1598,438 @@ export const qualifyLeads = createServerFn({ method: "GET" })
       };
     } catch (error) {
       return agentFail(error instanceof Error ? error.message : "Could not qualify leads.", "QUALIFY_FAILED", true);
+    }
+  });
+
+// ── Sending, one email at a time (the Send screen) ───────────────────────────
+
+/**
+ * Send one approved email now.
+ *
+ * The Send screen calls this once per email, in order, so progress is real
+ * ("Sending 3 of 10") and no single serverless call ever has to outlive a batch.
+ * Everything that matters happens in the send engine — see its header.
+ */
+export const sendEmail = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((input: unknown) => ({ id: str((input as { id?: unknown })?.id, 64) }))
+  .handler(async ({ data, context }) => {
+    if (!data.id) return { ok: false as const, error: "No email id." };
+    try {
+      const { getSql } = await import("@/lib/db");
+      const store = await import("./store.server.ts");
+      const engine = await import("./send-engine.server.ts");
+      const sql = await getSql();
+      const [settings, profile] = await Promise.all([
+        store.loadSettings(sql, context.userId),
+        store.loadProfile(sql, context.userId).catch(() => null),
+      ]);
+      const outcome = await engine.sendOne(await engineDeps(context.userId), data.id, { settings, profile });
+      const sentToday = await store.countSentSince(sql, context.userId, engine.dayStart(new Date()));
+      return {
+        ok: true as const,
+        outcome,
+        allowance: { sent: sentToday, limit: settings.dailyLimit, remaining: Math.max(0, settings.dailyLimit - sentToday) },
+      };
+    } catch (error) {
+      console.error("[outreach] sendEmail failed:", error);
+      return {
+        ok: false as const,
+        error:
+          "The server stopped before it could say whether this email went. Nothing is resent automatically — reopen Send and it will be checked against Gmail.",
+      };
+    }
+  });
+
+/** Finish any send whose answer was lost, from Gmail's own record. */
+export const reconcileSending = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }) => {
+    try {
+      const engine = await import("./send-engine.server.ts");
+      const result = await engine.reconcileStale(await engineDeps(context.userId));
+      return { ok: true as const, ...result };
+    } catch (error) {
+      console.error("[outreach] reconcile failed:", error);
+      return { ok: false as const, error: "Could not check unfinished sends against Gmail just now." };
+    }
+  });
+
+/** Put failed emails back in the queue — only after Gmail confirms they did not go. */
+export const retryFailedEmails = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((input: unknown) => ({ ids: idList((input as { ids?: unknown })?.ids, 50) }))
+  .handler(async ({ data, context }) => {
+    try {
+      const engine = await import("./send-engine.server.ts");
+      const results = await engine.retryEmails(await engineDeps(context.userId), data.ids);
+      return { ok: true as const, results };
+    } catch (error) {
+      console.error("[outreach] retry failed:", error);
+      return { ok: false as const, error: "Could not retry those emails." };
+    }
+  });
+
+// ── Gmail health ─────────────────────────────────────────────────────────────
+
+export type HealthCheck = { id: string; label: string; level: "ok" | "warn" | "fail" | "off"; detail: string };
+
+/**
+ * Ask Google, now, whether sending would work — and say exactly what is wrong
+ * when it would not. Refreshes the token (which sends nothing) and reads the
+ * mailbox profile; never sends an email.
+ */
+export const checkGmailHealth = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }) => {
+    const checks: HealthCheck[] = [];
+    const add = (check: HealthCheck) => checks.push(check);
+    try {
+      const { getSql } = await import("@/lib/db");
+      const store = await import("./store.server.ts");
+      const gmail = await import("@/lib/gmail/client.server.ts");
+      const { clientIdProblem, hasRequiredScopes, GMAIL_SCOPES } = await import("@/lib/gmail/oauth.ts");
+      const { keySource } = await import("@/lib/crypto/secrets.server");
+      const { effectiveProfile } = await import("./profile.ts");
+      const sql = await getSql();
+
+      const config = gmail.googleConfig();
+      const badClient = config ? clientIdProblem(config.clientId) : null;
+      add(
+        !config
+          ? { id: "credentials", label: "OAuth credentials", level: "fail", detail: "GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are not set on this deployment." }
+          : badClient
+            ? { id: "credentials", label: "OAuth credentials", level: "fail", detail: badClient }
+            : { id: "credentials", label: "OAuth credentials", level: "ok", detail: "Client id and secret are configured." },
+      );
+
+      const account = await store.loadGmailAccount(sql, context.userId);
+      if (!account || account.status === "disconnected") {
+        add({ id: "connected", label: "Gmail account", level: "fail", detail: "No Gmail account is connected. Press Connect Gmail." });
+        return finishHealth(sql, store, context.userId, checks);
+      }
+      add({ id: "connected", label: "Gmail account", level: "ok", detail: `Connected as ${account.email}.` });
+
+      const source = keySource();
+      add({
+        id: "encryption",
+        label: "Token storage",
+        level: account.tokenProblem ? "fail" : source === "development" && process.env.DATABASE_URL ? "warn" : "ok",
+        detail: account.tokenProblem
+          ? account.tokenProblem
+          : `Tokens are encrypted at rest (key from ${source === "TOKEN_ENCRYPTION_KEY" ? "TOKEN_ENCRYPTION_KEY" : source === "DATABASE_URL" ? "the database URL — set TOKEN_ENCRYPTION_KEY to control it separately" : source === "BETTER_AUTH_SECRET" ? "BETTER_AUTH_SECRET" : "a development key"}).`,
+      });
+      if (account.tokenProblem) return finishHealth(sql, store, context.userId, checks);
+
+      if (!account.refresh_token) {
+        add({ id: "refresh", label: "Refresh token", level: "fail", detail: "No refresh token is stored. Reconnect Gmail." });
+        return finishHealth(sql, store, context.userId, checks);
+      }
+      const refreshed = await gmail.refreshAccessToken(account.refresh_token);
+      if (!refreshed.ok) {
+        if (refreshed.fatal) await store.markGmailProblem(sql, context.userId, refreshed.error);
+        add({
+          id: "refresh",
+          label: "Refresh token",
+          level: "fail",
+          detail: refreshed.fatal
+            ? `Gmail is connected but the token refresh failed: ${refreshed.error}. Reconnect Gmail. (If the Google consent screen is in Testing mode, tokens expire after 7 days — publish the app in Google Cloud to stop that.)`
+            : `Google could not be reached to refresh the token: ${refreshed.error}`,
+        });
+        return finishHealth(sql, store, context.userId, checks);
+      }
+      await store.updateGmailAccessToken(sql, context.userId, {
+        accessToken: refreshed.accessToken,
+        refreshToken: refreshed.refreshToken,
+        expiresAt: refreshed.expiresAt,
+      });
+      add({ id: "refresh", label: "Refresh token", level: "ok", detail: "Google issued a fresh access token." });
+
+      const scopes = refreshed.scope || account.scope;
+      add(
+        hasRequiredScopes(scopes)
+          ? { id: "permissions", label: "Permissions", level: "ok", detail: "Send and read access are granted." }
+          : {
+              id: "permissions",
+              label: "Permissions",
+              level: "fail",
+              detail: `Missing: ${GMAIL_SCOPES.filter((scope) => !scopes.split(/\s+/).includes(scope)).map((scope) => scope.split("/").pop()).join(", ")}. Reconnect and tick every box on Google's screen.`,
+            },
+      );
+
+      const profileCheck = await gmail.getProfile(refreshed.accessToken);
+      if (!profileCheck.ok) {
+        add({ id: "api", label: "Gmail API", level: "fail", detail: `Gmail API refused the request: ${profileCheck.error}. Check the Gmail API is enabled in Google Cloud.` });
+        return finishHealth(sql, store, context.userId, checks);
+      }
+      add({ id: "api", label: "Gmail API", level: "ok", detail: `Mailbox reachable (${profileCheck.email}).` });
+
+      const pinned = gmail.allowedSender();
+      const profile = effectiveProfile(await store.loadProfile(sql, context.userId).catch(() => null));
+      const mailbox = profileCheck.email.toLowerCase();
+      if (pinned && pinned !== mailbox) {
+        add({ id: "identity", label: "Sender identity", level: "fail", detail: `This deployment is pinned to ${pinned} (GMAIL_SENDER) but the connected mailbox is ${mailbox}.` });
+      } else if (profile.senderEmail && profile.senderEmail !== mailbox) {
+        add({ id: "identity", label: "Sender identity", level: "warn", detail: `Your business profile says ${profile.senderEmail}, but emails will come from ${mailbox}.` });
+      } else {
+        add({ id: "identity", label: "Sender identity", level: "ok", detail: `Emails are sent as "${profile.senderName} at ${profile.businessName}" <${mailbox}>.` });
+      }
+
+      const lastSend = account.last_send_at ? new Date(account.last_send_at as string).toISOString() : "";
+      add({
+        id: "last-send",
+        label: "Last successful send",
+        level: lastSend ? "ok" : "off",
+        detail: lastSend ? new Date(lastSend).toUTCString() : "Nothing has been sent from this app yet. Send a test email to prove the path.",
+      });
+      return finishHealth(sql, store, context.userId, checks);
+    } catch (error) {
+      console.error("[outreach] health check failed:", error);
+      add({ id: "server", label: "Health check", level: "fail", detail: error instanceof Error ? error.message : "The check could not run." });
+      return { ok: true as const, checks, healthy: false, checkedAt: new Date().toISOString() };
+    }
+  });
+
+async function finishHealth(
+  sql: Awaited<ReturnType<typeof import("@/lib/db").getSql>>,
+  store: typeof import("./store.server.ts"),
+  userId: string,
+  checks: HealthCheck[],
+) {
+  const healthy = checks.every((check) => check.level === "ok" || check.level === "off");
+  const checkedAt = new Date().toISOString();
+  await store.saveGmailHealth(sql, userId, JSON.stringify({ healthy, checks, checkedAt })).catch(() => undefined);
+  return { ok: true as const, checks, healthy, checkedAt };
+}
+
+/**
+ * The whole pipeline, once, to your own address — see `runEndToEndTest` in the
+ * send engine. Refuses any recipient that is not the designated test address
+ * or the connected mailbox.
+ */
+export const runPipelineTest = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((input: unknown) => ({ to: str((input as { to?: unknown })?.to, 254).toLowerCase() }))
+  .handler(async ({ data, context }) => {
+    try {
+      const { getSql } = await import("@/lib/db");
+      const store = await import("./store.server.ts");
+      const engine = await import("./send-engine.server.ts");
+      const sql = await getSql();
+      const [settings, profile] = await Promise.all([
+        store.loadSettings(sql, context.userId),
+        store.loadProfile(sql, context.userId).catch(() => null),
+      ]);
+      const deps = await engineDeps(context.userId);
+      const token = await deps.token();
+      const to = data.to || settings.testRecipient || (token.ok ? token.email : "");
+      const result = await engine.runEndToEndTest(deps, {
+        to,
+        designated: settings.testRecipient ?? "",
+        profile,
+        generate: aiGenerator(),
+      });
+      return {
+        ok: true as const,
+        passed: result.ok,
+        steps: result.steps,
+        messageId: result.messageId ?? "",
+        threadId: result.threadId ?? "",
+        to,
+      };
+    } catch (error) {
+      console.error("[outreach] pipeline test failed:", error);
+      return { ok: false as const, error: error instanceof Error ? error.message : "The test could not run." };
+    }
+  });
+
+// ── Business profile ─────────────────────────────────────────────────────────
+
+export const saveBusinessProfile = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((input: unknown) => (input ?? {}) as Record<string, unknown>)
+  .handler(async ({ data, context }) => {
+    try {
+      const { sanitizeProfile, effectiveProfile } = await import("./profile.ts");
+      const { getSql } = await import("@/lib/db");
+      const store = await import("./store.server.ts");
+      const { profile, problems } = sanitizeProfile(data as never);
+      await store.saveProfile(await getSql(), context.userId, profile);
+      return { ok: true as const, profile: effectiveProfile(profile), problems };
+    } catch (error) {
+      console.error("[outreach] profile save failed:", error);
+      return { ok: false as const, error: isMissingTable(error) ? "Redeploy so the latest migration runs, then save again." : "Could not save the profile." };
+    }
+  });
+
+// ── Replies inbox ────────────────────────────────────────────────────────────
+
+/**
+ * Move a reply to a stage, and record the outcome on the lead so the lifecycle,
+ * eligibility and every screen agree. Never sends anything.
+ */
+export const setReplyStage = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((input: unknown) => {
+    const source = (input ?? {}) as { emailId?: unknown; stage?: unknown };
+    return { emailId: str(source.emailId, 64), stage: str(source.stage, 20) };
+  })
+  .handler(async ({ data, context }) => {
+    const { REPLY_STAGES } = await import("./types.ts");
+    if (!(REPLY_STAGES as readonly string[]).includes(data.stage)) return { ok: false as const, error: "Unknown stage." };
+    try {
+      const { getSql } = await import("@/lib/db");
+      const store = await import("./store.server.ts");
+      const { leadOutcomeForStage } = await import("./replies.ts");
+      const { addDays, todayIso } = await import("@/lib/leads");
+      const sql = await getSql();
+      const email = await store.setReplyStage(sql, context.userId, data.emailId, data.stage);
+      if (!email) return { ok: false as const, error: "That reply no longer exists." };
+      const outcome = leadOutcomeForStage(data.stage as (typeof REPLY_STAGES)[number]);
+      if (outcome) {
+        await store.updateLeadOutcome(sql, context.userId, email.leadId, {
+          called: outcome.called,
+          callResult: outcome.callResult,
+          followUpDate: outcome.followUpInDays ? addDays(todayIso(), outcome.followUpInDays) : undefined,
+        });
+      }
+      await store.recordActivity(sql, context.userId, {
+        id: newLeadId(),
+        type: "REPLY_STAGE",
+        leadId: email.leadId,
+        leadName: email.businessName,
+        result: data.stage,
+      });
+      return { ok: true as const, email };
+    } catch (error) {
+      console.error("[outreach] reply stage failed:", error);
+      return { ok: false as const, error: "Could not update that reply." };
+    }
+  });
+
+// ── Runs, recorded as they happen ────────────────────────────────────────────
+
+/**
+ * Create or update a run record. The Find screen writes one when a run starts
+ * and after each stage, so the history is honest about runs that were stopped
+ * or interrupted, and "View run" can list the prospects it found.
+ */
+export const recordRun = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((input: unknown) => (input ?? {}) as Record<string, unknown>)
+  .handler(async ({ data, context }) => {
+    const num = (key: string) => {
+      const value = Number(data[key]);
+      return Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0;
+    };
+    const status = str(data.status, 20);
+    const run = {
+      id: str(data.id, 64) || newLeadId(),
+      startedAt: str(data.startedAt, 40),
+      finishedAt: str(data.finishedAt, 40),
+      location: str(data.location, 80),
+      businessType: str(data.businessType, 200),
+      mode: str(data.mode, 20) || "prepare",
+      found: num("found"),
+      qualified: num("qualified"),
+      hot: num("hot"),
+      warm: num("warm"),
+      callCount: num("callCount"),
+      lowCount: num("lowCount"),
+      skipped: num("skipped"),
+      emailsFound: num("emailsFound"),
+      prepared: num("prepared"),
+      sent: num("sent"),
+      replies: num("replies"),
+      errors: num("errors"),
+      bottleneck: str(data.bottleneck, 300),
+      summary: str(data.summary, 500),
+      status: ["running", "done", "stopped", "failed", "interrupted"].includes(status) ? status : "running",
+      phase: str(data.phase, 40),
+      campaignId: str(data.campaignId, 40),
+      target: num("target"),
+      dailyLimit: num("dailyLimit"),
+      funnel: typeof data.funnel === "string" ? data.funnel.slice(0, 8000) : JSON.stringify(data.funnel ?? {}).slice(0, 8000),
+      leadIds: idList(data.leadIds, 500),
+      updatedAt: "",
+    };
+    try {
+      const { getSql } = await import("@/lib/db");
+      const store = await import("./store.server.ts");
+      const sql = await getSql();
+      await store.upsertRun(sql, context.userId, run);
+      if (run.status !== "running") {
+        await store.recordActivity(sql, context.userId, {
+          id: newLeadId(),
+          type: "SEARCH_COMPLETED",
+          result: run.status,
+          reason: run.summary,
+          metadata: JSON.stringify({ runId: run.id, found: run.found, prepared: run.prepared }),
+        });
+      }
+      return { success: true as const, id: run.id };
+    } catch (error) {
+      if (isMissingTable(error)) return { success: true as const, id: run.id, stored: false };
+      return agentFail(error instanceof Error ? error.message : "Could not save the run.", "RUN_SAVE_FAILED", true);
+    }
+  });
+
+/**
+ * Everything about one run: what it set out to do, the funnel it measured, the
+ * prospects it found, and what has happened to them since — sends, replies and
+ * outcomes counted from the rows that exist today.
+ */
+export const getRunDetail = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .validator((input: unknown) => ({ id: str((input as { id?: unknown })?.id, 64) }))
+  .handler(async ({ data, context }) => {
+    try {
+      const { getSql } = await import("@/lib/db");
+      const store = await import("./store.server.ts");
+      const sql = await getSql();
+      const run = await store.loadRunRow(sql, context.userId, data.id);
+      if (!run) return { ok: false as const, error: "That run no longer exists." };
+      const leads = (await store.loadLeads(sql, context.userId)).filter((lead) => run.leadIds.includes(lead.id));
+      const emails = (await store.loadEmails(sql, context.userId)).filter(
+        (email) => email.runId === run.id || run.leadIds.includes(email.leadId),
+      );
+      return { ok: true as const, run, leads, emails };
+    } catch (error) {
+      console.error("[outreach] run detail failed:", error);
+      return { ok: false as const, error: "Could not load that run." };
+    }
+  });
+
+/** Every recorded run, newest first. Runs abandoned mid-way are closed as interrupted. */
+export const listRuns = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }) => {
+    try {
+      const { getSql } = await import("@/lib/db");
+      const store = await import("./store.server.ts");
+      const sql = await getSql();
+      await store.closeAbandonedRuns(sql, context.userId).catch(() => undefined);
+      const runs = await store.loadRunRows(sql, context.userId, 50);
+      return { ok: true as const, runs };
+    } catch (error) {
+      if (isMissingTable(error)) return { ok: true as const, runs: [] };
+      console.error("[outreach] list runs failed:", error);
+      return { ok: false as const, error: "Could not load run history." };
+    }
+  });
+
+/** What discovery recorded about these leads' websites and emails. */
+export const getEvidence = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((input: unknown) => ({ leadIds: idList((input as { leadIds?: unknown })?.leadIds, 500) }))
+  .handler(async ({ data, context }) => {
+    try {
+      const { getSql } = await import("@/lib/db");
+      const store = await import("./store.server.ts");
+      const evidence = await store.loadLeadEvidence(await getSql(), context.userId, data.leadIds);
+      return { ok: true as const, evidence };
+    } catch (error) {
+      if (isMissingTable(error)) return { ok: true as const, evidence: [] };
+      return { ok: false as const, error: "Could not load evidence." };
     }
   });

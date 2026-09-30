@@ -11,7 +11,7 @@
  * clocks halfway through a send.
  */
 import type { OutreachEmail, OutreachSettings } from "./types.ts";
-import { DELIVERED_STATUSES } from "./types.ts";
+import { SENT_STATUSES } from "./types.ts";
 
 /** `YYYY-MM-DD` in UTC. The key a day's sending is counted against. */
 export function dayKey(when: Date | string): string {
@@ -20,7 +20,8 @@ export function dayKey(when: Date | string): string {
   return date.toISOString().slice(0, 10);
 }
 
-const delivered = new Set<string>(DELIVERED_STATUSES);
+/** Gmail accepted these today, whatever happened after — a bounce still counted. */
+const delivered = new Set<string>(SENT_STATUSES);
 
 /** How many actually went out today. */
 export function sentToday(emails: readonly OutreachEmail[], now: Date = new Date()): number {
@@ -97,5 +98,15 @@ export function sanitizeSettings(input: Partial<OutreachSettings>, current: Outr
     autoSend: false,
     includeLow: typeof input.includeLow === "boolean" ? input.includeLow : current.includeLow,
     defaultMode: typeof input.defaultMode === "string" && input.defaultMode.trim() ? input.defaultMode.trim().slice(0, 60) : current.defaultMode,
+    testRecipient:
+      typeof input.testRecipient === "string"
+        ? /^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(input.testRecipient.trim())
+          ? input.testRecipient.trim().toLowerCase().slice(0, 120)
+          : ""
+        : (current.testRecipient ?? ""),
+    // Budgets for paid calls. Generous enough for a big run, small enough that
+    // a loop cannot spend a month's credits in an afternoon.
+    searchDailyBudget: int(input.searchDailyBudget, current.searchDailyBudget ?? 300, 0, 2000),
+    aiDailyBudget: int(input.aiDailyBudget, current.aiDailyBudget ?? 150, 0, 1000),
   };
 }

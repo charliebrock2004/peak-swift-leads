@@ -23,9 +23,6 @@ import {
   composeFromTemplate,
   DEFAULT_SIGNATURE,
   DEFAULT_TEMPLATES,
-  OPT_OUT_LINE,
-  SENDER_NAME,
-  SENDER_STUDIO,
   templateForLead,
   type ComposedEmail,
 } from "./templates.ts";

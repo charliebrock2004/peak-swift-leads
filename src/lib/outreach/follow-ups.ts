@@ -49,10 +49,21 @@ export function followUpDueFor(
   const history = historyFor(lead.id, emails);
   if (history.length === 0) return null;
 
-  // A reply anywhere in the conversation ends it. So does an unsubscribe.
+  // A reply anywhere in the conversation ends it. So does an unsubscribe, and
+  // so does a bounce — there is nobody at that address to follow up with.
   if (history.some((email) => email.status === "replied")) return null;
-  if (emails.some((email) => email.leadId === lead.id && email.status === "unsubscribed")) return null;
+  if (
+    emails.some(
+      (email) => email.leadId === lead.id && (email.status === "unsubscribed" || email.status === "bounced"),
+    )
+  ) {
+    return null;
+  }
   if (lead.outreachStatus.trim().toLowerCase() === "replied") return null;
+  // Once you are talking to them — interested, a callback arranged, booked —
+  // a canned follow-up email would talk over the conversation. Yours now.
+  if (["Interested", "Callback", "Booked", "Won", "Not Interested"].includes(lead.callResult)) return null;
+  if (lead.called === "Interested" || lead.called === "Callback" || lead.called === "Not Interested") return null;
 
   const sentKinds = new Set(history.map((email) => email.kind));
   if (!sentKinds.has("initial")) return null;

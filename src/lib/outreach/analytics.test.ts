@@ -171,3 +171,49 @@ describe("formatRate", () => {
     assert.equal(formatRate(16.666), "17%");
   });
 });
+
+describe("the business overview is honest about small samples", async () => {
+  const { outreachOverview, rateOf, segmentsByCampaign } = await import("./analytics.ts");
+  const { createLead } = await import("../leads.ts");
+  const base = {
+    personalisationEvidence: "", campaignId: "", businessName: "", recipient: "", subject: "", body: "", kind: "initial" as const,
+    generatedBy: "", sendingAccount: "", gmailMessageId: "g", gmailThreadId: "t", error: "", attempts: 1, approvedAt: "",
+    sentAt: "2026-09-01T09:00:00.000Z", repliedAt: "", createdAt: "", updatedAt: "",
+  };
+
+  it("withholds a rate below five sends, and never shows it as 0%", () => {
+    assert.deepEqual(rateOf(1, 3), { value: null, numerator: 1, denominator: 3, smallSample: true });
+    assert.equal(rateOf(2, 10).value, 20);
+    assert.equal(rateOf(0, 0).value, null);
+  });
+
+  it("does not count bounces or out-of-office replies as replies, and counts delivery failures", () => {
+    const leads = ["a", "b", "c"].map((id) => createLead({ id, town: "Perth", trade: "Joiner", websiteStatus: "No Website Found" }));
+    const emails = [
+      { ...base, id: "1", leadId: "a", status: "replied" as const, repliedAt: "2026-09-02T09:00:00.000Z", replyKind: "human" as const },
+      { ...base, id: "2", leadId: "b", status: "bounced" as const, replyKind: "bounce" as const },
+      { ...base, id: "3", leadId: "c", status: "sent" as const, replyKind: "auto_reply" as const },
+    ];
+    const overview = outreachOverview(leads, emails);
+    assert.equal(overview.emailsSent, 3);
+    assert.equal(overview.replies, 1);
+    assert.equal(overview.autoReplies, 1);
+    assert.equal(overview.deliveryFailures, 1);
+    assert.equal(overview.replyRate.smallSample, true);
+    assert.equal(overview.qualified, 3);
+  });
+
+  it("scores campaigns from their own prospects and emails", () => {
+    const leads = [createLead({ id: "a", callResult: "Booked" }), createLead({ id: "b" })];
+    const emails = [{ ...base, id: "1", leadId: "a", status: "replied" as const, campaignId: "c1", repliedAt: "x" }];
+    const [segment] = segmentsByCampaign(leads, emails, [{ id: "c1", name: "Perth Joiners" }], [
+      { campaignId: "c1", leadId: "a" },
+      { campaignId: "c1", leadId: "b" },
+    ]);
+    assert.equal(segment!.name, "Perth Joiners");
+    assert.equal(segment!.prospects, 2);
+    assert.equal(segment!.sent, 1);
+    assert.equal(segment!.replies, 1);
+    assert.equal(segment!.booked, 1);
+  });
+});

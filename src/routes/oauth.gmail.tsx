@@ -54,7 +54,7 @@ function GmailCallback() {
       if (!expectedState || returnedState !== expectedState) {
         if (!cancelled) {
           setStatus("failed");
-          setMessage("That sign-in did not start from this browser. Start again from Outreach → Settings.");
+          setMessage("That sign-in did not start from this browser. Start again from Settings → Gmail.");
         }
         return;
       }
@@ -65,7 +65,9 @@ function GmailCallback() {
         /* nothing to clean up */
       }
 
-      const result = await completeGmailConnect({ data: { code, origin: window.location.origin } });
+      // The server checks `state` too: it is signed to the account that
+      // started the flow, so a code from anyone else's flow is refused.
+      const result = await completeGmailConnect({ data: { code, origin: window.location.origin, state: returnedState } });
       if (cancelled) return;
       if (!result.ok) {
         setStatus("failed");
@@ -98,10 +100,10 @@ function GmailCallback() {
         <p className="mt-2 text-sm text-muted">{message}</p>
         {account ? <p className="mt-1 text-sm tabular-nums text-fg">{account}</p> : null}
         <a
-          href="/"
+          href="/settings"
           className="mt-6 inline-flex h-11 w-full items-center justify-center rounded-md bg-accent px-4 text-sm font-medium text-accent-fg"
         >
-          Back to leads
+          {status === "done" ? "Continue to Gmail settings" : "Back to settings"}
         </a>
       </div>
     </div>

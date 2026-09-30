@@ -49,6 +49,8 @@ export function decideApproval(input: {
   lead: OutreachLead | null;
   context: EligibilityContext;
   suppressed: ReadonlySet<string>;
+  /** The studio name the email must identify (from the business profile). */
+  studio?: string;
 }): ApprovalOutcome {
   const { decision, email, lead } = input;
 
@@ -79,6 +81,7 @@ export function decideApproval(input: {
     recipient: email.recipient,
     lead,
     suppressed: input.suppressed,
+    studio: input.studio,
   });
   if (!verdict.ok) {
     return { action: "refuse", reason: `${email.businessName}: ${verdict.problems[0]!.message}` };

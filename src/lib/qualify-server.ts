@@ -353,9 +353,73 @@ export const findLeadEmail = createServerFn({ method: "POST" })
       trade: asString(source.trade, 80),
       phone: asString(source.phone, 40),
       address: asString(source.address, 200),
+      /** When given, what was found is recorded as evidence against this lead. */
+      leadId: asString(source.leadId, 64),
     };
   })
-  .handler(async ({ data }): Promise<FindEmailResult> => {
+  .handler(async ({ data, context: auth }): Promise<FindEmailResult> => {
+    // Every paid search spends one credit of today's budget, checked atomically
+    // in the database before the call is made. A budget of 0 turns search off.
+    const { getSql, dbSource } = await import("@/lib/db");
+    const budgetSql = dbSource === "none" ? null : await getSql().catch(() => null);
+    const budgetStore = budgetSql ? await import("@/lib/outreach/store.server") : null;
+    const searchBudget = budgetSql && budgetStore
+      ? ((await budgetStore.loadSettings(budgetSql, auth.userId).catch(() => null))?.searchDailyBudget ?? 300)
+      : 300;
+    const spendSearch = async (): Promise<boolean> => {
+      if (!budgetSql || !budgetStore) return true;
+      try {
+        return (await budgetStore.consumeBudget(budgetSql, auth.userId, "search", 1, searchBudget)) !== null;
+      } catch {
+        // A missing 0009 table must not turn search off for a deploy mid-migration.
+        return true;
+      }
+    };
+    /**
+     * Keep what was found, and why, against the lead — server-side, so the
+     * Ready to Send card can say "Verified website: x.co.uk — ✓ name ✓ phone"
+     * and "Email found as a mailto on /contact" from facts, not from memory.
+     */
+    const recordEvidence = async (result: Extract<FindEmailResult, { ok: true }>): Promise<Extract<FindEmailResult, { ok: true }>> => {
+      if (!data.leadId || !budgetSql || !budgetStore) return result;
+      const site = result.website;
+      try {
+        await budgetStore.saveLeadEvidence(budgetSql, auth.userId, data.leadId, "website", {
+          url: site?.url ?? (data.website || ""),
+          verified: Boolean(site),
+          via: result.discoveryVia ?? "LISTING",
+          score: site?.score ?? null,
+          confidence: site?.confidence ?? (data.website ? "LISTING" : "NONE"),
+          signals: site?.evidence ?? [],
+          candidatesChecked: result.candidates?.length ?? 0,
+          candidatesRejected: result.rejectedCandidates?.length ?? 0,
+          searchProvider: result.searchProvider ?? null,
+          searchesRun: result.searchesRun ?? 0,
+          checkedAt: result.foundAt,
+        });
+        const discovery = result.discovery;
+        await budgetStore.saveLeadEvidence(budgetSql, auth.userId, data.leadId, "email", {
+          email: discovery.email,
+          status: discovery.status,
+          confidence: discovery.confidence,
+          source: discovery.source,
+          sourceUrl: discovery.sourceUrl,
+          evidence: discovery.evidence,
+          reason: discovery.reason,
+          pagesChecked: discovery.sourcesChecked.filter((entry) => !entry.startsWith("search:")).length,
+          alternatives: discovery.alternatives.slice(0, 3).map((alt) => ({ email: alt.email, confidence: alt.confidence, sourceUrl: alt.sourceUrl })),
+          rejected: (result.rejectedEmails ?? []).slice(0, 5),
+          checkedAt: result.foundAt,
+        });
+      } catch {
+        /* evidence is an explanation, never a reason to fail the lookup */
+      }
+      return result;
+    };
+    const budgeted = async (provider: { name: SearchProviderName; key: string }, query: string): Promise<SearchOutcome> =>
+      (await spendSearch())
+        ? runSearch(provider, query)
+        : { ok: false, kind: "BUDGET", detail: "daily search budget reached" };
     const foundAt = new Date().toISOString();
     let context = { websiteUrl: data.website, businessName: data.businessName };
     const candidates: EmailCandidate[] = [];
@@ -624,12 +688,12 @@ export const findLeadEmail = createServerFn({ method: "POST" })
           searchesRun += 1;
           queriesUsed.push(query.text);
           sourcesChecked.push(`search:${query.text}`);
-          const answer = await runSearch(provider, query.text);
+          const answer = await budgeted(provider, query.text);
           if (!answer.ok) {
             searchFailure = answer.kind;
-            // Auth, quota and rate limits fail identically on every remaining
-            // query, so stop rather than burning the budget re-proving it.
-            if (answer.kind === "AUTH" || answer.kind === "QUOTA" || answer.kind === "RATE_LIMIT") break;
+            // Auth, quota, rate limits and our own budget fail identically on
+            // every remaining query, so stop rather than re-proving it.
+            if (answer.kind === "AUTH" || answer.kind === "QUOTA" || answer.kind === "RATE_LIMIT" || answer.kind === "BUDGET") break;
             continue;
           }
           collected.push(...answer.results);
@@ -752,6 +816,8 @@ export const findLeadEmail = createServerFn({ method: "POST" })
       const noSiteReason: DiscoveryReason =
         searchFailure === "AUTH"
           ? "SEARCH_AUTH_FAILED"
+          : searchFailure === "BUDGET"
+            ? "SEARCH_BUDGET_REACHED"
           : searchFailure === "QUOTA"
             ? "SEARCH_QUOTA_EXHAUSTED"
             : searchFailure === "RATE_LIMIT"
@@ -766,7 +832,7 @@ export const findLeadEmail = createServerFn({ method: "POST" })
       const result = ranked.length
         ? decide({ candidates: ranked, context, sourcesChecked, attempts })
         : { ...noWebsiteResult(), reason: noSiteReason, sourcesChecked, attempts };
-      return {
+      return recordEvidence({
         ok: true, found: toFoundEmail(result), foundAt, message: result.reason ?? "", discovery: result,
         website: null, discoveryVia, searchProvider: searchUsed, searchesRun,
         searchFailure, providerExtracts, rejectedCandidates: rejected,
@@ -775,7 +841,7 @@ export const findLeadEmail = createServerFn({ method: "POST" })
         searchResults: collectedResults.slice(0, 20).map((result) => ({
           title: result.title, url: result.url,
         })),
-      };
+      });
     }
 
     if (scrapable) {
@@ -833,7 +899,7 @@ export const findLeadEmail = createServerFn({ method: "POST" })
     // After a crawl miss, one extra search aimed at a published address.
     if (!usableFound()) {
       const provider = searchProvider();
-      if (provider && searchFailure !== "AUTH" && searchFailure !== "QUOTA") {
+      if (provider && searchFailure !== "AUTH" && searchFailure !== "QUOTA" && searchFailure !== "BUDGET") {
         const identity = {
           businessName: data.businessName, town: data.town, trade: data.trade,
           phone: data.phone, address: data.address,
@@ -847,7 +913,7 @@ export const findLeadEmail = createServerFn({ method: "POST" })
           searchesRun += 1;
           queriesUsed.push(query.text);
           sourcesChecked.push(`search:${query.text}`);
-          const answer = await runSearch(provider, query.text);
+          const answer = await budgeted(provider, query.text);
           if (!answer.ok) {
             searchFailure = answer.kind;
             break;
@@ -895,7 +961,7 @@ export const findLeadEmail = createServerFn({ method: "POST" })
       // publishes an address" would be the wrong thing to report.
       budgetExhausted: emailPages >= MAX_PAGES && !sawContactPage,
     });
-    return {
+    return recordEvidence({
       ok: true,
       found: toFoundEmail(result),
       foundAt,
@@ -916,7 +982,7 @@ export const findLeadEmail = createServerFn({ method: "POST" })
       searchFailure,
       providerExtracts,
       rejectedCandidates: rejected,
-    };
+    });
   });
 
 /**

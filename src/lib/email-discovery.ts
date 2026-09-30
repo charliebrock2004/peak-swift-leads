@@ -56,6 +56,8 @@ export const DISCOVERY_REASONS = [
   "SEARCH_AUTH_FAILED",
   "SEARCH_RATE_LIMITED",
   "SEARCH_QUOTA_EXHAUSTED",
+  /** This app's own daily search budget ran out, so no search was made. */
+  "SEARCH_BUDGET_REACHED",
   /** Candidates were all directories, socials or parked domains. */
   "ONLY_DIRECTORY_LISTINGS_FOUND",
   /**
@@ -862,7 +864,7 @@ const WEBSITE_SOURCES = new Set<SourceKind>([
 const NO_SITE_REASONS = new Set<string>([
   "NO_WEBSITE", "WEBSITE_NOT_VERIFIED", "ONLY_DIRECTORY_LISTINGS_FOUND",
   "SEARCH_PROVIDER_UNAVAILABLE", "SEARCH_AUTH_FAILED", "SEARCH_RATE_LIMITED",
-  "SEARCH_QUOTA_EXHAUSTED",
+  "SEARCH_QUOTA_EXHAUSTED", "SEARCH_BUDGET_REACHED",
 ]);
 const HAD_SITE_NO_EMAIL = new Set<string>([
   "CONTACT_PAGE_NO_EMAIL", "NO_CONTACT_PAGE", "WEBSITE_UNREACHABLE",
@@ -909,6 +911,7 @@ export const REASON_LABELS: Record<DiscoveryReason, string> = {
   SEARCH_AUTH_FAILED: "The search provider rejected the API key — check it in the deployment settings",
   SEARCH_RATE_LIMITED: "The search provider asked us to slow down — try again shortly",
   SEARCH_QUOTA_EXHAUSTED: "The search provider's quota is used up — no more searches until it resets",
+  SEARCH_BUDGET_REACHED: "Today's search budget is used up — raise it in Settings → Discovery, or searches resume tomorrow",
   ONLY_DIRECTORY_LISTINGS_FOUND: "Only directory and social listings were found, never the business's own site",
   POSSIBLE_WEBSITE_NO_EMAIL: "A possible site was crawled but never proved it belonged to this business, and published no address",
   WEBSITE_NOT_REACHABLE: "The verified website would not load, so nothing could be read",

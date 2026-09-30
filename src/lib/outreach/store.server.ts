@@ -1411,7 +1411,8 @@ export async function saveLeadEvidence(
   );
 }
 
-export type StoredEvidence = { leadId: string; kind: "website" | "email"; data: Record<string, unknown>; updatedAt: string };
+/** One evidence row. `json` is parsed on the client (see `evidence-record.ts`). */
+export type StoredEvidence = { leadId: string; kind: "website" | "email"; json: string; updatedAt: string };
 
 export async function loadLeadEvidence(sql: Sql, userId: string, leadIds?: readonly string[]): Promise<StoredEvidence[]> {
   const rows = await sql.query<Record<string, unknown>>(
@@ -1420,17 +1421,12 @@ export async function loadLeadEvidence(sql: Sql, userId: string, leadIds?: reado
       : `select lead_id, kind, data, updated_at from lead_evidence where user_id = $1 order by updated_at desc limit 5000`,
     leadIds ? [userId, [...leadIds]] : [userId],
   );
-  const out: StoredEvidence[] = [];
-  for (const row of rows) {
-    let data: Record<string, unknown> = {};
-    try {
-      data = JSON.parse(text(row.data) || "{}") as Record<string, unknown>;
-    } catch {
-      data = {};
-    }
-    out.push({ leadId: text(row.lead_id), kind: text(row.kind) as "website" | "email", data, updatedAt: iso(row.updated_at) });
-  }
-  return out;
+  return rows.map((row) => ({
+    leadId: text(row.lead_id),
+    kind: text(row.kind) as "website" | "email",
+    json: text(row.data),
+    updatedAt: iso(row.updated_at),
+  }));
 }
 
 // ── Runs, recorded as they happen (0009) ─────────────────────────────────────
