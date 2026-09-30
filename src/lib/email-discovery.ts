@@ -14,6 +14,7 @@
  * NOT_FOUND is a useful answer — it routes the lead to the call list.
  */
 import { hostnameOf } from "./leads.ts";
+import { decodeHtmlEntities } from "./html-entities.ts";
 
 // ── The shape an agent reads ─────────────────────────────────────────────────
 
@@ -370,7 +371,7 @@ function push(
  * as the mailto.
  */
 export function extractCandidates(
-  html: string,
+  rawHtml: string,
   pageUrl: string,
   source: SourceKind,
   /** Collects addresses seen and discarded, with why. Optional and additive. */
@@ -378,7 +379,15 @@ export function extractCandidates(
 ): EmailCandidate[] {
   const out: EmailCandidate[] = [];
   const seen = new Set<string>();
-  if (!html) return out;
+  if (!rawHtml) return out;
+
+  // Read the page as a browser renders it. WordPress's antispambot() and many
+  // page builders write addresses as character references (`&#105;nfo&#64;…`),
+  // and decoding only some of them — as this code once did for `&#64;` alone —
+  // turned `info@` into a confident, on-domain, wrong `fo@`. Every reference is
+  // decoded first; markup-significant ones stay encoded so page text cannot
+  // turn into tags.
+  const html = decodeHtmlEntities(rawHtml, { preserveMarkup: true });
 
   // 1. mailto: — the business explicitly linking its own address.
   for (const m of html.matchAll(/href\s*=\s*["']\s*mailto:([^"'?]+)/gi)) {

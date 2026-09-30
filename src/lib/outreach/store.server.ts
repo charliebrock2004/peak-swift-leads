@@ -7,7 +7,8 @@
  */
 import type { Sql } from "@/lib/db";
 import type { Lead } from "@/lib/leads";
-import { leadFromRow, type LeadRow } from "@/lib/leads-row";
+import { leadFromRow, type LeadRow } from "../leads-row.ts";
+import { openSecret, sealSecret } from "../crypto/secrets.server.ts";
 import {
   DEFAULT_SETTINGS,
   type EmailKind,
@@ -22,6 +23,7 @@ import {
 } from "./types.ts";
 import { DEFAULT_TEMPLATES } from "./templates.ts";
 import type { Campaign } from "./campaigns.ts";
+import type { BusinessProfile } from "./profile.ts";
 
 function iso(value: unknown): string {
   if (!value) return "";
@@ -36,23 +38,76 @@ const text = (value: unknown): string => (value == null ? "" : String(value));
 
 export type GmailAccountRow = {
   email: string;
+  /** Opened (plain) token. Stored sealed; see `crypto/secrets.server.ts`. */
   access_token: string;
+  /** Opened (plain) token. Stored sealed. */
   refresh_token: string;
   expires_at: Date | string | null;
   scope: string;
   status: string;
   last_error: string;
   connected_at: Date | string;
+  last_send_at?: Date | string | null;
+  last_health?: string;
+  last_health_at?: Date | string | null;
+  /**
+   * Set when a stored token could not be opened — the encryption key changed
+   * or the value is damaged. The tokens above are then empty and the only fix
+   * is reconnecting, which the UI says in these words.
+   */
+  tokenProblem?: string;
 };
 
-/** The full record, tokens included. Never leaves the server. */
+/**
+ * The full record, tokens opened. Never leaves the server.
+ *
+ * Tokens written before encryption existed are read as-is and immediately
+ * re-sealed, so a deployment upgrades its own rows the first time it uses them.
+ */
 export async function loadGmailAccount(sql: Sql, userId: string): Promise<GmailAccountRow | null> {
   const rows = await sql.query<GmailAccountRow>(
-    `select email, access_token, refresh_token, expires_at, scope, status, last_error, connected_at
+    `select email, access_token, refresh_token, expires_at, scope, status, last_error, connected_at,
+            last_send_at, last_health, last_health_at
        from gmail_accounts where user_id = $1`,
     [userId],
   );
-  return rows[0] ?? null;
+  const row = rows[0];
+  if (!row) return null;
+  const access = openSecret(row.access_token ?? "");
+  const refresh = openSecret(row.refresh_token ?? "");
+  if (!access.ok || !refresh.ok) {
+    const reason = !refresh.ok ? refresh.reason : !access.ok ? access.reason : "corrupt";
+    return {
+      ...row,
+      access_token: "",
+      refresh_token: "",
+      tokenProblem:
+        reason === "key-changed"
+          ? "The stored Gmail tokens were sealed with a different encryption key (TOKEN_ENCRYPTION_KEY, BETTER_AUTH_SECRET or DATABASE_URL changed). Reconnect Gmail."
+          : "The stored Gmail tokens could not be read. Reconnect Gmail.",
+    };
+  }
+  if ((access.legacy && access.value) || (refresh.legacy && refresh.value)) {
+    // Upgrade in place: seal what was stored in plain text.
+    await sql.query(
+      `update gmail_accounts set access_token = $2, refresh_token = $3 where user_id = $1`,
+      [userId, sealSecret(access.value), sealSecret(refresh.value)],
+    );
+  }
+  return { ...row, access_token: access.value, refresh_token: refresh.value };
+}
+
+/** Record that Gmail accepted a message just now. */
+export async function markGmailSent(sql: Sql, userId: string): Promise<void> {
+  await sql.query(`update gmail_accounts set last_send_at = now() where user_id = $1`, [userId]);
+}
+
+/** Store the outcome of the latest health check (JSON), for Settings to show. */
+export async function saveGmailHealth(sql: Sql, userId: string, report: string): Promise<void> {
+  await sql.query(
+    `update gmail_accounts set last_health = $2, last_health_at = now() where user_id = $1`,
+    [userId, report.slice(0, 4000)],
+  );
 }
 
 /** What the browser may see: an address and a health state, never a token. */
@@ -81,9 +136,14 @@ export function publicConnection(
   }
   return {
     email: row.email,
-    status: (row.status as GmailStatus) ?? "disconnected",
-    lastError: row.last_error,
+    // A token that cannot be opened is a connection that cannot send, whatever
+    // the stored status says.
+    status: row.tokenProblem ? "needs_attention" : ((row.status as GmailStatus) ?? "disconnected"),
+    lastError: row.tokenProblem || row.last_error,
     connectedAt: iso(row.connected_at),
+    lastSendAt: iso(row.last_send_at),
+    lastHealth: row.last_health ?? "",
+    lastHealthAt: iso(row.last_health_at),
     configured,
     ...identity,
   };
@@ -108,7 +168,7 @@ export async function saveGmailTokens(
        last_error    = '',
        connected_at  = now(),
        updated_at    = now()`,
-    [userId, values.email, values.accessToken, values.refreshToken, values.expiresAt, values.scope],
+    [userId, values.email, sealSecret(values.accessToken), sealSecret(values.refreshToken), values.expiresAt, values.scope],
   );
 }
 
@@ -123,7 +183,7 @@ export async function updateGmailAccessToken(
         set access_token = $2, refresh_token = $3, expires_at = $4::timestamptz,
             status = 'connected', last_error = '', updated_at = now()
       where user_id = $1`,
-    [userId, values.accessToken, values.refreshToken, values.expiresAt],
+    [userId, sealSecret(values.accessToken), sealSecret(values.refreshToken), values.expiresAt],
   );
 }
 
@@ -150,7 +210,8 @@ export async function clearGmailAccount(sql: Sql, userId: string): Promise<void>
 export async function loadSettings(sql: Sql, userId: string): Promise<OutreachSettings> {
   const rows = await sql.query<Record<string, unknown>>(
     `select daily_limit, batch_size, delay_seconds, follow_ups_on, follow_up_1_days,
-            follow_up_2_days, max_follow_ups, auto_send, include_low, default_mode
+            follow_up_2_days, max_follow_ups, auto_send, include_low, default_mode,
+            test_recipient, search_daily_budget, ai_daily_budget
        from outreach_settings where user_id = $1`,
     [userId],
   );
@@ -167,6 +228,9 @@ export async function loadSettings(sql: Sql, userId: string): Promise<OutreachSe
     autoSend: false,
     includeLow: Boolean(row.include_low),
     defaultMode: text(row.default_mode) || DEFAULT_SETTINGS.defaultMode,
+    testRecipient: text(row.test_recipient),
+    searchDailyBudget: Number(row.search_daily_budget ?? DEFAULT_SETTINGS.searchDailyBudget),
+    aiDailyBudget: Number(row.ai_daily_budget ?? DEFAULT_SETTINGS.aiDailyBudget),
   };
 }
 
@@ -174,20 +238,24 @@ export async function saveSettings(sql: Sql, userId: string, settings: OutreachS
   await sql.query(
     `insert into outreach_settings
        (user_id, daily_limit, batch_size, delay_seconds, follow_ups_on, follow_up_1_days,
-        follow_up_2_days, max_follow_ups, auto_send, include_low, default_mode, updated_at)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, now())
+        follow_up_2_days, max_follow_ups, auto_send, include_low, default_mode,
+        test_recipient, search_daily_budget, ai_daily_budget, updated_at)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14, now())
      on conflict (user_id) do update set
-       daily_limit      = excluded.daily_limit,
-       batch_size       = excluded.batch_size,
-       delay_seconds    = excluded.delay_seconds,
-       follow_ups_on    = excluded.follow_ups_on,
-       follow_up_1_days = excluded.follow_up_1_days,
-       follow_up_2_days = excluded.follow_up_2_days,
-       max_follow_ups   = excluded.max_follow_ups,
-       auto_send        = excluded.auto_send,
-       include_low      = excluded.include_low,
-       default_mode     = excluded.default_mode,
-       updated_at       = now()`,
+       daily_limit         = excluded.daily_limit,
+       batch_size          = excluded.batch_size,
+       delay_seconds       = excluded.delay_seconds,
+       follow_ups_on       = excluded.follow_ups_on,
+       follow_up_1_days    = excluded.follow_up_1_days,
+       follow_up_2_days    = excluded.follow_up_2_days,
+       max_follow_ups      = excluded.max_follow_ups,
+       auto_send           = excluded.auto_send,
+       include_low         = excluded.include_low,
+       default_mode        = excluded.default_mode,
+       test_recipient      = excluded.test_recipient,
+       search_daily_budget = excluded.search_daily_budget,
+       ai_daily_budget     = excluded.ai_daily_budget,
+       updated_at          = now()`,
     [
       userId,
       settings.dailyLimit,
@@ -200,6 +268,9 @@ export async function saveSettings(sql: Sql, userId: string, settings: OutreachS
       settings.autoSend,
       settings.includeLow,
       settings.defaultMode,
+      settings.testRecipient ?? "",
+      settings.searchDailyBudget ?? DEFAULT_SETTINGS.searchDailyBudget,
+      settings.aiDailyBudget ?? DEFAULT_SETTINGS.aiDailyBudget,
     ],
   );
 }
@@ -247,7 +318,9 @@ export async function saveTemplate(sql: Sql, userId: string, template: OutreachT
 
 const EMAIL_COLUMNS = `campaign_id, personalisation_evidence, id, lead_id, business_name, recipient, subject, body, status, kind,
   generated_by, sending_account, gmail_message_id, gmail_thread_id, error, attempts,
-  approved_at, sent_at, replied_at, created_at, updated_at`;
+  approved_at, sent_at, replied_at, created_at, updated_at,
+  rfc822_message_id, run_id, failure_kind, provider_response, sending_started_at, personalisation_note,
+  reply_from, reply_subject, reply_snippet, reply_kind, reply_stage, reply_suggestion, bounced_at, auto_reply_at`;
 
 function emailFromRow(row: Record<string, unknown>): OutreachEmail {
   return {
@@ -272,6 +345,20 @@ function emailFromRow(row: Record<string, unknown>): OutreachEmail {
     repliedAt: iso(row.replied_at),
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
+    rfc822MessageId: text(row.rfc822_message_id),
+    runId: text(row.run_id),
+    failureKind: text(row.failure_kind) as OutreachEmail["failureKind"],
+    providerResponse: text(row.provider_response),
+    sendingStartedAt: iso(row.sending_started_at),
+    personalisationNote: text(row.personalisation_note),
+    replyFrom: text(row.reply_from),
+    replySubject: text(row.reply_subject),
+    replySnippet: text(row.reply_snippet),
+    replyKind: text(row.reply_kind) as OutreachEmail["replyKind"],
+    replyStage: text(row.reply_stage) as OutreachEmail["replyStage"],
+    replySuggestion: text(row.reply_suggestion) as OutreachEmail["replySuggestion"],
+    bouncedAt: iso(row.bounced_at),
+    autoReplyAt: iso(row.auto_reply_at),
   };
 }
 
@@ -310,6 +397,10 @@ export type NewEmail = {
   personalisationEvidence?: string;
   /** Which campaign this was written under. Empty outside a campaign. */
   campaignId?: string;
+  /** Which run wrote it. Empty outside a run. */
+  runId?: string;
+  /** One sentence: what the text was personalised from. */
+  personalisationNote?: string;
 };
 
 /**
@@ -324,18 +415,26 @@ export async function upsertDraft(sql: Sql, userId: string, email: NewEmail): Pr
   await sql.query(
     `insert into outreach_emails
        (user_id, id, lead_id, business_name, recipient, subject, body, status, kind,
-        generated_by, gmail_thread_id, personalisation_evidence, campaign_id, created_at, updated_at)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, now(), now())
+        generated_by, gmail_thread_id, personalisation_evidence, campaign_id, run_id,
+        personalisation_note, created_at, updated_at)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15, now(), now())
      on conflict (user_id, id) do update set
        subject = excluded.subject, body = excluded.body, status = excluded.status,
        generated_by = excluded.generated_by, recipient = excluded.recipient,
        business_name = excluded.business_name,
-       personalisation_evidence = excluded.personalisation_evidence,
-       -- A campaign label is only ever set, never cleared: regenerating a draft
-       -- outside a campaign must not erase which campaign it belongs to.
+       -- A manual edit keeps the evidence and note the text was written from.
+       personalisation_evidence = case when excluded.personalisation_evidence = '' then outreach_emails.personalisation_evidence
+                                       else excluded.personalisation_evidence end,
+       personalisation_note = case when excluded.personalisation_note = '' then outreach_emails.personalisation_note
+                                   else excluded.personalisation_note end,
+       -- A campaign or run label is only ever set, never cleared: regenerating a
+       -- draft outside a campaign must not erase which campaign it belongs to.
        campaign_id = case when excluded.campaign_id = '' then outreach_emails.campaign_id
                          else excluded.campaign_id end,
-       error = '', updated_at = now()`,
+       run_id = case when excluded.run_id = '' then outreach_emails.run_id else excluded.run_id end,
+       error = '', failure_kind = '', updated_at = now()
+     -- Never rewrite an email that has gone, or is going, out.
+     where outreach_emails.status not in ('sending', 'sent', 'replied', 'bounced', 'test_sent')`,
     [
       userId,
       email.id,
@@ -350,6 +449,8 @@ export async function upsertDraft(sql: Sql, userId: string, email: NewEmail): Pr
       email.gmailThreadId ?? "",
       email.personalisationEvidence ?? "",
       email.campaignId ?? "",
+      email.runId ?? "",
+      email.personalisationNote ?? "",
     ],
   );
 }
@@ -392,7 +493,7 @@ export async function setEmailStatus(
 export async function claimForSending(sql: Sql, userId: string, id: string): Promise<boolean> {
   const rows = await sql.query<{ id: string }>(
     `update outreach_emails
-        set status = 'sending', attempts = attempts + 1, updated_at = now()
+        set status = 'sending', attempts = attempts + 1, sending_started_at = now(), updated_at = now()
       where user_id = $1 and id = $2 and status = 'queued'
       returning id`,
     [userId, id],
@@ -400,27 +501,288 @@ export async function claimForSending(sql: Sql, userId: string, id: string): Pro
   return rows.length > 0;
 }
 
+export type ClaimOutcome =
+  | { claimed: true }
+  | { claimed: false; reason: "not-ready" | "daily-limit" | "campaign-limit"; status: string };
+
+/**
+ * Claim one approved email for sending — atomically, and only inside the limits.
+ *
+ * One statement does the whole check: the email must still be approved or
+ * queued, and the number already sent (or mid-send) today must be under the
+ * daily limit — and under the campaign's own daily target when it belongs to
+ * one. Counting in-flight rows is what stops two tabs pressing Send at once
+ * from each seeing room for "one more". The Message-ID we are about to use is
+ * written in the same statement, before Gmail is ever called, so a send whose
+ * answer is lost can still be found afterwards.
+ */
+export async function claimWithinLimits(
+  sql: Sql,
+  userId: string,
+  id: string,
+  input: {
+    rfc822MessageId: string;
+    dayStartIso: string;
+    dailyLimit: number;
+    campaignLimit?: { campaignId: string; limit: number } | null;
+  },
+): Promise<ClaimOutcome> {
+  const campaignId = input.campaignLimit?.campaignId ?? "";
+  const campaignLimit = input.campaignLimit ? input.campaignLimit.limit : null;
+  const rows = await sql.query<{ id: string }>(
+    `update outreach_emails e
+        set status = 'sending', attempts = e.attempts + 1, sending_started_at = now(),
+            rfc822_message_id = $3, error = '', failure_kind = '', updated_at = now()
+      where e.user_id = $1 and e.id = $2 and e.status in ('approved', 'queued')
+        and (select count(*) from outreach_emails d
+              where d.user_id = $1 and d.kind <> 'test'
+                and ((d.status in ('sent', 'replied', 'bounced') and d.sent_at >= $4::timestamptz)
+                     or d.status = 'sending')) < $5
+        and ($7::integer is null or (select count(*) from outreach_emails c
+              where c.user_id = $1 and c.campaign_id = $6 and c.kind <> 'test'
+                and ((c.status in ('sent', 'replied', 'bounced') and c.sent_at >= $4::timestamptz)
+                     or c.status = 'sending')) < $7)
+      returning e.id`,
+    [userId, id, input.rfc822MessageId, input.dayStartIso, input.dailyLimit, campaignId, campaignLimit],
+  );
+  if (rows.length > 0) return { claimed: true };
+  const [current] = await sql.query<{ status: string }>(
+    `select status from outreach_emails where user_id = $1 and id = $2`,
+    [userId, id],
+  );
+  const status = current?.status ?? "missing";
+  if (status !== "approved" && status !== "queued") return { claimed: false, reason: "not-ready", status };
+  const sentToday = await countSentSince(sql, userId, input.dayStartIso);
+  if (sentToday >= input.dailyLimit) return { claimed: false, reason: "daily-limit", status };
+  return { claimed: false, reason: campaignLimit === null ? "daily-limit" : "campaign-limit", status };
+}
+
+/** Emails Gmail accepted (or is being handed) since a moment, optionally for one campaign. */
+export async function countSentSince(sql: Sql, userId: string, sinceIso: string, campaignId?: string): Promise<number> {
+  const rows = await sql.query<{ n: number }>(
+    `select count(*)::int as n from outreach_emails
+      where user_id = $1 and kind <> 'test'
+        and ((status in ('sent', 'replied', 'bounced') and sent_at >= $2::timestamptz) or status = 'sending')
+        and ($3::text is null or campaign_id = $3)`,
+    [userId, sinceIso, campaignId ?? null],
+  );
+  return Number(rows[0]?.n ?? 0);
+}
+
+/**
+ * Record a send Gmail confirmed.
+ *
+ * Only from `sending` (or from a failed row whose send was later found in
+ * Gmail), and only with Gmail's own message id — the schema refuses a sent row
+ * without one. Returns false when the row was not in a state to be marked.
+ */
 export async function markSent(
   sql: Sql,
   userId: string,
   id: string,
-  values: { messageId: string; threadId: string; account: string },
+  values: {
+    messageId: string;
+    threadId: string;
+    account: string;
+    rfc822MessageId?: string;
+    providerResponse?: string;
+    /** When Gmail says it went, for a send found after the fact. Defaults to now. */
+    sentAt?: string;
+  },
+): Promise<boolean> {
+  const rows = await sql.query<{ id: string }>(
+    `update outreach_emails
+        set status = 'sent', gmail_message_id = $3, gmail_thread_id = $4,
+            sending_account = $5,
+            rfc822_message_id = case when $6 = '' then rfc822_message_id else $6 end,
+            provider_response = $7,
+            sent_at = coalesce($8::timestamptz, now()), error = '', failure_kind = '', updated_at = now()
+      where user_id = $1 and id = $2 and status in ('sending', 'failed', 'queued', 'approved')
+      returning id`,
+    [
+      userId,
+      id,
+      values.messageId,
+      values.threadId,
+      values.account,
+      values.rfc822MessageId ?? "",
+      (values.providerResponse ?? "").slice(0, 2000),
+      values.sentAt ?? null,
+    ],
+  );
+  return rows.length > 0;
+}
+
+/**
+ * A send that did not happen, or might have.
+ *
+ * `status` is where the email goes next: `queued` when Gmail certainly sent
+ * nothing and the email should simply wait (a dead token, a rate limit),
+ * `failed` when a person has to look — a rejected address, or an attempt whose
+ * outcome is unknown and must be checked before any retry.
+ */
+export async function markSendProblem(
+  sql: Sql,
+  userId: string,
+  id: string,
+  values: { status: "queued" | "failed" | "skipped"; kind: string; error: string; providerResponse?: string },
 ): Promise<void> {
   await sql.query(
     `update outreach_emails
-        set status = 'sent', gmail_message_id = $3, gmail_thread_id = $4,
-            sending_account = $5, sent_at = now(), error = '', updated_at = now()
-      where user_id = $1 and id = $2`,
-    [userId, id, values.messageId, values.threadId, values.account],
+        set status = $3, failure_kind = $4, error = $5, provider_response = $6, updated_at = now()
+      where user_id = $1 and id = $2 and status in ('sending', 'queued', 'approved', 'failed')`,
+    [userId, id, values.status, values.kind.slice(0, 20), values.error.slice(0, 500), (values.providerResponse ?? "").slice(0, 2000)],
   );
 }
 
-export async function markReplied(sql: Sql, userId: string, id: string): Promise<void> {
-  await sql.query(
-    `update outreach_emails set status = 'replied', replied_at = now(), updated_at = now()
-      where user_id = $1 and id = $2 and status <> 'replied'`,
+/** Emails stuck mid-send — a function that died between claiming and recording. */
+export async function staleSending(sql: Sql, userId: string, olderThanSeconds = 120): Promise<OutreachEmail[]> {
+  const rows = await sql.query<Record<string, unknown>>(
+    `select ${EMAIL_COLUMNS} from outreach_emails
+      where user_id = $1 and status = 'sending'
+        and coalesce(sending_started_at, updated_at) < now() - make_interval(secs => $2)
+      order by updated_at asc limit 25`,
+    [userId, olderThanSeconds],
+  );
+  return rows.map(emailFromRow);
+}
+
+/** Move an approved email back to the queue for another try. Never touches a sent one. */
+export async function requeue(sql: Sql, userId: string, id: string): Promise<boolean> {
+  const rows = await sql.query<{ id: string }>(
+    `update outreach_emails set status = 'queued', error = '', failure_kind = '', updated_at = now()
+      where user_id = $1 and id = $2 and status in ('failed', 'approved')
+      returning id`,
     [userId, id],
   );
+  return rows.length > 0;
+}
+
+/** The previous delivered email to this lead, for threading a follow-up. */
+export async function lastDeliveredFor(sql: Sql, userId: string, leadId: string): Promise<OutreachEmail | null> {
+  const rows = await sql.query<Record<string, unknown>>(
+    `select ${EMAIL_COLUMNS} from outreach_emails
+      where user_id = $1 and lead_id = $2 and status in ('sent', 'replied') and kind <> 'test'
+      order by sent_at desc nulls last limit 1`,
+    [userId, leadId],
+  );
+  return rows[0] ? emailFromRow(rows[0]) : null;
+}
+
+/** Store the Message-ID header Gmail actually used, once it is known. */
+export async function setRfc822MessageId(sql: Sql, userId: string, id: string, messageId: string): Promise<void> {
+  if (!messageId) return;
+  await sql.query(
+    `update outreach_emails set rfc822_message_id = $3 where user_id = $1 and id = $2`,
+    [userId, id, messageId.slice(0, 300)],
+  );
+}
+
+/** A test email: recorded for the audit trail, never counted as outreach. */
+export async function insertTestEmail(
+  sql: Sql,
+  userId: string,
+  values: {
+    id: string;
+    recipient: string;
+    subject: string;
+    body: string;
+    rfc822MessageId: string;
+    messageId: string;
+    threadId: string;
+    account: string;
+    providerResponse: string;
+  },
+): Promise<void> {
+  await sql.query(
+    `insert into outreach_emails
+       (user_id, id, lead_id, business_name, recipient, subject, body, status, kind, generated_by,
+        sending_account, gmail_message_id, gmail_thread_id, rfc822_message_id, provider_response,
+        attempts, sent_at, created_at, updated_at)
+     values ($1,$2,'test','End-to-end test',$3,$4,$5,'test_sent','test','test',$6,$7,$8,$9,$10,1, now(), now(), now())`,
+    [
+      userId,
+      values.id,
+      values.recipient,
+      values.subject,
+      values.body,
+      values.account,
+      values.messageId,
+      values.threadId,
+      values.rfc822MessageId,
+      values.providerResponse.slice(0, 2000),
+    ],
+  );
+}
+
+export async function markReplied(
+  sql: Sql,
+  userId: string,
+  id: string,
+  reply: { from?: string; subject?: string; snippet?: string; kind?: string; suggestion?: string; at?: string } = {},
+): Promise<void> {
+  await sql.query(
+    `update outreach_emails
+        set status = 'replied', replied_at = coalesce($8::timestamptz, now()), updated_at = now(),
+            reply_from = $3, reply_subject = $4, reply_snippet = $5, reply_kind = $6,
+            reply_stage = case when reply_stage = '' then 'new' else reply_stage end,
+            reply_suggestion = $7
+      where user_id = $1 and id = $2 and status in ('sent', 'replied')`,
+    [
+      userId,
+      id,
+      (reply.from ?? "").slice(0, 200),
+      (reply.subject ?? "").slice(0, 300),
+      (reply.snippet ?? "").slice(0, 600),
+      reply.kind ?? "human",
+      reply.suggestion ?? "",
+      reply.at ?? null,
+    ],
+  );
+}
+
+/** The recipient's server bounced it. Gmail accepted it, so it still counts as sent. */
+export async function markBounced(
+  sql: Sql,
+  userId: string,
+  id: string,
+  bounce: { from: string; subject: string; snippet: string },
+): Promise<void> {
+  await sql.query(
+    `update outreach_emails
+        set status = 'bounced', bounced_at = now(), updated_at = now(), reply_kind = 'bounce',
+            reply_from = $3, reply_subject = $4, reply_snippet = $5,
+            error = 'Bounced: the recipient address did not accept the email.'
+      where user_id = $1 and id = $2 and status = 'sent'`,
+    [userId, id, bounce.from.slice(0, 200), bounce.subject.slice(0, 300), bounce.snippet.slice(0, 600)],
+  );
+}
+
+/** An out-of-office came back. Recorded, but it is not a reply: follow-ups continue. */
+export async function markAutoReply(
+  sql: Sql,
+  userId: string,
+  id: string,
+  reply: { from: string; subject: string; snippet: string },
+): Promise<void> {
+  await sql.query(
+    `update outreach_emails
+        set auto_reply_at = now(), updated_at = now(), reply_kind = 'auto_reply',
+            reply_from = $3, reply_subject = $4, reply_snippet = $5
+      where user_id = $1 and id = $2 and status = 'sent' and auto_reply_at is null`,
+    [userId, id, reply.from.slice(0, 200), reply.subject.slice(0, 300), reply.snippet.slice(0, 600)],
+  );
+}
+
+/** Move a reply conversation to a stage. Only a replied email has one. */
+export async function setReplyStage(sql: Sql, userId: string, id: string, stage: string): Promise<OutreachEmail | null> {
+  const rows = await sql.query<Record<string, unknown>>(
+    `update outreach_emails set reply_stage = $3, updated_at = now()
+      where user_id = $1 and id = $2 and status = 'replied'
+      returning ${EMAIL_COLUMNS}`,
+    [userId, id, stage],
+  );
+  return rows[0] ? emailFromRow(rows[0]) : null;
 }
 
 /**
@@ -532,6 +894,31 @@ export async function updateLeadOutreach(
       values.unsubscribed ?? null,
       values.lastEmailedAt ?? null,
     ],
+  );
+}
+
+/**
+ * Record a sales outcome on the lead, from the Replies inbox.
+ *
+ * The same fields the call buttons write, so the lead's stage, eligibility and
+ * every screen agree whichever way the outcome was recorded. `updated_at`
+ * moves, so the change reaches every device on its next sync.
+ */
+export async function updateLeadOutcome(
+  sql: Sql,
+  userId: string,
+  leadId: string,
+  values: { called?: string; callResult?: string; followUpDate?: string },
+): Promise<void> {
+  await sql.query(
+    `update leads
+        set called         = coalesce($3, called),
+            call_result    = coalesce($4, call_result),
+            follow_up_date = case when $5::text is null then follow_up_date
+                                  when follow_up_date <> '' then follow_up_date else $5 end,
+            updated_at     = now()
+      where user_id = $1 and id = $2`,
+    [userId, leadId, values.called ?? null, values.callResult ?? null, values.followUpDate ?? null],
   );
 }
 
@@ -920,4 +1307,279 @@ export async function addCampaignProspects(
     [userId, campaignId, ids],
   );
   return ids.length;
+}
+
+// ── Business profile (0009) ──────────────────────────────────────────────────
+
+const PROFILE_COLUMNS: [keyof BusinessProfile, string][] = [
+  ["businessName", "business_name"],
+  ["senderName", "sender_name"],
+  ["senderEmail", "sender_email"],
+  ["website", "website"],
+  ["services", "services"],
+  ["location", "location"],
+  ["areasServed", "areas_served"],
+  ["tone", "tone"],
+  ["cta", "cta"],
+  ["portfolioUrl", "portfolio_url"],
+  ["signature", "signature"],
+  ["optOutLine", "opt_out_line"],
+];
+
+/** The stored profile, exactly as saved — empty fields stay empty. */
+export async function loadProfile(sql: Sql, userId: string): Promise<Partial<BusinessProfile> | null> {
+  const rows = await sql.query<Record<string, unknown>>(
+    `select ${PROFILE_COLUMNS.map(([, column]) => column).join(", ")} from business_profile where user_id = $1`,
+    [userId],
+  );
+  const row = rows[0];
+  if (!row) return null;
+  const out: Partial<BusinessProfile> = {};
+  for (const [key, column] of PROFILE_COLUMNS) out[key] = text(row[column]);
+  return out;
+}
+
+export async function saveProfile(sql: Sql, userId: string, profile: BusinessProfile): Promise<void> {
+  const columns = PROFILE_COLUMNS.map(([, column]) => column);
+  await sql.query(
+    `insert into business_profile (user_id, ${columns.join(", ")}, updated_at)
+     values ($1, ${columns.map((_, i) => `$${i + 2}`).join(", ")}, now())
+     on conflict (user_id) do update set
+       ${columns.map((column) => `${column} = excluded.${column}`).join(",\n       ")},
+       updated_at = now()`,
+    [userId, ...PROFILE_COLUMNS.map(([key]) => profile[key])],
+  );
+}
+
+// ── Budgets for paid calls (0009) ────────────────────────────────────────────
+
+/**
+ * Spend `amount` of today's budget for `kind`, or refuse.
+ *
+ * One conditional upsert, so two requests racing for the last credit cannot
+ * both win. Returns the new total, or null when the budget would be exceeded —
+ * in which case nothing was recorded and the caller must not make the call.
+ */
+export async function consumeBudget(
+  sql: Sql,
+  userId: string,
+  kind: "search" | "ai",
+  amount: number,
+  limit: number,
+  day: string = new Date().toISOString().slice(0, 10),
+): Promise<number | null> {
+  if (amount <= 0) return 0;
+  if (amount > limit) return null;
+  const rows = await sql.query<{ used: number }>(
+    `insert into usage_counters (user_id, day, kind, used) values ($1, $2, $3, $4)
+     on conflict (user_id, day, kind) do update set used = usage_counters.used + excluded.used
+       where usage_counters.used + excluded.used <= $5
+     returning used`,
+    [userId, day, kind, amount, limit],
+  );
+  return rows[0] ? Number(rows[0].used) : null;
+}
+
+export async function budgetUsed(
+  sql: Sql,
+  userId: string,
+  day: string = new Date().toISOString().slice(0, 10),
+): Promise<{ search: number; ai: number }> {
+  const rows = await sql.query<{ kind: string; used: number }>(
+    `select kind, used from usage_counters where user_id = $1 and day = $2`,
+    [userId, day],
+  );
+  const out = { search: 0, ai: 0 };
+  for (const row of rows) if (row.kind === "search" || row.kind === "ai") out[row.kind] = Number(row.used);
+  return out;
+}
+
+// ── Evidence per lead (0009) ─────────────────────────────────────────────────
+
+export async function saveLeadEvidence(
+  sql: Sql,
+  userId: string,
+  leadId: string,
+  kind: "website" | "email",
+  data: unknown,
+): Promise<void> {
+  if (!leadId.trim()) return;
+  await sql.query(
+    `insert into lead_evidence (user_id, lead_id, kind, data, updated_at) values ($1,$2,$3,$4, now())
+     on conflict (user_id, lead_id, kind) do update set data = excluded.data, updated_at = now()`,
+    [userId, leadId, kind, JSON.stringify(data).slice(0, 12000)],
+  );
+}
+
+export type StoredEvidence = { leadId: string; kind: "website" | "email"; data: Record<string, unknown>; updatedAt: string };
+
+export async function loadLeadEvidence(sql: Sql, userId: string, leadIds?: readonly string[]): Promise<StoredEvidence[]> {
+  const rows = await sql.query<Record<string, unknown>>(
+    leadIds
+      ? `select lead_id, kind, data, updated_at from lead_evidence where user_id = $1 and lead_id = any($2::text[])`
+      : `select lead_id, kind, data, updated_at from lead_evidence where user_id = $1 order by updated_at desc limit 5000`,
+    leadIds ? [userId, [...leadIds]] : [userId],
+  );
+  const out: StoredEvidence[] = [];
+  for (const row of rows) {
+    let data: Record<string, unknown> = {};
+    try {
+      data = JSON.parse(text(row.data) || "{}") as Record<string, unknown>;
+    } catch {
+      data = {};
+    }
+    out.push({ leadId: text(row.lead_id), kind: text(row.kind) as "website" | "email", data, updatedAt: iso(row.updated_at) });
+  }
+  return out;
+}
+
+// ── Runs, recorded as they happen (0009) ─────────────────────────────────────
+
+export type RunRow = StoredRun & {
+  status: string;
+  phase: string;
+  campaignId: string;
+  target: number;
+  dailyLimit: number;
+  funnel: string;
+  leadIds: string[];
+  updatedAt: string;
+};
+
+/**
+ * Create or update a run. The run is written when it starts and after every
+ * stage, so a tab closed mid-run still leaves an honest record of how far it
+ * got. `lead_ids` is bounded; the funnel is whatever the run measured.
+ */
+export async function upsertRun(sql: Sql, userId: string, run: RunRow): Promise<void> {
+  await sql.query(
+    `insert into outreach_runs (
+       user_id, id, started_at, finished_at, location, business_type, mode,
+       found, qualified, hot, warm, call_count, low_count, skipped,
+       emails_found, prepared, sent, replies, errors, bottleneck, summary,
+       status, phase, campaign_id, target, daily_limit, funnel, lead_ids, updated_at
+     ) values (
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,
+       $22,$23,$24,$25,$26,$27,$28, now()
+     )
+     on conflict (user_id, id) do update set
+       finished_at = excluded.finished_at, location = excluded.location,
+       business_type = excluded.business_type, mode = excluded.mode,
+       found = excluded.found, qualified = excluded.qualified, hot = excluded.hot,
+       warm = excluded.warm, call_count = excluded.call_count, low_count = excluded.low_count,
+       skipped = excluded.skipped, emails_found = excluded.emails_found,
+       prepared = excluded.prepared, sent = excluded.sent, replies = excluded.replies,
+       errors = excluded.errors, bottleneck = excluded.bottleneck, summary = excluded.summary,
+       status = excluded.status, phase = excluded.phase, campaign_id = excluded.campaign_id,
+       target = excluded.target, daily_limit = excluded.daily_limit, funnel = excluded.funnel,
+       lead_ids = case when excluded.lead_ids = '' then outreach_runs.lead_ids else excluded.lead_ids end,
+       updated_at = now()`,
+    [
+      userId,
+      run.id,
+      run.startedAt || new Date().toISOString(),
+      run.finishedAt || null,
+      run.location.slice(0, 80),
+      run.businessType.slice(0, 200),
+      run.mode.slice(0, 20),
+      run.found,
+      run.qualified,
+      run.hot,
+      run.warm,
+      run.callCount,
+      run.lowCount,
+      run.skipped,
+      run.emailsFound,
+      run.prepared,
+      run.sent,
+      run.replies,
+      run.errors,
+      run.bottleneck.slice(0, 300),
+      run.summary.slice(0, 500),
+      run.status.slice(0, 20),
+      run.phase.slice(0, 40),
+      run.campaignId.slice(0, 40),
+      run.target,
+      run.dailyLimit,
+      run.funnel.slice(0, 8000),
+      run.leadIds.length ? JSON.stringify(run.leadIds.slice(0, 500)) : "",
+    ],
+  );
+}
+
+function runFromRow(row: Record<string, unknown>): RunRow {
+  const num = (value: unknown) => {
+    const next = Number(value);
+    return Number.isFinite(next) ? next : 0;
+  };
+  let leadIds: string[] = [];
+  try {
+    const parsed = JSON.parse(text(row.lead_ids) || "[]") as unknown;
+    if (Array.isArray(parsed)) leadIds = parsed.map(String);
+  } catch {
+    leadIds = [];
+  }
+  return {
+    id: text(row.id),
+    startedAt: iso(row.started_at),
+    finishedAt: iso(row.finished_at),
+    location: text(row.location),
+    businessType: text(row.business_type),
+    mode: text(row.mode),
+    found: num(row.found),
+    qualified: num(row.qualified),
+    hot: num(row.hot),
+    warm: num(row.warm),
+    callCount: num(row.call_count),
+    lowCount: num(row.low_count),
+    skipped: num(row.skipped),
+    emailsFound: num(row.emails_found),
+    prepared: num(row.prepared),
+    sent: num(row.sent),
+    replies: num(row.replies),
+    errors: num(row.errors),
+    bottleneck: text(row.bottleneck),
+    summary: text(row.summary),
+    status: text(row.status) || "done",
+    phase: text(row.phase),
+    campaignId: text(row.campaign_id),
+    target: num(row.target),
+    dailyLimit: num(row.daily_limit),
+    funnel: text(row.funnel),
+    leadIds,
+    updatedAt: iso(row.updated_at),
+  };
+}
+
+const RUN_COLUMNS = `id, started_at, finished_at, location, business_type, mode,
+  found, qualified, hot, warm, call_count, low_count, skipped,
+  emails_found, prepared, sent, replies, errors, bottleneck, summary,
+  status, phase, campaign_id, target, daily_limit, funnel, lead_ids, updated_at`;
+
+export async function loadRunRows(sql: Sql, userId: string, limit = 30): Promise<RunRow[]> {
+  const rows = await sql.query<Record<string, unknown>>(
+    `select ${RUN_COLUMNS} from outreach_runs where user_id = $1 order by started_at desc limit $2`,
+    [userId, Math.min(100, Math.max(1, limit))],
+  );
+  return rows.map(runFromRow);
+}
+
+export async function loadRunRow(sql: Sql, userId: string, id: string): Promise<RunRow | null> {
+  const rows = await sql.query<Record<string, unknown>>(
+    `select ${RUN_COLUMNS} from outreach_runs where user_id = $1 and id = $2`,
+    [userId, id],
+  );
+  return rows[0] ? runFromRow(rows[0]) : null;
+}
+
+/**
+ * Runs left "running" long after anyone could still be driving them — the tab
+ * was closed. Marked interrupted so history never shows a run as live forever.
+ */
+export async function closeAbandonedRuns(sql: Sql, userId: string, olderThanMinutes = 30): Promise<void> {
+  await sql.query(
+    `update outreach_runs set status = 'interrupted', finished_at = coalesce(finished_at, updated_at)
+      where user_id = $1 and status = 'running' and updated_at < now() - make_interval(mins => $2)`,
+    [userId, olderThanMinutes],
+  );
 }

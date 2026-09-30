@@ -45,6 +45,7 @@ import {
   type WebsiteSignal,
   type WebsiteStatus,
 } from "@/lib/leads";
+import { friendlyServerError } from "@/lib/server-errors";
 import { checkLeadWebsite, findLeadEmail } from "@/lib/qualify-server";
 import { emailPatch, websitePatch, discoveredWebsitePatch } from "@/lib/qualify";
 import type { Prospect } from "@/lib/research";
@@ -392,7 +393,7 @@ export function LeadApp() {
       });
       applyWebsiteResult(lead, result, quiet);
     } catch (error) {
-      if (!quiet) toast(error instanceof Error ? error.message : "Website check failed");
+      if (!quiet) toast(friendlyServerError(error, "Website check failed"));
     } finally {
       setBusyById((current) => {
         const next = { ...current };
@@ -419,7 +420,7 @@ export function LeadApp() {
       });
       applyEmailResult(lead, result, quiet);
     } catch (error) {
-      if (!quiet) toast(error instanceof Error ? error.message : "Email search failed");
+      if (!quiet) toast(friendlyServerError(error, "Email search failed"));
     } finally {
       setBusyById((current) => {
         const next = { ...current };

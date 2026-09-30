@@ -80,13 +80,64 @@ export type TokenSet = {
   scope: string;
 };
 
+/**
+ * What kind of failure this was — the thing that decides whether a retry is
+ * safe, and whether the rest of a batch should carry on.
+ *
+ * - `auth`       — the token is dead or refused. Nothing was sent; reconnect.
+ * - `rate_limit` — Gmail said slow down (429 / quota). Nothing was sent; stop.
+ * - `permanent`  — Gmail rejected this message (bad address, invalid raw). It
+ *                  will be rejected again, so it is not retried as-is.
+ * - `transient`  — a 5xx or a connection that never opened. Almost certainly
+ *                  not sent, but checked before any retry.
+ * - `uncertain`  — the request may have reached Gmail before we lost the
+ *                  answer (a timeout, a dropped connection). Gmail is asked
+ *                  whether it went before anything is sent again.
+ */
+export type GmailFailureKind = "auth" | "rate_limit" | "permanent" | "transient" | "uncertain";
+
 export type GmailFailure = {
   ok: false;
   error: string;
   /** True when reconnecting is the only fix. */
   fatal: boolean;
   status?: number;
+  kind: GmailFailureKind;
 };
+
+/** Classify an HTTP answer from Gmail that was not a success. */
+export function classifyGmailStatus(status: number, error: string): GmailFailureKind {
+  if (status === 401 || isFatalAuthError(error)) return "auth";
+  if (status === 429 || /rateLimitExceeded|userRateLimitExceeded|quotaExceeded|dailyLimitExceeded|too many/i.test(error)) {
+    return "rate_limit";
+  }
+  if (status === 403 && /insufficient|scope|permission/i.test(error)) return "auth";
+  if (status >= 500 || status === 408) return "transient";
+  if (status === 0) return "uncertain";
+  return "permanent";
+}
+
+/**
+ * Classify a request that threw instead of answering.
+ *
+ * A connection that was never opened (DNS failure, refused) cannot have
+ * delivered anything. A timeout or a reset after the request was written might
+ * have — Gmail may have sent the message and only the answer was lost.
+ */
+export function classifyNetworkError(error: unknown): { kind: GmailFailureKind; message: string } {
+  const err = error as { name?: string; message?: string; cause?: { code?: string } } | undefined;
+  const code = err?.cause?.code ?? "";
+  if (err?.name === "AbortError" || err?.name === "TimeoutError") {
+    return { kind: "uncertain", message: "Gmail did not answer in time — it may or may not have sent." };
+  }
+  if (/ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ENETUNREACH|EHOSTUNREACH/.test(code)) {
+    return { kind: "transient", message: `Could not reach Gmail (${code}). Nothing was sent.` };
+  }
+  return {
+    kind: "uncertain",
+    message: `The connection to Gmail dropped${code ? ` (${code})` : ""} — it may or may not have sent.`,
+  };
+}
 
 export type TokenResult = ({ ok: true } & TokenSet) | GmailFailure;
 
@@ -140,7 +191,7 @@ function tokensFrom(json: Record<string, unknown>, fallbackRefresh: string): Tok
 /** Swap the one-time code from the redirect for tokens. */
 export async function exchangeCode(code: string, redirectUri: string): Promise<TokenResult> {
   const config = googleConfig();
-  if (!config) return { ok: false, error: "Google OAuth is not configured on the server.", fatal: true };
+  if (!config) return { ok: false, error: "Google OAuth is not configured on the server.", fatal: true, kind: "auth" };
 
   const { status, json, text } = await postForm(
     tokenUrl(),
@@ -154,43 +205,58 @@ export async function exchangeCode(code: string, redirectUri: string): Promise<T
   );
   if (status !== 200) {
     const error = describeError(json, text, status);
-    return { ok: false, error, fatal: isFatalAuthError(error), status };
+    return { ok: false, error, fatal: isFatalAuthError(error), status, kind: isFatalAuthError(error) ? "auth" : "transient" };
   }
   const tokens = tokensFrom(json, "");
-  if (!tokens.accessToken) return { ok: false, error: "Google returned no access token.", fatal: true };
+  if (!tokens.accessToken) return { ok: false, error: "Google returned no access token.", fatal: true, kind: "auth" };
   if (!tokens.refreshToken) {
     return {
       ok: false,
       error: "Google returned no refresh token. Remove the app at myaccount.google.com/permissions, then connect again.",
       fatal: true,
+      kind: "auth",
     };
   }
   if (!hasRequiredScopes(tokens.scope)) {
-    return { ok: false, error: "Not all permissions were granted. Connect again and allow send and read access.", fatal: true };
+    return {
+      ok: false,
+      error: "Not all permissions were granted. Connect again and allow send and read access.",
+      fatal: true,
+      kind: "auth",
+    };
   }
   return { ok: true, ...tokens };
 }
 
 export async function refreshAccessToken(refreshToken: string): Promise<TokenResult> {
   const config = googleConfig();
-  if (!config) return { ok: false, error: "Google OAuth is not configured on the server.", fatal: true };
-  if (!refreshToken) return { ok: false, error: "No refresh token stored — reconnect Gmail.", fatal: true };
+  if (!config) return { ok: false, error: "Google OAuth is not configured on the server.", fatal: true, kind: "auth" };
+  if (!refreshToken) return { ok: false, error: "No refresh token stored — reconnect Gmail.", fatal: true, kind: "auth" };
 
-  const { status, json, text } = await postForm(
-    tokenUrl(),
-    new URLSearchParams({
-      refresh_token: refreshToken,
-      client_id: config.clientId,
-      client_secret: config.clientSecret,
-      grant_type: "refresh_token",
-    }),
-  );
+  let answer: Awaited<ReturnType<typeof postForm>>;
+  try {
+    answer = await postForm(
+      tokenUrl(),
+      new URLSearchParams({
+        refresh_token: refreshToken,
+        client_id: config.clientId,
+        client_secret: config.clientSecret,
+        grant_type: "refresh_token",
+      }),
+    );
+  } catch (error) {
+    // A token refresh sends nothing, so a network failure here is simply
+    // "try again", never "maybe sent".
+    return { ok: false, error: classifyNetworkError(error).message.replace(/ — it may or may not have sent\./, "."), fatal: false, kind: "transient" };
+  }
+  const { status, json, text } = answer;
   if (status !== 200) {
     const error = describeError(json, text, status);
-    return { ok: false, error, fatal: isFatalAuthError(error), status };
+    const fatal = isFatalAuthError(error);
+    return { ok: false, error, fatal, status, kind: fatal ? "auth" : "transient" };
   }
   const tokens = tokensFrom(json, refreshToken);
-  if (!tokens.accessToken) return { ok: false, error: "Google returned no access token.", fatal: true };
+  if (!tokens.accessToken) return { ok: false, error: "Google returned no access token.", fatal: true, kind: "auth" };
   return { ok: true, ...tokens };
 }
 
@@ -234,19 +300,39 @@ async function gmailFetch(
   }
 }
 
-export type ProfileResult = { ok: true; email: string } | GmailFailure;
+/** `gmailFetch`, but a thrown request becomes a classified failure value. */
+async function gmailCall(
+  accessToken: string,
+  path: string,
+  init: RequestInit = {},
+): Promise<{ ok: true; status: number; json: Record<string, unknown>; text: string } | GmailFailure> {
+  try {
+    const answer = await gmailFetch(accessToken, path, init);
+    return { ok: true, ...answer };
+  } catch (error) {
+    const { kind, message } = classifyNetworkError(error);
+    return { ok: false, error: message, fatal: false, status: 0, kind };
+  }
+}
+
+function failureFrom(status: number, json: Record<string, unknown>, text: string): GmailFailure {
+  const error = describeError(json, text, status);
+  const kind = classifyGmailStatus(status, error);
+  return { ok: false, error, fatal: kind === "auth", status, kind };
+}
+
+export type ProfileResult = { ok: true; email: string; messagesTotal: number } | GmailFailure;
 
 export async function getProfile(accessToken: string): Promise<ProfileResult> {
-  const { status, json, text } = await gmailFetch(accessToken, "/users/me/profile");
-  if (status !== 200) {
-    const error = describeError(json, text, status);
-    return { ok: false, error, fatal: status === 401 || isFatalAuthError(error), status };
-  }
-  return { ok: true, email: String(json.emailAddress ?? "") };
+  const answer = await gmailCall(accessToken, "/users/me/profile");
+  if (!answer.ok) return answer;
+  const { status, json, text } = answer;
+  if (status !== 200) return failureFrom(status, json, text);
+  return { ok: true, email: String(json.emailAddress ?? ""), messagesTotal: Number(json.messagesTotal ?? 0) };
 }
 
 export type SendResult =
-  | { ok: true; messageId: string; threadId: string }
+  | { ok: true; messageId: string; threadId: string; labelIds: string[] }
   | GmailFailure;
 
 /**
@@ -265,15 +351,133 @@ export async function sendMessage(
   const payload: Record<string, string> = { raw };
   if (threadId) payload.threadId = threadId;
 
-  const { status, json, text } = await gmailFetch(accessToken, "/users/me/messages/send", {
+  const answer = await gmailCall(accessToken, "/users/me/messages/send", {
     method: "POST",
     body: JSON.stringify(payload),
   });
-  if (status !== 200) {
-    const error = describeError(json, text, status);
-    return { ok: false, error, fatal: status === 401 || isFatalAuthError(error), status };
+  if (!answer.ok) return answer;
+  const { status, json, text } = answer;
+  if (status !== 200) return failureFrom(status, json, text);
+  const messageId = String(json.id ?? "");
+  // A 200 with no id is not a confirmation. Treat it as "we cannot say" so the
+  // reconciliation path asks Gmail rather than recording a send without proof.
+  if (!messageId) {
+    return { ok: false, error: "Gmail answered without a message id.", fatal: false, status, kind: "uncertain" };
   }
-  return { ok: true, messageId: String(json.id ?? ""), threadId: String(json.threadId ?? threadId ?? "") };
+  return {
+    ok: true,
+    messageId,
+    threadId: String(json.threadId ?? threadId ?? ""),
+    labelIds: Array.isArray(json.labelIds) ? json.labelIds.map(String) : [],
+  };
+}
+
+export type MessageMeta = {
+  id: string;
+  threadId: string;
+  labelIds: string[];
+  headers: Record<string, string>;
+  snippet: string;
+  internalDate: string;
+};
+
+/** Headers and labels of one message — used to confirm a send and to thread follow-ups. */
+export async function getMessageMeta(
+  accessToken: string,
+  id: string,
+): Promise<({ ok: true } & MessageMeta) | GmailFailure | { ok: false; notFound: true; error: string; fatal: false; kind: "permanent" }> {
+  const answer = await gmailCall(
+    accessToken,
+    `/users/me/messages/${encodeURIComponent(id)}?format=metadata` +
+      ["Message-ID", "Subject", "To", "From", "Date"].map((h) => `&metadataHeaders=${h}`).join(""),
+  );
+  if (!answer.ok) return answer;
+  const { status, json, text } = answer;
+  if (status === 404) return { ok: false, notFound: true, error: "No such message.", fatal: false, kind: "permanent" };
+  if (status !== 200) return failureFrom(status, json, text);
+  return { ok: true, ...metaFrom(json) };
+}
+
+function metaFrom(json: Record<string, unknown>): MessageMeta {
+  const payload = json.payload as { headers?: unknown } | undefined;
+  const headers: Record<string, string> = {};
+  if (Array.isArray(payload?.headers)) {
+    for (const header of payload.headers) {
+      const entry = header as { name?: unknown; value?: unknown };
+      if (typeof entry.name === "string" && typeof entry.value === "string") {
+        headers[entry.name.toLowerCase()] = entry.value;
+      }
+    }
+  }
+  return {
+    id: String(json.id ?? ""),
+    threadId: String(json.threadId ?? ""),
+    labelIds: Array.isArray(json.labelIds) ? json.labelIds.map(String) : [],
+    headers,
+    snippet: String(json.snippet ?? ""),
+    internalDate: String(json.internalDate ?? ""),
+  };
+}
+
+export type SentLookup =
+  | { ok: true; found: true; id: string; threadId: string; rfc822MessageId: string }
+  | { ok: true; found: false }
+  | GmailFailure;
+
+/**
+ * Did Gmail actually send this? Asked before any retry of an email whose first
+ * attempt ended without a clear answer, so a lost response can never become a
+ * second copy in somebody's inbox.
+ *
+ * Two searches, strongest first: the Message-ID header this app wrote (exact,
+ * when Gmail kept it), then the sent folder for that recipient since the
+ * attempt began, confirmed by subject. One live initial email per address is a
+ * database constraint, so that pair identifies the message.
+ */
+export async function findSentMessage(
+  accessToken: string,
+  input: { rfc822MessageId?: string; to: string; subject: string; sinceEpochSeconds: number },
+): Promise<SentLookup> {
+  const queries: string[] = [];
+  if (input.rfc822MessageId) queries.push(`rfc822msgid:${input.rfc822MessageId.replace(/[<>]/g, "")}`);
+  const since = Math.max(0, Math.floor(input.sinceEpochSeconds) - 120);
+  queries.push(`in:sent to:${input.to} after:${since}`);
+  const wanted = normaliseSubject(input.subject);
+
+  for (const query of queries) {
+    const list = await gmailCall(
+      accessToken,
+      `/users/me/messages?maxResults=10&includeSpamTrash=false&q=${encodeURIComponent(query)}`,
+    );
+    if (!list.ok) return list;
+    if (list.status !== 200) return failureFrom(list.status, list.json, list.text);
+    const messages = Array.isArray(list.json.messages) ? list.json.messages : [];
+    for (const item of messages) {
+      const id = String((item as { id?: unknown }).id ?? "");
+      if (!id) continue;
+      const meta = await getMessageMeta(accessToken, id);
+      if (!meta.ok) {
+        if ("notFound" in meta) continue;
+        return meta;
+      }
+      if (!meta.labelIds.includes("SENT")) continue;
+      const to = (meta.headers.to ?? "").toLowerCase();
+      if (!to.includes(input.to.toLowerCase())) continue;
+      if (wanted && normaliseSubject(meta.headers.subject ?? "") !== wanted) continue;
+      return {
+        ok: true,
+        found: true,
+        id: meta.id,
+        threadId: meta.threadId,
+        rfc822MessageId: meta.headers["message-id"] ?? "",
+      };
+    }
+  }
+  return { ok: true, found: false };
+}
+
+function normaliseSubject(subject: string): string {
+  return subject.replace(/^\s*(re|fwd?):\s*/i, "").replace(/\s+/g, " ").trim().toLowerCase();
 }
 
 export type ThreadMessage = {
@@ -283,6 +487,10 @@ export type ThreadMessage = {
   snippet: string;
   /** True when Gmail says we sent it. */
   fromUs: boolean;
+  subject: string;
+  /** Lowercased header names → values, for auto-reply and bounce detection. */
+  headers: Record<string, string>;
+  internalDate: string;
 };
 
 export type ThreadResult = { ok: true; messages: ThreadMessage[] } | GmailFailure;
@@ -305,29 +513,43 @@ function headerValue(headers: unknown, name: string): string {
  * message bodies. It is the least the API can be asked for and still answer
  * "has anyone written back".
  */
+const THREAD_HEADERS = [
+  "From",
+  "Date",
+  "Subject",
+  "Message-ID",
+  "Auto-Submitted",
+  "X-Autoreply",
+  "X-Autorespond",
+  "Precedence",
+  "X-Failed-Recipients",
+  "Content-Type",
+];
+
 export async function getThread(accessToken: string, threadId: string, ourEmail: string): Promise<ThreadResult> {
-  const { status, json, text } = await gmailFetch(
+  const answer = await gmailCall(
     accessToken,
-    `/users/me/threads/${encodeURIComponent(threadId)}?format=metadata&metadataHeaders=From&metadataHeaders=Date`,
+    `/users/me/threads/${encodeURIComponent(threadId)}?format=metadata` +
+      THREAD_HEADERS.map((header) => `&metadataHeaders=${header}`).join(""),
   );
+  if (!answer.ok) return answer;
+  const { status, json, text } = answer;
   if (status === 404) return { ok: true, messages: [] };
-  if (status !== 200) {
-    const error = describeError(json, text, status);
-    return { ok: false, error, fatal: status === 401 || isFatalAuthError(error), status };
-  }
+  if (status !== 200) return failureFrom(status, json, text);
   const raw = Array.isArray(json.messages) ? json.messages : [];
   const us = ourEmail.trim().toLowerCase();
   const messages: ThreadMessage[] = raw.map((item) => {
-    const message = item as { id?: unknown; snippet?: unknown; labelIds?: unknown; payload?: unknown };
-    const payload = message.payload as { headers?: unknown } | undefined;
-    const from = headerValue(payload?.headers, "from");
-    const labels = Array.isArray(message.labelIds) ? message.labelIds.map(String) : [];
+    const meta = metaFrom(item as Record<string, unknown>);
+    const from = meta.headers.from ?? headerValue((item as { payload?: { headers?: unknown } }).payload?.headers, "from");
     return {
-      id: String(message.id ?? ""),
+      id: meta.id,
       from,
-      date: headerValue(payload?.headers, "date"),
-      snippet: String(message.snippet ?? ""),
-      fromUs: labels.includes("SENT") || (us !== "" && from.toLowerCase().includes(us)),
+      date: meta.headers.date ?? "",
+      snippet: meta.snippet,
+      fromUs: meta.labelIds.includes("SENT") || (us !== "" && from.toLowerCase().includes(us)),
+      subject: meta.headers.subject ?? "",
+      headers: meta.headers,
+      internalDate: meta.internalDate,
     };
   });
   return { ok: true, messages };

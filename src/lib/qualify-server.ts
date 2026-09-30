@@ -7,6 +7,7 @@
  * Nothing here sends email.
  */
 import { createServerFn } from "@tanstack/react-start";
+import { authMiddleware } from "@/lib/auth/middleware";
 import { classifyWebsiteUrl, hasWebsite, websiteHref } from "@/lib/leads";
 import {
   CANDIDATE_PATHS,
@@ -79,15 +80,18 @@ async function fetchPage(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(href, {
+    // Addresses here come from listings, search results and other sites'
+    // redirects — never trusted. `safeFetch` refuses anything that is not the
+    // public internet, at the first hop and at every redirect after it.
+    const { safeFetch } = await import("@/lib/net/safe-fetch.server");
+    const { response, finalUrl } = await safeFetch(href, {
       method: "GET",
-      redirect: "follow",
       signal: controller.signal,
       headers: { "User-Agent": USER_AGENT, Accept: "text/html,application/xhtml+xml" },
     });
     const type = response.headers.get("content-type") ?? "";
     const html = /html|xml|text/i.test(type) || !type ? (await response.text()).slice(0, 400_000) : "";
-    return { ok: response.ok, status: response.status, finalUrl: response.url || href, html };
+    return { ok: response.ok, status: response.status, finalUrl: finalUrl || href, html };
   } finally {
     clearTimeout(timer);
   }
@@ -149,6 +153,9 @@ export type FindEmailResult =
   | { ok: false; error: string };
 
 export const checkLeadWebsite = createServerFn({ method: "POST" })
+  // Owner-only: this makes the server fetch an outside address, which must
+  // never be available to anyone who can reach the URL.
+  .middleware([authMiddleware])
   .validator((input: unknown) => {
     if (!input || typeof input !== "object") throw new Error("Missing website");
     const website = asString((input as { website?: unknown }).website, 500);
@@ -329,6 +336,10 @@ function wellKnownPaths(origin: string): string[] {
 }
 
 export const findLeadEmail = createServerFn({ method: "POST" })
+  // Owner-only: it spends the owner's search credits and fetches outside
+  // addresses on the server. Unauthenticated, it was an open proxy and a way to
+  // run down somebody else's Tavily quota.
+  .middleware([authMiddleware])
   .validator((input: unknown) => {
     if (!input || typeof input !== "object") throw new Error("Missing lead");
     const source = input as Record<string, unknown>;

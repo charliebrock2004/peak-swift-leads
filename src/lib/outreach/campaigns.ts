@@ -62,6 +62,17 @@ export function campaignCanRun(status: CampaignStatus): boolean {
   return status === "ACTIVE";
 }
 
+/**
+ * May an approved email written under this campaign go out now?
+ *
+ * Pausing a campaign has to actually pause it: its approved emails stay
+ * approved but are held at send time until it is resumed. Archived and
+ * completed campaigns send nothing further.
+ */
+export function campaignCanSend(status: CampaignStatus): boolean {
+  return status === "ACTIVE" || status === "DRAFT";
+}
+
 export type Campaign = {
   id: string;
   name: string;

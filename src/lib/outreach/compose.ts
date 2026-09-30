@@ -30,6 +30,7 @@ import {
   type ComposedEmail,
 } from "./templates.ts";
 import type { EmailKind, OutreachLead, OutreachTemplate } from "./types.ts";
+import { effectiveProfile, profileSignature, type BusinessProfile } from "./profile.ts";
 
 /** Only what we actually know. Anything absent is simply not mentioned. */
 export function leadFacts(lead: OutreachLead): string[] {
@@ -49,9 +50,9 @@ export function canPersonalise(lead: OutreachLead): boolean {
 const KIND_BRIEF: Record<EmailKind, string> = {
   initial: "This is the first email. They have never heard from us.",
   "follow-up-1":
-    "This is a short follow-up to an earlier email that got no reply. Be brief and low-pressure. Do not repeat the whole pitch.",
+    "This is a short follow-up to an earlier email that got no reply. Two or three sentences. Be low-pressure. Do not repeat the whole pitch.",
   "follow-up-2":
-    "This is the final follow-up. Be very short, gracious, and make clear you will not write again unless they reply.",
+    "This is the final follow-up. Very short and gracious, and make clear you will not write again unless they reply.",
 };
 
 /**
@@ -59,39 +60,69 @@ const KIND_BRIEF: Record<EmailKind, string> = {
  *
  * The constraints are the point: no invented facts, no insults, no claims the
  * website check did not support, and a required opt-out line. A model that
- * ignores them is caught by the quality gate afterwards.
+ * ignores them is caught by the quality gate afterwards, and the template is
+ * used instead.
+ *
+ * Everything about the sender comes from the business profile, so the studio,
+ * the area, what is on offer and how the email ends are the owner's words.
  */
-export function buildPrompt(lead: OutreachLead, kind: EmailKind = "initial"): string {
-  return `Write a short cold outreach email to a small UK business about building or improving their website.
+export function buildPrompt(lead: OutreachLead, kind: EmailKind = "initial", stored?: Partial<BusinessProfile>): string {
+  const profile = effectiveProfile(stored);
+  const about = [
+    `Name: ${profile.senderName}`,
+    `Studio: ${profile.businessName}`,
+    `Based in: ${profile.location}`,
+    profile.areasServed ? `Works across: ${profile.areasServed}` : "",
+    profile.services ? `What the studio offers: ${profile.services}` : "",
+    profile.portfolioUrl ? `Examples of past work (may be linked once, optional): ${profile.portfolioUrl}` : "",
+    `The next step to offer: ${profile.cta}`,
+  ]
+    .filter(Boolean)
+    .map((line) => `- ${line}`)
+    .join("\n");
 
-What we actually know about them:
+  return `Write a short cold email to a small UK business about building or improving their website.
+
+Who is writing:
+${about}
+
+What we actually know about the business (nothing else is known):
 ${leadFacts(lead)
   .map((fact) => `- ${fact}`)
   .join("\n")}
 
 ${KIND_BRIEF[kind]}
 
-Rules — all of them matter:
-- Write as ${SENDER_NAME} from ${SENDER_STUDIO}, a small web design studio in Scotland. Name ${SENDER_STUDIO} in the body, so it is obvious who is writing and why.
-- Open by referring to ONE of the observations above, in your own words. If there are none worth using, write a short, plain note that does not pretend to have noticed anything.
-- Use ONLY the facts above. Never invent a detail, a service, a statistic, a competitor or a compliment.
-- Never claim anything about speed, mobile, design age, search ranking or traffic. Nothing above measures those, so any such claim would be fabricated.
-- Never invent a first name. Address the business, not a person, unless a name appears above.
+How it should read: ${profile.tone}. Like one person who has had a look at their business writing to another — short, human, direct and specific. Three or four short paragraphs, 70 to 120 words, British English.
+
+The email should quickly cover, in plain words:
+1. why you are writing to THEM (one of the observations above, in your own words);
+2. what you noticed — only what is listed above;
+3. what you could do for them, briefly;
+4. a low-pressure next step, based on: "${profile.cta}".
+
+Rules — every one of them matters:
+- Write as ${profile.senderName} from ${profile.businessName}. Name ${profile.businessName} in the body so it is obvious who is writing.
+- Use ONLY the facts above. Never invent a detail, a service they offer, a statistic, a percentage, a competitor, a date, how long they have traded, or a compliment.
+- If you mention reviews or a rating, use exactly the numbers above. If none are listed, do not mention reviews at all.
+- Never claim anything about speed, mobile, design age, search ranking or traffic, and do not mention SEO. Nothing above measures those.
+- Never pretend to have spoken to them, used their services, been recommended to them, or know the owner. Never invent a first name — address the business, not a person, unless a name appears above.
 - If they have no website, say plainly that you could not find one — do not assume why.
-- If they have a website, be respectful about it. Never call it bad, old, ugly, broken or embarrassing. Suggest it could do more, at most.
-- No pushy sales language, no urgency, no flattery, no buzzwords, no bullet lists of benefits.
-- Sound like one person writing to another. British English. Around 90-140 words.
+- If they have a website, be respectful about it. Never call it bad, old, ugly, broken or embarrassing. Suggest it could do more for them, at most.
+- No flattery ("amazing", "blown away", "stunning work"), no urgency, no buzzwords ("next level", "boost your online presence", "leverage"), no bullet lists, no exclamation marks.
+- Never open with "I hope this email finds you well" or "I hope you're well". Start with "Hi," and get to the point.
 - The goal is only to start a conversation, not to close a sale.
-- End the message body with this sentence exactly: "${OPT_OUT_LINE}"
 - Mention the business by name at least once.
+- End the message body with this sentence exactly: "${profile.optOutLine}"
+- The body must NOT include a sign-off or signature — that is added separately.
+- Subject: short and specific, five words or fewer, no clickbait, no exclamation mark.
 
 Reply with JSON only, no code fence:
-{"subject": "...", "body": "..."}
-The body must NOT include a sign-off or signature — that is added separately.`;
+{"subject": "...", "body": "...", "personalisation": "One sentence saying which of the facts above you used and how."}`;
 }
 
 /** What a provider must give back. Anything else is treated as a failure. */
-export type AiDraft = { subject: string; body: string };
+export type AiDraft = { subject: string; body: string; personalisation?: string };
 
 export type AiGenerator = (prompt: string) => Promise<AiDraft | null>;
 
@@ -107,11 +138,13 @@ export function parseAiDraft(text: string): AiDraft | null {
   const end = raw.lastIndexOf("}");
   if (start < 0 || end <= start) return null;
   try {
-    const parsed = JSON.parse(raw.slice(start, end + 1)) as { subject?: unknown; body?: unknown };
+    const parsed = JSON.parse(raw.slice(start, end + 1)) as { subject?: unknown; body?: unknown; personalisation?: unknown };
     const subject = typeof parsed.subject === "string" ? parsed.subject.trim() : "";
     const body = typeof parsed.body === "string" ? parsed.body.trim() : "";
     if (!subject || !body) return null;
-    return { subject, body };
+    const personalisation =
+      typeof parsed.personalisation === "string" ? parsed.personalisation.trim().slice(0, 300) : "";
+    return personalisation ? { subject, body, personalisation } : { subject, body };
   } catch {
     return null;
   }
@@ -124,12 +157,24 @@ export type ComposeOptions = {
   templates?: readonly OutreachTemplate[];
   /** Absent means template-only, which is what happens with no AI key. */
   generate?: AiGenerator;
+  /** The studio's profile. Absent means the built-in defaults. */
+  profile?: Partial<BusinessProfile>;
 };
 
 export type ComposeResult = ComposedEmail & {
   /** Set when AI was asked for and could not be used. Shown, not hidden. */
   fellBackBecause?: string;
+  /** What the email was personalised from, in one sentence, for the Review screen. */
+  personalisation: string;
 };
+
+/** The personalisation note for a template: which situation it was chosen for. */
+function templateNote(lead: OutreachLead, template: OutreachTemplate): string {
+  const facts = [lead.trade.trim() && `trade (${lead.trade.trim()})`, lead.town.trim() && `town (${lead.town.trim()})`]
+    .filter(Boolean)
+    .join(" and ");
+  return `Template "${template.name}" chosen for their website situation${facts ? `, filled with their ${facts}` : ""}.`;
+}
 
 /**
  * Compose one email.
@@ -144,21 +189,27 @@ export async function composeEmail(
 ): Promise<ComposeResult> {
   const kind = options.kind ?? "initial";
   const templates = options.templates?.length ? options.templates : DEFAULT_TEMPLATES;
+  const profile = options.profile ? effectiveProfile(options.profile) : undefined;
 
-  const templateFallback = (): ComposedEmail => {
+  const fromTemplate = (template: OutreachTemplate): ComposedEmail & { personalisation: string } => ({
+    ...composeFromTemplate(lead, template, profile),
+    personalisation: templateNote(lead, template),
+  });
+
+  const templateFallback = () => {
     const chosen =
       kind === "initial"
         ? templateForLead(lead, templates)
         : (templates.find((template) => template.kind === kind) ??
           DEFAULT_TEMPLATES.find((template) => template.kind === kind) ??
           templateForLead(lead, templates));
-    return composeFromTemplate(lead, chosen);
+    return fromTemplate(chosen);
   };
 
   const wantsTemplate = options.mode && options.mode !== "ai";
   if (wantsTemplate) {
     const chosen = templates.find((template) => template.id === options.mode);
-    if (chosen) return composeFromTemplate(lead, chosen);
+    if (chosen) return fromTemplate(chosen);
     return templateFallback();
   }
 
@@ -168,7 +219,7 @@ export async function composeEmail(
 
   let draft: AiDraft | null = null;
   try {
-    draft = await options.generate(buildPrompt(lead, kind));
+    draft = await options.generate(buildPrompt(lead, kind, profile));
   } catch {
     draft = null;
   }
@@ -176,21 +227,38 @@ export async function composeEmail(
     return { ...templateFallback(), fellBackBecause: "AI did not respond — used a template." };
   }
 
-  const body = `${draft.body.trim()}\n\n${DEFAULT_SIGNATURE}`;
+  const signature = profile ? profileSignature(profile) : DEFAULT_SIGNATURE;
+  const body = `${draft.body.trim()}\n\n${signature}`;
   const verdict = checkEmailQuality({
     subject: draft.subject,
     body,
     recipient: lead.email,
     lead,
+    studio: profile?.businessName,
   });
   if (!verdict.ok) {
     // Only the text's own faults should force a fallback. A problem with the
     // lead (no address, suppressed) is not something a template would fix, and
-    // the send-time gate will catch it anyway.
+    // the send-time gate will catch it anyway. A fabricated, invented or
+    // unsupported claim IS the text's fault: storing that draft only moved the
+    // refusal to the Approve button.
     const textProblems = verdict.problems.filter((problem) =>
-      ["placeholder", "broken", "insulting", "short-body", "long-body", "no-subject", "long-subject", "not-personalised", "unidentified", "no-opt-out"].includes(
-        problem.code,
-      ),
+      [
+        "placeholder",
+        "broken",
+        "insulting",
+        "short-body",
+        "long-body",
+        "no-subject",
+        "long-subject",
+        "not-personalised",
+        "unidentified",
+        "no-opt-out",
+        "fabricated",
+        "generic",
+        "invented",
+        "unsupported",
+      ].includes(problem.code),
     );
     if (textProblems.length > 0) {
       return {
@@ -200,5 +268,10 @@ export async function composeEmail(
     }
   }
 
-  return { subject: draft.subject, body, generatedBy: "ai" };
+  return {
+    subject: draft.subject,
+    body,
+    generatedBy: "ai",
+    personalisation: draft.personalisation || "Written by AI from the evidence listed.",
+  };
 }

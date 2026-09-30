@@ -347,19 +347,78 @@ describe("the gate refuses claims nothing measured", () => {
 
   it("ALLOWS the honest, evidenced things we do say", () => {
     // These are recorded observations with a field behind them, and they are
-    // the reason most of these emails are worth sending at all.
+    // the reason most of these emails are worth sending at all. The review
+    // line is only honest because this lead's record carries 40 reviews at 4.6
+    // — see the next test for the same line without that record.
+    const evidenced = lead({ reviews: 40, rating: 4.6 });
     for (const honest of [
       "You don't seem to have a website yet, which is why I got in touch.",
       "It looks like Strathearn Joinery Ltd is on Facebook but has no site of its own.",
       "Strathearn Joinery Ltd has 40 reviews averaging 4.6 — a lot of goodwill to build on.",
     ]) {
-      const verdict = send(frame(honest));
+      const verdict = checkEmailQuality({
+        subject: "A website for Strathearn Joinery",
+        body: frame(honest),
+        recipient,
+        lead: evidenced,
+      });
       assert.equal(
         verdict.ok,
         true,
         `refused an honest line: ${verdict.ok ? "" : verdict.problems.map((p) => p.message).join("; ")}`,
       );
     }
+  });
+
+  it("REFUSES the same review line when no review count is on record", () => {
+    const verdict = send(frame("Strathearn Joinery Ltd has 40 reviews averaging 4.6 — a lot of goodwill to build on."));
+    assert.equal(verdict.ok, false);
+    assert.ok(!verdict.ok && verdict.problems.some((p) => p.code === "unsupported"));
+  });
+
+  it("REFUSES a review count that disagrees with the record", () => {
+    const verdict = checkEmailQuality({
+      subject: "A website for Strathearn Joinery",
+      body: frame("You've got 52 Google reviews, which is brilliant."),
+      recipient,
+      lead: lead({ reviews: 47, rating: 4.8 }),
+    });
+    assert.ok(!verdict.ok && verdict.problems.some((p) => /52 reviews, but the listing shows 47/.test(p.message)));
+  });
+
+  it("REFUSES 'no website' for a business whose website is on record", () => {
+    const verdict = checkEmailQuality({
+      subject: "A website for Strathearn Joinery",
+      body: frame("I couldn't find a website for you anywhere."),
+      recipient,
+      lead: lead({ websiteStatus: "Proper Website", website: "strathearnjoinery.co.uk" }),
+    });
+    assert.ok(!verdict.ok && verdict.problems.some((p) => p.code === "unsupported"));
+  });
+
+  it("REFUSES an invented conversation, history, testimonial, statistic or compliment", () => {
+    for (const invented of [
+      "Good to speak to you earlier about the site.",
+      "You've been trading since 1998, which is impressive.",
+      "Your customers love the finish on your kitchens.",
+      "A friend of mine recommended you.",
+      "75% of customers search online before calling a trade.",
+      "I was blown away by your work.",
+      "This could take your business to the next level.",
+    ]) {
+      const verdict = send(frame(invented));
+      assert.equal(verdict.ok, false, `let through: ${invented}`);
+    }
+  });
+
+  it("ALLOWS a mention of a call once one is on record", () => {
+    const verdict = checkEmailQuality({
+      subject: "A website for Strathearn Joinery",
+      body: frame("Good to speak to you earlier about the site."),
+      recipient,
+      lead: lead({ called: "Interested", callResult: "Interested" }),
+    });
+    assert.equal(verdict.ok, true, verdict.ok ? "" : verdict.problems.map((p) => p.message).join("; "));
   });
 });
 

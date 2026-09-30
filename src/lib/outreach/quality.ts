@@ -94,11 +94,16 @@ const FABRICATED: [RegExp, string][] = [
   ],
 ];
 
-/** Openers that announce the email as a circular. */
+/** Openers and phrases that announce the email as a circular. */
 const GENERIC_OPENERS: [RegExp, string][] = [
   [/\bdear (business owner|sir or madam|sir\/madam|owner|manager|team)\b/i, "opens with a circular's greeting"],
   [/\bto whom it may concern\b/i, "opens with a circular's greeting"],
   [/\bi hope this (email|message) finds you well\b/i, "opens with filler that marks it as a template"],
+  [/\bi hope (?:you'?re|you are) (?:well|doing well|keeping well)\b/i, "opens with filler that marks it as a template"],
+  [
+    /\btake your business to the next level\b|\bskyrocket\b|\bgame[- ]?changer\b|\bunlock (?:your|the) (?:full )?potential\b|\bin today'?s (?:digital|online|modern) (?:age|world|landscape)\b|\bboost your online presence\b|\bsynerg(?:y|ies)\b|\bleverage\b/i,
+    "uses marketing language nobody writes to a person",
+  ],
 ];
 
 /**
@@ -122,10 +127,118 @@ export type QualityInput = {
   subject: string;
   body: string;
   recipient: string;
-  lead: Pick<OutreachLead, "businessName" | "emailConfidence" | "emailSource" | "unsubscribed">;
+  lead: Pick<OutreachLead, "businessName" | "emailConfidence" | "emailSource" | "unsubscribed"> &
+    Partial<Pick<OutreachLead, "reviews" | "rating" | "websiteStatus" | "called" | "callResult" | "town">>;
   /** Lowercased suppression list. */
   suppressed?: ReadonlySet<string>;
+  /** The studio name the email must identify. Defaults to the built-in one. */
+  studio?: string;
 };
+
+/**
+ * Facts an email states that the record does not support.
+ *
+ * The rest of the gate catches claims nothing in the pipeline could ever
+ * measure (speed, rankings). This catches the subtler failure: a claim that
+ * sounds like evidence and is simply wrong for THIS business — "your 52 Google
+ * reviews" when the listing shows 47, "I couldn't find a website" for a business
+ * whose website we verified, "good to speak to you earlier" to someone nobody
+ * has ever rung. Each returns a sentence that says exactly what to fix.
+ *
+ * Only runs where the lead's facts were supplied, so older callers that pass a
+ * bare lead are unaffected.
+ */
+export function unsupportedClaims(text: string, lead: QualityInput["lead"]): QualityProblem[] {
+  const problems: QualityProblem[] = [];
+  const add = (message: string) => problems.push({ code: "unsupported", message });
+
+  // Review counts. "47 reviews", "47 Google reviews", "47 five-star reviews".
+  if ("reviews" in lead) {
+    const known = typeof lead.reviews === "number" ? lead.reviews : null;
+    for (const match of text.matchAll(/\b(\d{1,5})\s+(?:(?:five|5)[- ]star\s+|google\s+|public\s+|online\s+|glowing\s+)*reviews?\b/gi)) {
+      const said = Number(match[1]);
+      if (known === null) {
+        add(`It mentions ${said} reviews, but no review count is on record for this business. Remove it or add the count to the lead.`);
+        break;
+      }
+      if (said !== known) {
+        add(`It mentions ${said} reviews, but the listing shows ${known}. Correct the number or remove it.`);
+        break;
+      }
+    }
+  }
+
+  // Ratings. "4.8 stars", "rated 4.8", "4.8/5", "4.8 out of 5", "4.8★".
+  if ("rating" in lead) {
+    const known = typeof lead.rating === "number" ? lead.rating : null;
+    const ratingPattern = /\b(?:rated\s+|rating\s+of\s+)?([1-5](?:\.\d)?)\s*(?:★|stars?\b|star rating\b|\/\s*5\b|out of 5\b)|\brated\s+([1-5](?:\.\d)?)\b/gi;
+    for (const match of text.matchAll(ratingPattern)) {
+      const said = Number(match[1] ?? match[2]);
+      if (!Number.isFinite(said)) continue;
+      if (known === null) {
+        add(`It quotes a ${said} rating, but no rating is on record for this business. Remove it.`);
+        break;
+      }
+      if (Math.abs(said - known) > 0.05) {
+        add(`It quotes a ${said} rating, but the listing shows ${known}. Correct it or remove it.`);
+        break;
+      }
+    }
+  }
+
+  // "No website" is only a fact when the record says so.
+  if ("websiteStatus" in lead) {
+    const noSite = /\b(?:couldn'?t|could not|can'?t|cannot|didn'?t|did not|unable to)\s+find\s+(?:a|any|your)?\s*(?:website|site)\b|\b(?:don'?t|do not|doesn'?t)\s+(?:seem to\s+)?have\s+(?:a|any)\s+(?:website|site)\b|\bno\s+website\b/i;
+    const status = lead.websiteStatus ?? "";
+    const recordedMissing = status === "No Website Found" || status === "Social Only" || status === "Directory Only";
+    if (noSite.test(text) && !recordedMissing) {
+      add(
+        status === "Proper Website" || status === "Basic Website"
+          ? "It says they have no website, but a website is on record for them. Rewrite that line."
+          : "It says they have no website, but that was never confirmed for this business. Rewrite that line.",
+      );
+    }
+  }
+
+  // A conversation that never happened. Allowed once a call is on record.
+  if ("called" in lead || "callResult" in lead) {
+    const neverCalled = (lead.called ?? "Not Called") === "Not Called" && !(lead.callResult ?? "");
+    const talkedClaim =
+      /\b(?:as|like)\s+(?:we|i)\s+(?:discussed|spoke|chatted|mentioned on the phone)\b|\b(?:good|nice|great|lovely)\s+to\s+(?:speak|talk|chat)\s+(?:to|with)\s+you\b|\b(?:our|the)\s+(?:recent\s+|earlier\s+)?(?:phone\s+)?(?:call|chat|conversation)\s+(?:earlier|yesterday|today|last week)\b|\bwhen\s+we\s+spoke\b|\bfollowing\s+(?:up\s+on\s+)?our\s+(?:call|conversation|chat)\b/i;
+    if (neverCalled && talkedClaim.test(text)) {
+      add("It refers to a conversation, but no call with this business is on record. Remove that line.");
+    }
+  }
+
+  return problems;
+}
+
+/**
+ * Things no pipeline fact can support, whatever the lead: invented history,
+ * testimonials, relationships, statistics and flattery.
+ */
+const INVENTED: [RegExp, string][] = [
+  [
+    /\b(?:since|established in|founded in|trading since)\s+(?:19|20)\d{2}\b|\b\d{1,3}\+?\s+years\s+(?:in business|of experience|trading|in the trade)\b/i,
+    "states how long they have been trading, which is never recorded",
+  ],
+  [
+    /\byour\s+(?:customers|clients)\s+(?:say|love|rave|think|told)\b|\b(?:i|we)'?(?:ve| have)?\s+(?:used|hired)\s+(?:you|your (?:services|team))\b|\bi\s+was\s+(?:a|one of your)\s+customers?\b/i,
+    "invents a customer experience",
+  ],
+  [
+    /\b(?:a\s+)?(?:friend|colleague|neighbour|mutual contact|someone)\s+(?:of mine\s+)?(?:recommended|mentioned|told me about|referred)\b/i,
+    "invents a personal connection",
+  ],
+  [
+    /\b\d{1,3}(?:\.\d+)?\s?%\s+of\s+(?:customers|people|consumers|businesses|searches|users|visitors|homeowners)\b|\b(?:studies|research|statistics|surveys)\s+(?:show|shows|suggest|prove)\b/i,
+    "quotes a statistic nothing here measured",
+  ],
+  [
+    /\b(?:blown away|absolutely love|really impressed|so impressed)\b|\b(?:amazing|incredible|stunning|fantastic|outstanding|beautiful|superb)\s+(?:work|business|reputation|job|craftsmanship|photos|portfolio|projects?)\b/i,
+    "pays a compliment nothing on record supports",
+  ],
+];
 
 /**
  * Is this specific email safe to send right now?
@@ -177,8 +290,9 @@ export function checkEmailQuality(input: QualityInput): QualityVerdict {
   // Whoever receives this has to be able to tell who sent it. Any spelling of
   // the studio's own name counts — see `identifiesSender`, which exists because
   // an exact match refused the signature the model actually writes.
-  if (!identifiesSender(body)) {
-    add("unidentified", `The email does not identify ${SENDER_STUDIO}.`);
+  const studio = input.studio?.trim() || SENDER_STUDIO;
+  if (!identifiesSender(body, studio)) {
+    add("unidentified", `The email does not identify ${studio} — add the studio name, usually in the sign-off.`);
   }
 
   if (!hasOptOut(body)) add("no-opt-out", "The email gives no way to opt out.");
@@ -207,6 +321,13 @@ export function checkEmailQuality(input: QualityInput): QualityVerdict {
       break;
     }
   }
+  for (const [pattern, why] of INVENTED) {
+    if (pattern.test(body) || pattern.test(subject)) {
+      add("invented", `The text ${why}. Remove that line.`);
+      break;
+    }
+  }
+  for (const problem of unsupportedClaims(`${subject}\n${body}`, input.lead)) add(problem.code, problem.message);
 
   return problems.length === 0 ? { ok: true } : { ok: false, problems };
 }

@@ -19,6 +19,7 @@
  * finding nothing. `scoreWebsiteMatch` is what stands between those two
  * outcomes, and it demands corroboration rather than resemblance.
  */
+import { decodeHtmlEntities } from "./html-entities.ts";
 
 /** UK-first, because that is where the leads are. Order is what gets tried. */
 const TLDS = [".co.uk", ".com", ".uk", ".scot"] as const;
@@ -567,11 +568,15 @@ export function scoreWebsiteMatch(
 
 /** Strip markup to the text `scoreWebsiteMatch` reads. */
 export function pageText(html: string): string {
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/gi, " ")
+  // Entities are decoded AFTER the tags are gone, so "Smith &amp; Sons" and
+  // "O&#8217;Brien Joinery" read as the names they are when identity is
+  // corroborated — an undecoded name is a verified website missed.
+  return decodeHtmlEntities(
+    html
+      .replace(/<script[\s\S]*?<\/script>/gi, " ")
+      .replace(/<style[\s\S]*?<\/style>/gi, " ")
+      .replace(/<[^>]+>/g, " "),
+  )
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -659,3 +664,4 @@ export function distinctiveAddressTokens(address: string, town: string): string[
   }
   return out;
 }
+

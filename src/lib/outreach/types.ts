@@ -25,6 +25,10 @@ export const EMAIL_STATUSES = [
   "unsubscribed",
   /** You decided not to send it. */
   "skipped",
+  /** Gmail sent it and the recipient's server bounced it back. */
+  "bounced",
+  /** A test email to your own address. Never counted as outreach. */
+  "test_sent",
 ] as const;
 export type EmailStatus = (typeof EMAIL_STATUSES)[number];
 
@@ -40,8 +44,30 @@ export const LIVE_STATUSES: readonly EmailStatus[] = [
 /** Statuses that mean Gmail actually accepted it. */
 export const DELIVERED_STATUSES: readonly EmailStatus[] = ["sent", "replied"];
 
+/** Everything Gmail accepted for a prospect, including ones that later bounced. */
+export const SENT_STATUSES: readonly EmailStatus[] = ["sent", "replied", "bounced"];
+
 export const EMAIL_KINDS = ["initial", "follow-up-1", "follow-up-2"] as const;
 export type EmailKind = (typeof EMAIL_KINDS)[number];
+
+/** Why a send did not complete — see `GmailFailureKind`. Empty when it did. */
+export type FailureKind = "" | "permanent" | "transient" | "auth" | "rate_limit" | "uncertain" | "blocked";
+
+/** What kind of message came back on the thread. */
+export type ReplyKind = "" | "human" | "auto_reply" | "bounce" | "unsubscribe";
+
+/** Where a reply conversation has got to. Set by you; suggested by the classifier. */
+export const REPLY_STAGES = ["new", "interested", "needs_follow_up", "booked", "won", "not_interested"] as const;
+export type ReplyStage = (typeof REPLY_STAGES)[number];
+
+export const REPLY_STAGE_LABELS: Record<ReplyStage, string> = {
+  new: "New reply",
+  interested: "Interested",
+  needs_follow_up: "Needs follow-up",
+  booked: "Booked",
+  won: "Won",
+  not_interested: "Not interested",
+};
 
 export type OutreachEmail = {
   id: string;
@@ -68,6 +94,26 @@ export type OutreachEmail = {
   personalisationEvidence: string;
   /** Which campaign this email was written under. Empty outside a campaign. */
   campaignId: string;
+  // ── Added with the production send engine (0009). Optional so every older
+  //    constructor of this type keeps compiling; the store always fills them.
+  /** The RFC 822 Message-ID header — what a follow-up threads under. */
+  rfc822MessageId?: string;
+  /** Which AI Outreach run wrote it. */
+  runId?: string;
+  failureKind?: FailureKind;
+  /** Gmail's answer to the send, as stored. */
+  providerResponse?: string;
+  sendingStartedAt?: string;
+  /** One sentence: what this email was personalised from. */
+  personalisationNote?: string;
+  replyFrom?: string;
+  replySubject?: string;
+  replySnippet?: string;
+  replyKind?: ReplyKind;
+  replyStage?: ReplyStage | "";
+  replySuggestion?: ReplyStage | "";
+  bouncedAt?: string;
+  autoReplyAt?: string;
 };
 
 export const TEMPLATE_KINDS = [
@@ -101,6 +147,12 @@ export type OutreachSettings = {
   includeLow: boolean;
   /** "ai" or a template id. */
   defaultMode: string;
+  /** Where the end-to-end test sends. Empty means the connected Gmail account itself. */
+  testRecipient?: string;
+  /** Web searches allowed per day (each costs a search credit). */
+  searchDailyBudget?: number;
+  /** AI drafts allowed per day. */
+  aiDailyBudget?: number;
 };
 
 /** Deliberately cautious. Nothing here is a number you would regret overnight. */
@@ -115,6 +167,9 @@ export const DEFAULT_SETTINGS: OutreachSettings = {
   autoSend: false,
   includeLow: false,
   defaultMode: "ai",
+  testRecipient: "",
+  searchDailyBudget: 300,
+  aiDailyBudget: 150,
 };
 
 export type GmailStatus = "connected" | "needs_attention" | "disconnected";
@@ -125,6 +180,11 @@ export type GmailConnection = {
   status: GmailStatus;
   lastError: string;
   connectedAt: string;
+  /** When Gmail last accepted a message from this app. */
+  lastSendAt?: string;
+  /** The last health check, as stored (JSON), and when it ran. */
+  lastHealth?: string;
+  lastHealthAt?: string;
   /** False when the server has no OAuth client configured at all. */
   configured: boolean;
   /**

@@ -1,5 +1,6 @@
 import { DISCOVERY_SAFETY } from "./discovery-limits.ts";
 import { createServerFn } from "@tanstack/react-start";
+import { authMiddleware } from "@/lib/auth/middleware";
 import {
   classifyWebsiteUrl,
   computePriority,
@@ -76,13 +77,13 @@ async function inspectWebsite(url: string): Promise<{ status: WebsiteStatus | nu
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 4000);
   try {
-    const response = await fetch(href, {
+    // Listing URLs are outside data: only ever fetched on the public internet.
+    const { safeFetch } = await import("@/lib/net/safe-fetch.server");
+    const { response, finalUrl } = await safeFetch(href, {
       method: "GET",
-      redirect: "follow",
       signal: controller.signal,
       headers: { "User-Agent": "PeakSwiftLeads/1.0 (prospect research)" },
     });
-    const finalUrl = response.url || href;
     const classified = classifyWebsiteUrl(finalUrl);
     if (classified !== "Proper Website") return { status: classified, thin: false };
     const html = (await response.text()).slice(0, 40_000);
@@ -156,6 +157,9 @@ function websiteStatusForPlace(
 const WEBSITE_INSPECTION_PER_AREA = 30;
 
 export const researchProspects = createServerFn({ method: "POST" })
+  // Owner-only, like every other server function that reaches the outside
+  // world on the owner's behalf.
+  .middleware([authMiddleware])
   .validator((input: unknown) => {
     if (!input || typeof input !== "object") throw new Error("Enter a location and business type");
     const location = asString((input as { location?: unknown }).location).slice(0, 80);

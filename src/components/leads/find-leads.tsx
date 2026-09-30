@@ -11,6 +11,7 @@ import {
   type Lead,
   type RadiusMiles,
 } from "@/lib/leads";
+import { friendlyServerError } from "@/lib/server-errors";
 import { researchProspects, type Prospect } from "@/lib/research";
 import {
   CITY_SUGGESTIONS,
@@ -65,6 +66,7 @@ function chipsFor(kind: PlaceKind, nation: Nation): readonly string[] {
 
 function searchFailure(err: unknown): string {
   const message = err instanceof Error ? err.message : String(err ?? "");
+  if (/^unauthori[sz]ed$|not the owner/i.test(message.trim())) return friendlyServerError(err);
   if (/504|503|502|timeout|timed out|abort/i.test(message)) {
     return "That search took too long. Try a smaller radius, or fewer results, then search again.";
   }

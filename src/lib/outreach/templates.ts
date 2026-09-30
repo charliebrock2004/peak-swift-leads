@@ -10,6 +10,7 @@
  * is a poor way to start a conversation about paying you.
  */
 import type { OutreachLead, OutreachTemplate, TemplateKind } from "./types.ts";
+import type { BusinessProfile } from "./profile.ts";
 
 export const TEMPLATE_VARIABLES = [
   "business_name",
@@ -19,6 +20,11 @@ export const TEMPLATE_VARIABLES = [
   "website_reason",
   "sender_name",
   "sender_studio",
+  "sender_location",
+  "sender_services",
+  "cta",
+  "portfolio_url",
+  "opt_out",
 ] as const;
 export type TemplateVariable = (typeof TEMPLATE_VARIABLES)[number];
 
@@ -118,15 +124,39 @@ export function websiteReasonPhrase(lead: OutreachLead): string {
   return "there may be room to get more out of your online presence";
 }
 
-export function variablesFor(lead: OutreachLead): Record<TemplateVariable, string> {
+/** The studio details a template may use, from the profile or the old defaults. */
+type Sender = Pick<
+  BusinessProfile,
+  "senderName" | "businessName" | "location" | "services" | "cta" | "portfolioUrl" | "optOutLine" | "signature" | "website"
+>;
+
+const LEGACY_SENDER: Sender = {
+  senderName: SENDER_NAME,
+  businessName: SENDER_STUDIO,
+  location: "Perthshire",
+  services: "websites for small businesses",
+  cta: "Happy to mock something up so you can see it before deciding anything.",
+  portfolioUrl: "",
+  optOutLine: OPT_OUT_LINE,
+  signature: "",
+  website: SENDER_WEBSITE,
+};
+
+export function variablesFor(lead: OutreachLead, profile?: Sender): Record<TemplateVariable, string> {
+  const sender = profile ?? LEGACY_SENDER;
   return {
     business_name: lead.businessName.trim(),
     location: lead.town.trim(),
     category: lead.trade.trim().toLowerCase(),
     website_status: websiteStatusPhrase(lead),
     website_reason: websiteReasonPhrase(lead),
-    sender_name: SENDER_NAME,
-    sender_studio: SENDER_STUDIO,
+    sender_name: sender.senderName,
+    sender_studio: sender.businessName,
+    sender_location: sender.location || "your area",
+    sender_services: sender.services,
+    cta: sender.cta,
+    portfolio_url: sender.portfolioUrl,
+    opt_out: sender.optOutLine || OPT_OUT_LINE,
   };
 }
 
@@ -155,11 +185,11 @@ export const DEFAULT_TEMPLATES: OutreachTemplate[] = [
     subject: "A website for {{business_name}}?",
     body: `Hi,
 
-I'm {{sender_name}}, I build websites for small businesses around Perthshire.
+I'm {{sender_name}} — I build websites for small businesses around {{sender_location}}.
 
 I came across {{business_name}} in {{location}} and {{website_reason}}. If that's right, it means people searching for a {{category}} nearby probably aren't finding you.
 
-I could put together a simple site that shows what you do, your area and how to get in touch. Happy to mock something up so you can see it before deciding anything.
+I could put together a simple site that shows what you do, the areas you cover and how to get in touch. {{cta}}
 
 Would that be worth a quick chat?
 
@@ -173,7 +203,7 @@ ${OPT_OUT_LINE}`,
     subject: "Quick thought on the {{business_name}} website",
     body: `Hi,
 
-I'm {{sender_name}} — I build websites for small businesses around Perthshire.
+I'm {{sender_name}} — I build websites for small businesses around {{sender_location}}.
 
 I had a look at {{business_name}} in {{location}} and noticed {{website_reason}}. Nothing wrong with what you've got; I just think it could be working harder at bringing you {{category}} work.
 
@@ -251,11 +281,31 @@ export function templateForLead(lead: OutreachLead, templates: readonly Outreach
 
 export type ComposedEmail = { subject: string; body: string; generatedBy: string };
 
-/** Render one template against one lead, signature and opt-out included. */
-export function composeFromTemplate(lead: OutreachLead, template: OutreachTemplate): ComposedEmail {
-  const values = variablesFor(lead);
-  const body = renderTemplate(template.body, values).trim();
-  const signature = renderTemplate(template.signature || DEFAULT_SIGNATURE, values).trim();
+/** The sign-off a profile implies: its own block, or name + studio (+ website). */
+function signatureFor(sender: Sender): string {
+  if (sender.signature.trim()) return sender.signature.trim();
+  return [sender.senderName, sender.businessName, sender.website.replace(/^https?:\/\//, "")]
+    .filter((part) => part.trim())
+    .join("\n");
+}
+
+/**
+ * Render one template against one lead, signature and opt-out included.
+ *
+ * With a profile, the profile's sign-off replaces a template signature that is
+ * still the old built-in default, and the profile's opt-out sentence replaces
+ * the built-in one — so a stored template seeded before profiles existed still
+ * signs off as the studio you actually are. A signature you wrote into a
+ * template yourself is left alone.
+ */
+export function composeFromTemplate(lead: OutreachLead, template: OutreachTemplate, profile?: Sender): ComposedEmail {
+  const values = variablesFor(lead, profile);
+  let body = renderTemplate(template.body, values).trim();
+  if (profile?.optOutLine && profile.optOutLine !== OPT_OUT_LINE) body = body.split(OPT_OUT_LINE).join(profile.optOutLine);
+  const stored = template.signature.trim();
+  const signatureSource =
+    profile && (!stored || stored === DEFAULT_SIGNATURE || profile.signature.trim()) ? signatureFor(profile) : stored || DEFAULT_SIGNATURE;
+  const signature = renderTemplate(signatureSource, values).trim();
   return {
     subject: renderTemplate(template.subject, values).trim(),
     body: `${body}\n\n${signature}`,
