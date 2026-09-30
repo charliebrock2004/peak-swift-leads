@@ -18,7 +18,8 @@ import {
   type WebsiteQuality,
   type WebsiteStatus,
 } from "./leads.ts";
-import { looksLikeEmail, needsManualReview, type Eligibility } from "./outreach/eligibility.ts";
+import { emailContactability } from "./contactability/email.ts";
+import { legalFormOf, looksLikeEmail, needsManualReview, type Eligibility } from "./outreach/eligibility.ts";
 import type { OutreachLead } from "./outreach/types.ts";
 
 export const DECISION_LEVELS = ["HOT", "WARM", "CALL", "LOW", "SKIP"] as const;
@@ -86,6 +87,18 @@ function hasSafeEmail(lead: Pick<Lead, "email" | "emailConfidence" | "emailSourc
   return true;
 }
 
+/**
+ * Whether the published address may be used at all, by the legal-form rules:
+ * "ok", "hold" (not confirmed as a company) or "blocked" (a sole trader or a
+ * personal mailbox — an individual subscriber, so a call instead).
+ */
+function emailRoute(lead: Lead | OutreachLead): "ok" | "hold" | "blocked" {
+  if (!hasSafeEmail(lead)) return "blocked";
+  const legal = legalFormOf(lead as OutreachLead);
+  const status = emailContactability({ email: lead.email, website: lead.website, legal }).status;
+  return status === "ELIGIBLE" ? "ok" : status === "HOLD" ? "hold" : "blocked";
+}
+
 function hasPhone(lead: Pick<Lead, "phone">): boolean {
   return (lead.phone ?? "").replace(/\D/g, "").length >= 10;
 }
@@ -130,7 +143,8 @@ export function decideProspect(
   const reasons: string[] = [];
   const evidence: string[] = [];
   const phone = hasPhone(lead);
-  const email = hasSafeEmail(lead);
+  const route = emailRoute(lead);
+  const email = route !== "blocked";
   const missingWebsite =
     status === "No Website Found" ||
     status === "Social Only" ||
@@ -178,6 +192,8 @@ export function decideProspect(
 
   if (email) {
     evidence.push(`Public email ${lead.email} (${lead.emailConfidence}, ${lead.emailSource || "found on site"}).`);
+  } else if (hasSafeEmail(lead)) {
+    reasons.push("Sole trader or personal mailbox — email needs their consent, so call instead.");
   } else {
     reasons.push("No safe public email found — never guessed.");
   }

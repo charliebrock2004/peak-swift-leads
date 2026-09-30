@@ -10,9 +10,16 @@
  * Places adapter behind the same DiscoveredPlace shape.
  */
 
+import { compareBusinesses, type BusinessRecord } from "./entity/resolve.ts";
 import { normalizeName } from "./leads.ts";
 import { chSearchTowns } from "./scotland-places.ts";
-import { companiesHouseKey, searchCompaniesHouse, type ChClientOptions, type CompanyHit } from "./companies-house.ts";
+import {
+  companiesHouseKey,
+  extractUkPostcode,
+  searchCompaniesHouse,
+  type ChClientOptions,
+  type CompanyHit,
+} from "./companies-house.ts";
 
 export type DiscoveredPlace = {
   businessName: string;
@@ -31,6 +38,27 @@ export type DiscoveredPlace = {
   businessStatus: string;
   /** True when we inspected an OSM listing for contact tags. */
   osmChecked: boolean;
+  /**
+   * Every source record merged into this place ("osm:node:1", "ch:SC612222"),
+   * so provenance survives the merge. `placeId` is the first of them.
+   */
+  sourceIds?: string[];
+};
+
+/**
+ * One record exactly as a source returned it, before merging — kept so every
+ * fact about a business can say where it came from (`source_records`).
+ */
+export type SourceRecordDraft = {
+  /** Same shape as `placeId`: "ch:SC612222", "osm:node:123". */
+  id: string;
+  source: "companies_house" | "openstreetmap";
+  sourceId: string;
+  name: string;
+  url: string;
+  fields: Record<string, unknown>;
+  /** The place this record ended up merged into (its `placeId`). */
+  primaryId: string;
 };
 
 /**
@@ -75,6 +103,8 @@ export type DiscoverResult =
       warnings: string[];
       locationLabel: string;
       funnel?: DiscoveryFunnel;
+      /** The raw records behind `places`, for provenance. */
+      records?: SourceRecordDraft[];
     }
   | { ok: false; error: string; warnings: string[] };
 
@@ -573,6 +603,7 @@ function toPlace(
     placeId: placeId.slice(0, 80),
     businessStatus: businessStatus.slice(0, 40),
     osmChecked,
+    sourceIds: placeId ? [placeId.slice(0, 80)] : [],
   };
 }
 
@@ -937,6 +968,7 @@ function fillMissing(target: DiscoveredPlace, extra: DiscoveredPlace): Discovere
     businessStatus: target.businessStatus || extra.businessStatus,
     osmChecked: target.osmChecked || extra.osmChecked,
     notes: [target.notes, extra.notes].filter(Boolean).join(" ").slice(0, 400),
+    sourceIds: [...new Set([...(target.sourceIds ?? [target.placeId]), ...(extra.sourceIds ?? [extra.placeId])].filter(Boolean))],
     source:
       extra.osmChecked && !target.osmChecked
         ? extra.source
@@ -946,25 +978,42 @@ function fillMissing(target: DiscoveredPlace, extra: DiscoveredPlace): Discovere
   };
 }
 
+/** A place as the entity resolver sees it. */
+function recordOf(place: DiscoveredPlace, index: number): BusinessRecord {
+  const ids = place.sourceIds ?? (place.placeId ? [place.placeId] : []);
+  const chId = ids.find((id) => id.startsWith("ch:"));
+  return {
+    id: place.placeId || `place-${index}`,
+    name: place.businessName,
+    phone: place.phone,
+    email: place.email,
+    website: place.website,
+    postcode: extractUkPostcode(place.address),
+    town: place.town,
+    companyNumber: chId ? chId.slice(3) : "",
+    sourceIds: ids,
+  };
+}
+
+/**
+ * Merge records that describe the same business.
+ *
+ * Only a `same` verdict from the entity resolver merges: a shared identifier
+ * nothing contradicts, or the same name at the same premises or in the same
+ * town. A similar name alone never does — merging a sole trader with a
+ * like-named company would hand the sole trader the company's legal form.
+ */
 export function mergePlaces(existing: DiscoveredPlace[], incoming: DiscoveredPlace[]): DiscoveredPlace[] {
   const next = [...existing];
 
   for (const item of incoming) {
-    const name = item.businessName.trim().toLowerCase();
-    const foldedName = normalizeName(item.businessName);
-    const phone = item.phone.replace(/\D/g, "").slice(-10);
     const placeId = item.placeId.trim();
+    const candidate = recordOf(item, -1);
 
-    const matchIndex = next.findIndex((row) => {
+    const matchIndex = next.findIndex((row, index) => {
       const rowId = row.placeId.trim();
       if (placeId && rowId && placeId === rowId) return true;
-      if (phone.length >= 10) {
-        const rowPhone = row.phone.replace(/\D/g, "").slice(-10);
-        if (rowPhone.length >= 10 && rowPhone === phone) return true;
-      }
-      if (name && row.businessName.trim().toLowerCase() === name) return true;
-      const rowFolded = normalizeName(row.businessName);
-      return foldedName.length >= 4 && rowFolded === foldedName;
+      return compareBusinesses(recordOf(row, index), candidate).verdict === "same";
     });
 
     if (matchIndex >= 0) {
@@ -1152,6 +1201,7 @@ export async function discoverBusinesses(options: {
 
   let places = mergePlaces(nominatim.places, photon.places);
   places = mergePlaces(places, companyPlaces);
+  let overpassPlaces: DiscoveredPlace[] = [];
 
   if (
     places.length === 0 &&
@@ -1160,6 +1210,7 @@ export async function discoverBusinesses(options: {
   ) {
     const extra = await searchOverpass(trade, profile, center, radiusMiles, center.label);
     if (extra.error) sourceErrors.push(`Overpass: ${extra.error}`);
+    overpassPlaces = extra.places;
     places = mergePlaces(places, extra.places);
   }
 
@@ -1221,5 +1272,67 @@ export async function discoverBusinesses(options: {
     places: kept,
     warnings,
     locationLabel: center.label,
+    records: sourceRecordsFor(kept, [...nominatim.places, ...photon.places, ...overpassPlaces], companies.hits),
   };
+}
+
+/**
+ * The raw records behind the places kept, each tagged with the place it was
+ * merged into. Companies House records keep their register fields; map
+ * records keep what the map said.
+ */
+export function sourceRecordsFor(kept: DiscoveredPlace[], mapped: DiscoveredPlace[], companies: CompanyHit[]): SourceRecordDraft[] {
+  const primaryOf = new Map<string, string>();
+  for (const place of kept) {
+    for (const id of place.sourceIds ?? [place.placeId]) if (id && place.placeId) primaryOf.set(id, place.placeId);
+  }
+  const records = new Map<string, SourceRecordDraft>();
+  for (const hit of companies) {
+    const id = `ch:${hit.companyNumber}`;
+    const primaryId = primaryOf.get(id);
+    if (!hit.companyNumber || !primaryId) continue;
+    records.set(id, {
+      id,
+      source: "companies_house",
+      sourceId: hit.companyNumber,
+      name: hit.legalName,
+      url: `https://find-and-update.company-information.service.gov.uk/company/${encodeURIComponent(hit.companyNumber)}`,
+      fields: {
+        companyNumber: hit.companyNumber,
+        legalName: hit.legalName,
+        companyType: hit.companyType,
+        companyStatus: hit.companyStatus,
+        sicCodes: hit.sicCodes,
+        incorporatedOn: hit.incorporatedOn,
+        registeredAddress: hit.address,
+        postcode: hit.postcode,
+      },
+      primaryId,
+    });
+  }
+  for (const place of mapped) {
+    const id = place.placeId;
+    const primaryId = id ? primaryOf.get(id) : undefined;
+    if (!id || !primaryId || records.has(id) || !id.startsWith("osm:")) continue;
+    const [, type = "node", osmId = ""] = id.split(":");
+    records.set(id, {
+      id,
+      source: "openstreetmap",
+      sourceId: `${type}/${osmId}`,
+      name: place.businessName,
+      url: `https://www.openstreetmap.org/${type}/${osmId}`,
+      fields: {
+        name: place.businessName,
+        address: place.address,
+        phone: place.phone,
+        email: place.email,
+        website: place.website,
+        lat: place.lat,
+        lng: place.lng,
+        via: place.source,
+      },
+      primaryId,
+    });
+  }
+  return [...records.values()];
 }

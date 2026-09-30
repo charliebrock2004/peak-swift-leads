@@ -98,7 +98,8 @@ describe("upgrading a live database to 0009", () => {
     await seedLegacy();
     for (const table of TABLES) counts[table] = await count(table);
     snapshot = (await pg.query<Record<string, unknown>>(`select id, status, recipient, gmail_message_id, sent_at, error from outreach_emails where user_id = $1 order by id`, [USER])).rows;
-    await apply([NEW]);
+    // 0009, then everything after it: the loaders below are today's code.
+    await apply(files.filter((name) => name >= NEW));
     sql = sqlFrom(pg);
   });
 

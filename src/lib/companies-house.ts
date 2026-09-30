@@ -259,9 +259,9 @@ function hitFrom(fields: {
   created: unknown;
   address: ChAddress | undefined;
   snippet?: string;
-}): CompanyHit | null {
+}, includeInactive = false): CompanyHit | null {
   if (fields.name.length < 3 || !fields.number) return null;
-  if (!isActiveCompany(fields.status, fields.type)) return null;
+  if (!includeInactive && !isActiveCompany(fields.status, fields.type)) return null;
   const { postcode, town, address } = addressParts(fields.address, fields.snippet ?? "");
   return {
     businessName: displayCompanyName(fields.name),
@@ -280,8 +280,12 @@ function hitFrom(fields: {
   };
 }
 
-/** `GET /search/companies` — the name search. */
-export function parseCompaniesHouseJson(payload: unknown): CompanyHit[] {
+/**
+ * `GET /search/companies` — the name search. Discovery wants active companies
+ * only; a lookup for one business keeps dissolved ones too, because "its
+ * company was dissolved" is exactly what the legal-form rules need to know.
+ */
+export function parseCompaniesHouseJson(payload: unknown, includeInactive = false): CompanyHit[] {
   if (!payload || typeof payload !== "object") return [];
   const items = (payload as { items?: unknown[] }).items;
   if (!Array.isArray(items)) return [];
@@ -298,7 +302,7 @@ export function parseCompaniesHouseJson(payload: unknown): CompanyHit[] {
       created: item.date_of_creation,
       address: item.address as ChAddress | undefined,
       snippet: asText(item.address_snippet),
-    });
+    }, includeInactive);
     if (hit) hits.push(hit);
   }
   return hits;
@@ -540,10 +544,14 @@ export async function getCompanyOfficers(number: string, options: ChClientOption
 }
 
 /** Name search at Companies House (for matching a business found elsewhere). */
-export async function searchCompanyByName(name: string, options: ChClientOptions = {}): Promise<{ hits: CompanyHit[]; error?: string }> {
-  const answer = await chGet("/search/companies", { q: name, items_per_page: "10" }, options);
-  if (!answer.ok) return { hits: [], error: answer.error };
-  return { hits: parseCompaniesHouseJson(answer.json) };
+export async function searchCompanyByName(
+  name: string,
+  options: ChClientOptions = {},
+  lookup: { includeInactive?: boolean } = {},
+): Promise<{ hits: CompanyHit[]; error?: string; kind?: string }> {
+  const answer = await chGet("/search/companies", { q: name, items_per_page: "20" }, options);
+  if (!answer.ok) return { hits: [], error: answer.error, kind: answer.kind };
+  return { hits: parseCompaniesHouseJson(answer.json, lookup.includeInactive ?? false) };
 }
 
 async function geocodePostcodes(postcodes: string[], fetchImpl: typeof fetch = fetch): Promise<Map<string, { lat: number; lng: number }>> {

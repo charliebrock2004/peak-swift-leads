@@ -21,7 +21,7 @@
  */
 import { createServerFn } from "@tanstack/react-start";
 import { authMiddleware } from "@/lib/auth/middleware";
-import { newLeadId, type Lead } from "@/lib/leads";
+import { newLeadId } from "@/lib/leads";
 import { composeEmail, evidenceFor, parseAiDraft, type AiDraft } from "./compose.ts";
 import { evidenceSummary } from "./evidence.ts";
 import { decideApproval } from "./approval.ts";
@@ -47,6 +47,7 @@ import {
   DEFAULT_SETTINGS,
   type EmailKind,
   type GmailConnection,
+  type LeadWithFacts,
   type OutreachEmail,
   type OutreachSettings,
   type OutreachTemplate,
@@ -95,6 +96,7 @@ function contextFrom(
     suppressed,
     alreadyContacted,
     contactedAddresses,
+    rules: settings.contactRules,
   };
 }
 
@@ -279,7 +281,7 @@ export type OutreachState = {
   templates: OutreachTemplate[];
   emails: OutreachEmail[];
   suppression: SuppressionEntry[];
-  leads: Lead[];
+  leads: LeadWithFacts[];
   allowance: { sent: number; limit: number; remaining: number; batch: number; atLimit: boolean };
   aiAvailable: boolean;
   database: "neon" | "pglite" | "none";

@@ -24,8 +24,14 @@ describe("where each prospect ends up", () => {
     assert.equal(classifyRunLead(lead({ email: "stop@x.co.uk", emailConfidence: "HIGH" }), context), "optedOut");
     assert.equal(classifyRunLead(lead({ callResult: "Booked", email: "hi@tay.co.uk", emailConfidence: "HIGH" }), context), "closed");
     assert.equal(classifyRunLead(lead({ websiteStatus: "Proper Website", website: "tay.co.uk", websiteQuality: "good" }), context), "goodWebsite");
+    // A personal mailbox is an individual subscriber: ring them instead.
     assert.equal(
       classifyRunLead(lead({ email: "tay.joinery@gmail.com", emailConfidence: "HIGH", emailSource: "Contact page" }), context),
+      "call",
+    );
+    // Not confirmed as a company: held until someone confirms it.
+    assert.equal(
+      classifyRunLead(lead({ businessName: "Tay Joinery", email: "hi@tay.co.uk", emailConfidence: "HIGH", emailSource: "Contact page" }), context),
       "manualReview",
     );
     assert.equal(classifyRunLead(lead({ lastEmailedAt: "2026-09-01T00:00:00.000Z", email: "hi@tay.co.uk", emailConfidence: "HIGH" }), context), "alreadyInTouch");

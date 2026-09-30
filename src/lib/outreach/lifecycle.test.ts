@@ -261,6 +261,7 @@ describe("the lifecycle agrees with the real eligibility gate", () => {
 
   function sendable(partial: Partial<Lead> = {}) {
     return lead({
+      businessName: "Test Joinery Ltd",
       email: "hello@testjoinery.co.uk",
       emailConfidence: "HIGH",
       emailSource: "Contact page",

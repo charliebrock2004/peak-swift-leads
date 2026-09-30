@@ -6,7 +6,6 @@ import {
   describeBottleneck,
   isCallLead,
   matchesProspectFilter,
-  needsAiReview,
   toProspectRecord,
   websiteGrade,
 } from "./decision.ts";
@@ -105,24 +104,31 @@ describe("decideProspect", () => {
     assert.equal(decideProspect(lead({ callResult: "Won" })).level, "SKIP");
   });
 
-  it("holds an uncertain sole-trader-shaped lead for review rather than sending", () => {
-    const decision = decideProspect(
-      lead({
-        businessName: "J Smith Joinery",
-        email: "john@gmail.com",
-        emailConfidence: "MEDIUM",
-        emailSource: "Business website (other mailbox)",
-        websiteStatus: "Basic Website",
-      }),
-    );
-    assert.equal(decision.reviewRequired, true);
-    assert.equal(needsAiReview(lead({
+  it("routes a sole trader's personal mailbox to a call, never an email", () => {
+    const soleTrader = lead({
       businessName: "J Smith Joinery",
       email: "john@gmail.com",
       emailConfidence: "MEDIUM",
       emailSource: "Business website (other mailbox)",
       websiteStatus: "Basic Website",
-    })), true);
+    });
+    const decision = decideProspect(soleTrader);
+    assert.equal(decision.level, "CALL");
+    assert.notEqual(decision.nextAction, "EMAIL");
+    assert.ok(decision.reasons.some((reason) => /consent, so call instead/.test(reason)));
+  });
+
+  it("holds a business not confirmed as a company for review rather than emailing", () => {
+    const decision = decideProspect(
+      lead({
+        businessName: "Strathearn Joinery",
+        email: "hello@strathearnjoinery.co.uk",
+        emailConfidence: "HIGH",
+        emailSource: "Business contact page",
+      }),
+    );
+    assert.equal(decision.reviewRequired, true);
+    assert.equal(decision.nextAction, "REVIEW");
   });
 });
 

@@ -5,6 +5,7 @@
  * functions can import it, and so the rules modules stay unit-testable without a
  * database or a network.
  */
+import { DEFAULT_CONTACT_RULES, type ContactRules } from "../contactability/legal-form.ts";
 import type { Lead } from "../leads.ts";
 import type { OAuthSetup } from "./oauth-setup.ts";
 
@@ -154,6 +155,8 @@ export type OutreachSettings = {
   searchDailyBudget?: number;
   /** AI drafts allowed per day. */
   aiDailyBudget?: number;
+  /** The configurable legal-form rules (see contactability/legal-form.ts). */
+  contactRules?: ContactRules;
 };
 
 /** Deliberately cautious. Nothing here is a number you would regret overnight. */
@@ -171,6 +174,7 @@ export const DEFAULT_SETTINGS: OutreachSettings = {
   testRecipient: "",
   searchDailyBudget: 300,
   aiDailyBudget: 150,
+  contactRules: DEFAULT_CONTACT_RULES,
 };
 
 export type GmailStatus = "connected" | "needs_attention" | "disconnected";
@@ -251,4 +255,38 @@ export type OutreachLead = Pick<
   | "foundAt"
   | "source"
   | "updatedAt"
->;
+> & {
+  /** Stable source id ("ch:SC612222", "osm:node:1"). Optional: older callers omit it. */
+  placeId?: string;
+  /** Server-held facts about the business's registered identity. Absent on browser-only rows. */
+  facts?: BusinessFacts;
+};
+
+/**
+ * What the server knows about a business's registered identity — written only
+ * by Companies House checks and by a person's override (migration 0010). The
+ * browser's lead sync never writes these.
+ */
+export type BusinessFacts = {
+  companyNumber: string;
+  companyType: string;
+  companyStatus: string;
+  /** With no company number, a date here means "searched; no matching company". */
+  companyCheckedAt: string;
+  legalFormOverride: "" | "CORPORATE" | "INDIVIDUAL" | "UNKNOWN" | "REVIEW_REQUIRED";
+  legalFormNote: string;
+  legalFormSetAt: string;
+};
+
+/** A lead as the server reads it: the synced fields plus the server-held facts. */
+export type LeadWithFacts = Lead & { facts: BusinessFacts };
+
+export const EMPTY_FACTS: BusinessFacts = {
+  companyNumber: "",
+  companyType: "",
+  companyStatus: "",
+  companyCheckedAt: "",
+  legalFormOverride: "",
+  legalFormNote: "",
+  legalFormSetAt: "",
+};

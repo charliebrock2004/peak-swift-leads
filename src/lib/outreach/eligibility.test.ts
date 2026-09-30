@@ -4,12 +4,13 @@ import { createLead, type Lead } from "../leads.ts";
 import {
   checkEligibility,
   emptyContext,
+  isWorthRinging,
   looksLikeEmail,
   matchesFilter,
   needsManualReview,
   rankEligible,
 } from "./eligibility.ts";
-import type { OutreachLead } from "./types.ts";
+import { EMPTY_FACTS, type OutreachLead } from "./types.ts";
 
 /** A lead that passes every rule, so each test can break exactly one thing. */
 function sendable(partial: Partial<Lead> = {}): OutreachLead {
@@ -133,16 +134,34 @@ describe("who may be emailed", () => {
   });
 });
 
-describe("manual review", () => {
-  it("holds a personal mailbox for review", () => {
-    assert.ok(needsManualReview(sendable({ email: "j.smith@gmail.com" })));
+describe("who the subscriber is (legal form)", () => {
+  it("refuses a personal mailbox — the holder is an individual — and offers a call instead", () => {
     const result = checkEligibility(sendable({ email: "j.smith@gmail.com" }));
     assert.equal(result.eligible, false);
-    assert.ok(!result.eligible && result.manualReview);
+    assert.ok(!result.eligible && result.reasons.includes("personal-mailbox"));
+    assert.equal(result.manualReview, false);
+    assert.ok(isWorthRinging(sendable({ email: "j.smith@gmail.com" }), result));
+  });
+
+  it("holds a business not confirmed as a company: UNKNOWN is never email-eligible", () => {
+    const lead = sendable({ businessName: "Strathearn Joinery" });
+    assert.ok(needsManualReview(lead));
+    const result = checkEligibility(lead);
+    assert.equal(result.eligible, false);
+    assert.ok(!result.eligible && result.reasons.includes("manual-review") && result.manualReview);
+    assert.equal(result.legal.form, "UNKNOWN");
+    assert.equal(isWorthRinging(lead, result), false, "a hold stays under its own filter");
   });
 
   it("holds what looks like a sole trader trading under their own name", () => {
     assert.ok(needsManualReview(sendable({ businessName: "J Smith Joinery" })));
+  });
+
+  it("refuses a sole trader confirmed by a Companies House search, and routes them to a call", () => {
+    const lead = { ...sendable({ businessName: "J Smith Joinery" }), facts: { ...EMPTY_FACTS, companyCheckedAt: "2026-09-29T10:00:00.000Z" } };
+    const result = checkEligibility(lead);
+    assert.ok(!result.eligible && result.reasons.includes("individual-subscriber"));
+    assert.ok(isWorthRinging(lead, result));
   });
 
   it("does not hold an incorporated company", () => {
@@ -150,9 +169,42 @@ describe("manual review", () => {
     assert.equal(needsManualReview(sendable({ businessName: "Highland Builders Limited" })), false);
   });
 
-  it("never lets a held lead through as eligible", () => {
-    const result = checkEligibility(sendable({ email: "j.smith@gmail.com" }));
-    assert.equal(result.eligible, false, "manual review is a hold, not a green light");
+  it("releases a held business once Companies House confirms it, or a person does", () => {
+    const base = sendable({ businessName: "Strathearn Joinery" });
+    const confirmed = { ...base, facts: { ...EMPTY_FACTS, companyNumber: "SC612222", companyType: "ltd", companyStatus: "active", companyCheckedAt: new Date().toISOString() } };
+    assert.equal(checkEligibility(confirmed).eligible, true);
+    const byHand = { ...base, facts: { ...EMPTY_FACTS, legalFormOverride: "CORPORATE" as const, legalFormNote: "Checked the register" } };
+    assert.equal(checkEligibility(byHand).eligible, true);
+    assert.equal(checkEligibility(byHand).legal.basis, "override");
+  });
+
+  it("holds a dissolved company, whatever its name says", () => {
+    const lead = { ...sendable(), facts: { ...EMPTY_FACTS, companyNumber: "SC1", companyType: "ltd", companyStatus: "dissolved", companyCheckedAt: new Date().toISOString() } };
+    const result = checkEligibility(lead);
+    assert.ok(!result.eligible && result.manualReview);
+    assert.equal(result.legal.form, "REVIEW_REQUIRED");
+  });
+
+  it("reads a Companies House discovery row's number from its place id", () => {
+    const lead = { ...sendable({ businessName: "Tayside Roofing Services", placeId: "ch:SC555555", foundAt: new Date().toISOString(), notes: "Companies House SC555555 (ltd)" }) };
+    const result = checkEligibility(lead);
+    assert.equal(result.eligible, true);
+    assert.equal(result.legal.basis, "companies_house");
+  });
+
+  it("the stricter rules can switch off trusting 'Ltd' in a name", () => {
+    const strict = emptyContext({ rules: { trustCompanySuffix: false, companyStatusMaxAgeDays: 180 } });
+    const result = checkEligibility(sendable(), strict);
+    assert.ok(!result.eligible && result.manualReview);
+  });
+
+  it("refuses an address a verifier says does not exist; lets a catch-all through with a note", () => {
+    const lead = sendable();
+    const invalid = checkEligibility(lead, emptyContext({ verifications: new Map([["hello@strathearnjoinery.co.uk", "invalid"]]) }));
+    assert.ok(!invalid.eligible && invalid.reasons.includes("undeliverable"));
+    const catchAll = checkEligibility(lead, emptyContext({ verifications: new Map([["hello@strathearnjoinery.co.uk", "catch_all"]]) }));
+    assert.equal(catchAll.eligible, true);
+    assert.ok(catchAll.contact.notes.some((note) => /Catch-all/.test(note)));
   });
 });
 
@@ -189,7 +241,7 @@ describe("filters", () => {
   });
 
   it("finds leads held for manual review", () => {
-    const held = sendable({ email: "j.smith@gmail.com" });
+    const held = sendable({ businessName: "Strathearn Joinery" });
     assert.ok(matchesFilter(held, checkEligibility(held), "manual-review"));
   });
 });

@@ -6,11 +6,12 @@
  * always the verified id from `authMiddleware` — never anything a client sent.
  */
 import type { Sql } from "@/lib/db";
-import type { Lead } from "@/lib/leads";
 import { leadFromRow, type LeadRow } from "../leads-row.ts";
 import { openSecret, sealSecret } from "../crypto/secrets.server.ts";
 import {
   DEFAULT_SETTINGS,
+  type BusinessFacts,
+  type LeadWithFacts,
   type EmailKind,
   type EmailStatus,
   type GmailConnection,
@@ -220,7 +221,7 @@ export async function loadSettings(sql: Sql, userId: string): Promise<OutreachSe
   const rows = await sql.query<Record<string, unknown>>(
     `select daily_limit, batch_size, delay_seconds, follow_ups_on, follow_up_1_days,
             follow_up_2_days, max_follow_ups, auto_send, include_low, default_mode,
-            test_recipient, search_daily_budget, ai_daily_budget
+            test_recipient, search_daily_budget, ai_daily_budget, contact_rules
        from outreach_settings where user_id = $1`,
     [userId],
   );
@@ -243,6 +244,7 @@ export async function loadSettings(sql: Sql, userId: string): Promise<OutreachSe
     testRecipient: text(row.test_recipient),
     searchDailyBudget: Number(row.search_daily_budget ?? DEFAULT_SETTINGS.searchDailyBudget),
     aiDailyBudget: Number(row.ai_daily_budget ?? DEFAULT_SETTINGS.aiDailyBudget),
+    contactRules: parseJson(row.contact_rules) as OutreachSettings["contactRules"],
   }, DEFAULT_SETTINGS);
 }
 
@@ -251,8 +253,8 @@ export async function saveSettings(sql: Sql, userId: string, settings: OutreachS
     `insert into outreach_settings
        (user_id, daily_limit, batch_size, delay_seconds, follow_ups_on, follow_up_1_days,
         follow_up_2_days, max_follow_ups, auto_send, include_low, default_mode,
-        test_recipient, search_daily_budget, ai_daily_budget, updated_at)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14, now())
+        test_recipient, search_daily_budget, ai_daily_budget, contact_rules, updated_at)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb, now())
      on conflict (user_id) do update set
        daily_limit         = excluded.daily_limit,
        batch_size          = excluded.batch_size,
@@ -267,6 +269,7 @@ export async function saveSettings(sql: Sql, userId: string, settings: OutreachS
        test_recipient      = excluded.test_recipient,
        search_daily_budget = excluded.search_daily_budget,
        ai_daily_budget     = excluded.ai_daily_budget,
+       contact_rules       = excluded.contact_rules,
        updated_at          = now()`,
     [
       userId,
@@ -283,8 +286,19 @@ export async function saveSettings(sql: Sql, userId: string, settings: OutreachS
       settings.testRecipient ?? "",
       settings.searchDailyBudget ?? DEFAULT_SETTINGS.searchDailyBudget,
       settings.aiDailyBudget ?? DEFAULT_SETTINGS.aiDailyBudget,
+      JSON.stringify(settings.contactRules ?? DEFAULT_SETTINGS.contactRules),
     ],
   );
+}
+
+/** A jsonb column: the pg driver parses it, PGLite may hand back text. */
+function parseJson(value: unknown): unknown {
+  if (typeof value !== "string") return value ?? null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
 }
 
 // ── Templates ────────────────────────────────────────────────────────────────
@@ -851,7 +865,37 @@ const LEAD_COLUMNS = `id, business_name, trade, town, phone, email, address, rat
   called, call_result, follow_up_date, notes,
   website_quality, website_score, website_analysis, website_checked_at,
   email_source, email_confidence, email_found_at, opportunity_score,
-  outreach_status, unsubscribed, last_emailed_at, deleted_at, updated_at`;
+  outreach_status, unsubscribed, last_emailed_at, deleted_at, updated_at,
+  company_number, company_type, company_status, company_checked_at,
+  legal_form_override, legal_form_note, legal_form_set_at`;
+
+type LeadWithFactsRow = LeadRow & {
+  company_number?: string | null;
+  company_type?: string | null;
+  company_status?: string | null;
+  company_checked_at?: string | null;
+  legal_form_override?: string | null;
+  legal_form_note?: string | null;
+  legal_form_set_at?: string | null;
+};
+
+/** The server-owned identity facts (0010) beside the synced lead fields. */
+export function factsFromRow(row: LeadWithFactsRow): BusinessFacts {
+  const override = text(row.legal_form_override);
+  return {
+    companyNumber: text(row.company_number),
+    companyType: text(row.company_type),
+    companyStatus: text(row.company_status),
+    companyCheckedAt: text(row.company_checked_at),
+    legalFormOverride: (["CORPORATE", "INDIVIDUAL", "UNKNOWN", "REVIEW_REQUIRED"].includes(override) ? override : "") as BusinessFacts["legalFormOverride"],
+    legalFormNote: text(row.legal_form_note),
+    legalFormSetAt: text(row.legal_form_set_at),
+  };
+}
+
+function leadWithFacts(row: LeadWithFactsRow): LeadWithFacts {
+  return { ...leadFromRow(row), facts: factsFromRow(row) };
+}
 
 /**
  * The lead sheet, read server-side.
@@ -860,22 +904,22 @@ const LEAD_COLUMNS = `id, business_name, trade, town, phone, email, address, rat
  * a client copy can be stale or edited; who may be emailed has to be decided
  * from the row the server holds.
  */
-export async function loadLeads(sql: Sql, userId: string, limit = 20000): Promise<Lead[]> {
-  const rows = await sql.query<LeadRow>(
+export async function loadLeads(sql: Sql, userId: string, limit = 20000): Promise<LeadWithFacts[]> {
+  const rows = await sql.query<LeadWithFactsRow>(
     `select ${LEAD_COLUMNS} from leads
       where user_id = $1 and deleted_at is null
       order by updated_at desc limit $2`,
     [userId, limit],
   );
-  return rows.map(leadFromRow);
+  return rows.map(leadWithFacts);
 }
 
-export async function loadLead(sql: Sql, userId: string, id: string): Promise<Lead | null> {
-  const rows = await sql.query<LeadRow>(
+export async function loadLead(sql: Sql, userId: string, id: string): Promise<LeadWithFacts | null> {
+  const rows = await sql.query<LeadWithFactsRow>(
     `select ${LEAD_COLUMNS} from leads where user_id = $1 and id = $2 and deleted_at is null`,
     [userId, id],
   );
-  return rows[0] ? leadFromRow(rows[0]) : null;
+  return rows[0] ? leadWithFacts(rows[0]) : null;
 }
 
 /**

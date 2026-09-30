@@ -131,7 +131,7 @@ export type RunOutcome =
 export const OUTCOME_LABELS: Record<RunOutcome, string> = {
   eligible: "Ready to email",
   call: "Call list — good prospect, no public email",
-  manualReview: "Held for you — sole trader or personal mailbox",
+  manualReview: "Held for you — not confirmed as a company",
   goodWebsite: "Already has a good website",
   lowOpportunity: "Low opportunity",
   alreadyInTouch: "Already emailed or replied",
@@ -160,7 +160,13 @@ export function classifyRunLead(lead: OutreachLead, context: EligibilityContext)
   if (reasons.has("low-opportunity")) return "lowOpportunity";
   if (verdict.manualReview) return "manualReview";
   if (
-    (reasons.has("no-email") || reasons.has("low-confidence") || reasons.has("guessed-email") || reasons.has("invalid-email")) &&
+    (reasons.has("no-email") ||
+      reasons.has("low-confidence") ||
+      reasons.has("guessed-email") ||
+      reasons.has("invalid-email") ||
+      reasons.has("individual-subscriber") ||
+      reasons.has("personal-mailbox") ||
+      reasons.has("undeliverable")) &&
     !lead.phone.trim()
   ) {
     return "noWayToContact";

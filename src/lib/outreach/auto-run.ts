@@ -279,7 +279,7 @@ export function isRunning(phase: AutoPhase): boolean {
 export function autoContext(
   emails: readonly OutreachEmail[],
   suppressed: readonly string[],
-  settings: Pick<OutreachSettings, "includeLow">,
+  settings: Pick<OutreachSettings, "includeLow" | "contactRules">,
 ): EligibilityContext {
   const live = new Set(["approved", "queued", "sending", "sent", "replied"]);
   const alreadyContacted = new Set<string>();
@@ -294,6 +294,7 @@ export function autoContext(
     suppressed: new Set(suppressed.map((entry) => entry.trim().toLowerCase())),
     alreadyContacted,
     contactedAddresses,
+    rules: settings.contactRules,
   };
 }
 

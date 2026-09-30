@@ -136,7 +136,7 @@ export function newMessageId(id: string, senderEmail: string): string {
  * whole history: the suppression list, and any OTHER live email of the same
  * kind to this lead or this address.
  */
-async function contextFor(sql: Sql, userId: string, email: OutreachEmail, includeLow: boolean): Promise<{
+async function contextFor(sql: Sql, userId: string, email: OutreachEmail, settings: Pick<OutreachSettings, "includeLow" | "contactRules">): Promise<{
   context: EligibilityContext;
   suppressed: Set<string>;
 }> {
@@ -151,10 +151,11 @@ async function contextFor(sql: Sql, userId: string, email: OutreachEmail, includ
   return {
     suppressed,
     context: {
-      settings: { includeLow },
+      settings: { includeLow: settings.includeLow },
       suppressed,
       alreadyContacted: new Set(rows.map((row) => row.lead_id)),
       contactedAddresses: new Set(rows.map((row) => row.recipient.toLowerCase())),
+      rules: settings.contactRules,
     },
   };
 }
@@ -282,7 +283,7 @@ export async function sendOne(deps: EngineDeps, emailId: string, options: SendOp
     return { ...base, status: "blocked", reason: "Blocked — the lead was deleted from your sheet." };
   }
   const profile = effectiveProfile(options.profile);
-  const { context, suppressed } = await contextFor(sql, userId, email, options.settings.includeLow);
+  const { context, suppressed } = await contextFor(sql, userId, email, options.settings);
   const blocked = blockReason(lead, email, context, suppressed, profile);
   if (blocked) {
     await store.markSendProblem(sql, userId, email.id, { status: "skipped", kind: "blocked", error: blocked });

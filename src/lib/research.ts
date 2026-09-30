@@ -176,10 +176,24 @@ export const researchProspects = createServerFn({ method: "POST" })
     if (businessType.length < 2) throw new Error("Enter a business type");
     return { location, businessType, limit, radiusMiles };
   })
-  .handler(async ({ data }): Promise<ResearchResult> => {
+  .handler(async ({ data, context }): Promise<ResearchResult> => {
     const { sharedChLimiter } = await import("@/lib/sources/ch-limiter.server");
     const found = await discoverBusinesses({ ...data, companiesHouse: { limiter: await sharedChLimiter() } });
     if (!found.ok) return { ok: false, error: found.error };
+
+    // Keep exactly what each source said, so every fact on a business can name
+    // its source and date later. Provenance is an explanation, never a reason
+    // to fail a search.
+    if (found.records?.length) {
+      try {
+        const { getSql } = await import("@/lib/db");
+        const contacts = await import("@/lib/contactability/store.server");
+        await contacts.upsertSourceRecords(await getSql(), context.userId, found.records);
+      } catch (error) {
+        const { log } = await import("@/lib/log.server");
+        log.warn("source_records_not_saved", { userId: context.userId, error });
+      }
+    }
 
     // Live-checking a website costs an HTTP round trip, so one area inspects at
     // most this many. It only sharpens priority scoring — email discovery runs

@@ -34,7 +34,13 @@ export function blockedSentence(reason: string): string {
     case "low-opportunity":
       return "the opportunity is too low (turn on 'Include low opportunity' to allow it)";
     case "manual-review":
-      return "this looks like a sole trader or personal mailbox, so it needs sending by hand";
+      return "it isn't confirmed as a company (sole traders need consent for email) — check it on Companies House, or call instead";
+    case "individual-subscriber":
+      return "it looks like a sole trader or partnership, who needs to have consented to email — call instead";
+    case "personal-mailbox":
+      return "the address is a personal mailbox, so its holder is an individual subscriber — call instead";
+    case "undeliverable":
+      return "the email verifier says this mailbox does not exist";
     default:
       return reason;
   }

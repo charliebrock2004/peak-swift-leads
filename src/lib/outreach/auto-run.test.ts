@@ -120,12 +120,19 @@ describe("choosing who to write to", () => {
   });
 
   it("never picks up a lead held for manual review", () => {
-    // A sole trader's personal mailbox is the strongest hold signal there is.
-    const soleTrader = sendable({ id: "a", businessName: "J Smith Joinery", email: "jsmith@gmail.com" });
-    const plan = planTargets([soleTrader], context(), 10);
+    // Not confirmed as a company: an individual subscriber until shown otherwise.
+    const unconfirmed = sendable({ id: "a", businessName: "Strathearn Joinery" });
+    const plan = planTargets([unconfirmed], context(), 10);
     assert.deepEqual(plan.leadIds, []);
     assert.equal(plan.skipped.length, 1);
-    assert.ok(plan.skipped[0].reasons.some((r) => /manual review/i.test(r)));
+    assert.ok(plan.skipped[0].reasons.some((r) => /not confirmed as a company/i.test(r)));
+  });
+
+  it("never writes to a personal mailbox — the business is rung instead", () => {
+    const soleTrader = sendable({ id: "a", businessName: "J Smith Joinery", email: "jsmith@gmail.com", phone: "01764 123456" });
+    const plan = planTargets([soleTrader], context(), 10);
+    assert.deepEqual(plan.leadIds, []);
+    assert.deepEqual(plan.ringing.map((r) => r.id), ["a"]);
   });
 
   it("never picks up a suppressed address", () => {
@@ -319,13 +326,15 @@ describe("a search that turns up nothing contactable", () => {
     const companiesHouse = plan.skipped.find((s) => s.businessName === "Stirling Joinery Services Ltd");
     assert.ok(companiesHouse);
     assert.deepEqual(companiesHouse.reasons, ["No public email found", "Low opportunity"]);
-    // And a hold that checkEligibility short-circuited past is still reported.
-    const soleTrader = planTargets(
-      [{ ...stirling[0], id: "st", businessName: "J Smith Joinery", phone: "01786 9" }],
+    // And a hold that checkEligibility short-circuited past is still reported:
+    // a good website already AND not confirmed as a company.
+    const unconfirmed = planTargets(
+      [{ ...stirling[0], id: "st", businessName: "Stirling Joinery", email: "hello@stirlingjoinery.co.uk", emailConfidence: "HIGH", emailSource: "Contact page", websiteQuality: "good", phone: "" }],
       context(),
       10,
     ).skipped[0];
-    assert.ok(soleTrader.reasons.includes("Manual review required"));
+    assert.ok(unconfirmed.reasons.includes("Their website is already good"), unconfirmed.reasons.join(", "));
+    assert.ok(unconfirmed.reasons.includes("Not confirmed as a company"), unconfirmed.reasons.join(", "));
   });
 
   it("explains the dominant reason rather than leaving it as a bare count", () => {
@@ -536,11 +545,16 @@ describe("businesses worth ringing instead", () => {
   });
 
   it("NEVER lists a manual-review hold — those stay protected under their own filter", () => {
-    const soleTrader = noEmail({ id: "a", businessName: "J Smith Joinery" });
-    const plan = planTargets([soleTrader], context(), 10);
+    const unconfirmed = noEmail({ id: "a", businessName: "Raploch Joinery", email: "hello@raplochjoinery.co.uk", emailConfidence: "HIGH", emailSource: "Contact page" });
+    const plan = planTargets([unconfirmed], context(), 10);
     assert.deepEqual(plan.leadIds, []);
     assert.deepEqual(plan.ringing, []);
-    assert.ok(plan.skipped[0].reasons.some((r) => /manual review/i.test(r)));
+    assert.ok(plan.skipped[0].reasons.some((r) => /not confirmed as a company/i.test(r)));
+  });
+
+  it("lists a sole trader with no email — a screened call is how they are approached", () => {
+    const soleTrader = noEmail({ id: "a", businessName: "J Smith Joinery" });
+    assert.deepEqual(planTargets([soleTrader], context(), 10).ringing.map((r) => r.id), ["a"]);
   });
 
   it("NEVER lists a business whose website is already good", () => {
@@ -599,7 +613,7 @@ describe("businesses worth ringing instead", () => {
         .map((lead) => lead.id),
     );
     assert.deepEqual([...fromFilter].sort(), [...fromPlan].sort());
-    assert.deepEqual([...fromPlan], ["ring"]);
+    assert.deepEqual([...fromPlan].sort(), ["ring", "sole"]);
   });
 });
 

@@ -10,6 +10,7 @@
  * fixed boundary is far easier to reason about than one that moves with the
  * clocks halfway through a send.
  */
+import { sanitizeContactRules } from "../contactability/legal-form.ts";
 import type { OutreachEmail, OutreachSettings } from "./types.ts";
 import { SENT_STATUSES } from "./types.ts";
 
@@ -108,5 +109,6 @@ export function sanitizeSettings(input: Partial<OutreachSettings>, current: Outr
     // a loop cannot spend a month's credits in an afternoon.
     searchDailyBudget: int(input.searchDailyBudget, current.searchDailyBudget ?? 300, 0, 2000),
     aiDailyBudget: int(input.aiDailyBudget, current.aiDailyBudget ?? 150, 0, 1000),
+    contactRules: sanitizeContactRules(input.contactRules ?? current.contactRules),
   };
 }

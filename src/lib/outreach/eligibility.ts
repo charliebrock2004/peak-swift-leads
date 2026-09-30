@@ -11,6 +11,14 @@
  * can show, so nothing is ever silently dropped.
  */
 import { computeOpportunity, opportunityBand, type Lead } from "../leads.ts";
+import { emailContactability, type EmailContactability, type VerificationResult } from "../contactability/email.ts";
+import {
+  classifyLegalForm,
+  DEFAULT_CONTACT_RULES,
+  type ContactRules,
+  type LegalFormInput,
+  type LegalFormResult,
+} from "../contactability/legal-form.ts";
 import type { EmailKind, OutreachLead, OutreachSettings } from "./types.ts";
 
 export const INELIGIBLE_REASONS = [
@@ -28,6 +36,12 @@ export const INELIGIBLE_REASONS = [
   "low-opportunity",
   "manual-review",
   "invalid-email",
+  /** A sole trader or partnership: an individual subscriber, who needs to have consented. */
+  "individual-subscriber",
+  /** gmail.com and friends: the subscriber is the person holding the mailbox. */
+  "personal-mailbox",
+  /** An email verifier says the mailbox does not exist. */
+  "undeliverable",
 ] as const;
 export type IneligibleReason = (typeof INELIGIBLE_REASONS)[number];
 
@@ -44,14 +58,26 @@ export const REASON_LABELS: Record<IneligibleReason, string> = {
   replied: "They have replied — over to you",
   "no-opportunity": "Their website is already good",
   "low-opportunity": "Low opportunity",
-  "manual-review": "Manual review required",
+  "manual-review": "Not confirmed as a company",
   "invalid-email": "Email address does not look valid",
+  "individual-subscriber": "Sole trader or partnership — call instead",
+  "personal-mailbox": "Personal mailbox — call instead",
+  undeliverable: "Email address does not exist",
 };
 
-export type Eligibility =
+export type Eligibility = (
   | { eligible: true; band: "High" | "Medium" | "Low"; score: number; manualReview: false }
-  /** `manualReview` is a hold, not a refusal: you can send it by hand after looking. */
-  | { eligible: false; reasons: IneligibleReason[]; band: "High" | "Medium" | "Low"; score: number; manualReview: boolean };
+  /**
+   * `manualReview` is a hold, not a refusal: the business is not confirmed as a
+   * company. Confirming its legal form (or a Companies House check) releases it.
+   */
+  | { eligible: false; reasons: IneligibleReason[]; band: "High" | "Medium" | "Low"; score: number; manualReview: boolean }
+) & {
+  /** Who the subscriber is, and why the product thinks so. */
+  legal: LegalFormResult;
+  /** The address-level verdict, with notes worth knowing even when eligible. */
+  contact: EmailContactability;
+};
 
 /** Conservative: this is a gate, not a parser. Anything odd is rejected. */
 export function looksLikeEmail(value: string): boolean {
@@ -67,54 +93,53 @@ export function looksLikeEmail(value: string): boolean {
   return /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+$/i.test(local) && /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(domain);
 }
 
-/**
- * Addresses that are a person rather than a business, or a role we should not
- * cold-email. Public business contact only — see the compliance note in
- * ARCHITECTURE.md.
- */
-const PERSONAL_DOMAINS = new Set([
-  "gmail.com",
-  "googlemail.com",
-  "hotmail.com",
-  "hotmail.co.uk",
-  "outlook.com",
-  "live.co.uk",
-  "yahoo.com",
-  "yahoo.co.uk",
-  "btinternet.com",
-  "aol.com",
-  "icloud.com",
-  "me.com",
-  "sky.com",
-  "talktalk.net",
-  "virginmedia.com",
-]);
-
 export function emailDomain(email: string): string {
   return email.trim().toLowerCase().split("@")[1] ?? "";
 }
 
 /**
- * UK direct marketing rules treat a sole trader or an unincorporated partnership
- * like an individual, so a blanket "it was on their website" is not a good
- * enough basis to send automatically.
- *
- * We cannot know a business's legal form from a listing, so this is a heuristic
- * that only ever *adds* caution: it holds the lead for you to look at, and never
- * lets one through that another rule refused.
+ * What the legal-form rules need from a lead: the server's facts when it has
+ * them, otherwise what the discovery record itself says (a Companies House
+ * lead carries its number in `placeId` and its type in the notes).
  */
-export function needsManualReview(lead: OutreachLead): boolean {
-  const domain = emailDomain(lead.email);
-  // A personal mailbox is the strongest signal of a sole trader.
-  if (domain && PERSONAL_DOMAINS.has(domain)) return true;
-  const name = lead.businessName.toLowerCase();
-  // "Ltd", "Limited", "PLC", "LLP" mean a company, which is fair game.
-  const incorporated = /\b(ltd|limited|plc|llp|cic|c\.i\.c)\b/.test(name);
-  if (incorporated) return false;
-  // A person's name as the business name — "J Smith Joinery", "Gavin Brock
-  // Joinery" — usually means a sole trader.
-  const personalName = /^(mr|mrs|ms|miss)\b/.test(name) || /^[a-z]\s+[a-z]{2,}\s/.test(name);
-  return personalName;
+export function legalInputOf(lead: OutreachLead): LegalFormInput {
+  const facts = lead.facts;
+  // Discovery merges a Companies House record into a map listing only when
+  // the entity resolver says they are the same business, and keeps the
+  // register's "Companies House <number> (<type>)" line in the notes.
+  const noted = /Companies House ([A-Z]{0,2}\d{6,8})(?: \(([a-z-]+)\))?/i.exec(lead.notes ?? "");
+  const placeNumber =
+    /^ch:([A-Z0-9]+)$/i.exec(lead.placeId?.trim() ?? "")?.[1]?.toUpperCase() ?? noted?.[1]?.toUpperCase() ?? "";
+  const notedType = noted && noted[1]!.toUpperCase() === placeNumber ? (noted[2] ?? "").toLowerCase() : "";
+  return {
+    businessName: lead.businessName,
+    email: lead.email,
+    companyNumber: facts?.companyNumber || placeNumber,
+    companyType: facts?.companyType || (placeNumber ? notedType : ""),
+    // A Companies House lead was active on the day discovery found it.
+    companyStatus: facts?.companyStatus || (placeNumber ? "active" : ""),
+    companyCheckedAt: facts?.companyCheckedAt || (placeNumber ? lead.foundAt : ""),
+    override: facts?.legalFormOverride ?? "",
+    overrideNote: facts?.legalFormNote ?? "",
+    overrideAt: facts?.legalFormSetAt ?? "",
+  };
+}
+
+export function legalFormOf(lead: OutreachLead, rules: ContactRules = DEFAULT_CONTACT_RULES, now: Date = new Date()): LegalFormResult {
+  return classifyLegalForm(legalInputOf(lead), rules, now);
+}
+
+/**
+ * Held for a person to confirm: the business is not confirmed as a company.
+ *
+ * UK PECR lets a company be emailed without prior consent, but not a sole
+ * trader or a partnership (individual subscribers). When the product cannot
+ * tell, it treats the business as an individual (ICO) — so the lead is held,
+ * and never emailed, until its legal form is confirmed.
+ */
+export function needsManualReview(lead: OutreachLead, rules: ContactRules = DEFAULT_CONTACT_RULES): boolean {
+  const form = legalFormOf(lead, rules).form;
+  return form === "UNKNOWN" || form === "REVIEW_REQUIRED";
 }
 
 export type EligibilityContext = {
@@ -125,6 +150,10 @@ export type EligibilityContext = {
   alreadyContacted: ReadonlySet<string>;
   /** Lowercased recipient addresses that already have a live email of this kind. */
   contactedAddresses: ReadonlySet<string>;
+  /** The configurable legal-form rules. Defaults are the conservative ones. */
+  rules?: ContactRules;
+  /** Verifier results by lowercased address, when a verifier is configured. */
+  verifications?: ReadonlyMap<string, VerificationResult>;
 };
 
 export function emptyContext(
@@ -190,11 +219,26 @@ export function checkEligibility(
   if (lead.websiteQuality === "good") reasons.push("no-opportunity");
   if (band === "Low" && !context.settings.includeLow) reasons.push("low-opportunity");
 
-  const manualReview = needsManualReview(lead);
+  // Who the subscriber is. The legal rules only ever add caution: they can
+  // hold or refuse a lead, never let through one another rule refused.
+  const legal = legalFormOf(lead, context.rules ?? DEFAULT_CONTACT_RULES);
+  const verification = email ? context.verifications?.get(email) : undefined;
+  const contact = emailContactability({
+    email: lead.email,
+    website: lead.website,
+    legal,
+    verification: verification ? { result: verification } : null,
+  });
+  if (email && looksLikeEmail(email)) {
+    if (contact.address?.kind === "personal_mailbox") reasons.push("personal-mailbox");
+    else if (verification === "invalid") reasons.push("undeliverable");
+    else if (legal.form === "INDIVIDUAL") reasons.push("individual-subscriber");
+  }
+  const manualReview = email !== "" && contact.status === "HOLD";
 
-  if (reasons.length > 0) return { eligible: false, reasons, band, score, manualReview };
-  if (manualReview) return { eligible: false, reasons: ["manual-review"], band, score, manualReview: true };
-  return { eligible: true, band, score, manualReview: false };
+  if (reasons.length > 0) return { eligible: false, reasons, band, score, manualReview, legal, contact };
+  if (manualReview) return { eligible: false, reasons: ["manual-review"], band, score, manualReview: true, legal, contact };
+  return { eligible: true, band, score, manualReview: false, legal, contact };
 }
 
 /**
@@ -233,6 +277,11 @@ const NO_WAY_TO_WRITE = new Set<IneligibleReason>([
   "low-confidence",
   "guessed-email",
   "invalid-email",
+  // Not "must not contact": email is the wrong channel for them. A phone call
+  // (screened against TPS/CTPS) is how a sole trader is approached.
+  "individual-subscriber",
+  "personal-mailbox",
+  "undeliverable",
 ]);
 
 /**
