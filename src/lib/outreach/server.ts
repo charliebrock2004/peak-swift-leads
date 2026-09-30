@@ -297,14 +297,17 @@ export type OutreachState = {
 async function clientIdentity(config: { clientId: string } | null) {
   const gmail = await import("@/lib/gmail/client.server.ts");
   const setup = gmail.oauthSetup();
-  if (!config) return { clientProject: "", clientMasked: "", redirectUriOverride: "", setup };
+  const { chooseRedirectUri } = await import("@/lib/gmail/redirect.ts");
+  const intendedSender = gmail.allowedSender();
+  if (!config) return { clientProject: "", clientMasked: "", redirectUriOverride: chooseRedirectUri(process.env, "").uri, setup, intendedSender };
   const { describeClientId } = await import("@/lib/gmail/oauth.ts");
   const described = describeClientId(config.clientId);
   return {
     clientProject: described.project,
     clientMasked: described.masked,
-    redirectUriOverride: process.env.GOOGLE_REDIRECT_URI?.trim() ?? "",
+    redirectUriOverride: chooseRedirectUri(process.env, "").uri,
     setup,
+    intendedSender,
   };
 }
 
@@ -396,7 +399,11 @@ async function classifyStateFailure(error: unknown): Promise<SetupReason> {
 export const startGmailConnect = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((input: unknown) => ({ origin: str((input as { origin?: unknown })?.origin, 200) }))
-  .handler(async ({ data, context }): Promise<{ ok: true; url: string; state: string } | Fail> => {
+  .handler(
+    async ({
+      data,
+      context,
+    }): Promise<{ ok: true; url: string; state: string; redirectUri: string } | { ok: true; switchTo: string; redirectUri: string } | Fail> => {
     const gmail = await import("@/lib/gmail/client.server.ts");
     const { buildAuthUrl, clientIdProblem } = await import("@/lib/gmail/oauth.ts");
     const { signOAuthState } = await import("@/lib/crypto/secrets.server");
@@ -420,14 +427,27 @@ export const startGmailConnect = createServerFn({ method: "POST" })
         error: `${badClientId} Fix it in the deployment's environment variables and redeploy.`,
       };
     }
-    const redirectUri = redirectUriFor(data.origin);
+    const { chooseRedirectUri, sameOrigin } = await import("@/lib/gmail/redirect.ts");
+    const choice = chooseRedirectUri(process.env, data.origin);
+    const redirectUri = choice.uri;
     if (!redirectUri) return { ok: false, error: "Could not work out the redirect URI." };
+    // Logged so the exact value Google receives can be read from the runtime
+    // logs. Not a secret: it is in the address bar of every sign-in.
+    console.info(`[gmail] connect redirect_uri=${redirectUri} source=${choice.source} from=${data.origin}`);
+    // The flow must run on the redirect URI's own origin: the state is kept in
+    // this tab and the sign-in cookie belongs to one host, so starting on another
+    // alias of the same deployment would land the callback somewhere that has
+    // neither. Move there first; Settings picks the flow up again on arrival.
+    if (choice.origin && !sameOrigin(choice.origin, data.origin)) {
+      return { ok: true, switchTo: `${choice.origin}/settings?section=gmail&connect=1`, redirectUri };
+    }
     // Signed to this account and timestamped, so the callback can prove — on
     // the server — that this signed-in owner started this exact flow.
     const state = signOAuthState(context.userId);
     return {
       ok: true,
       state,
+      redirectUri,
       url: buildAuthUrl({
         clientId: config.clientId,
         redirectUri,
@@ -438,7 +458,8 @@ export const startGmailConnect = createServerFn({ method: "POST" })
           : undefined,
       }),
     };
-  });
+  },
+  );
 
 /**
  * The redirect URI must match Google's registered value byte for byte.
@@ -447,12 +468,9 @@ export const startGmailConnect = createServerFn({ method: "POST" })
  * browser is actually on, which is what makes this work unchanged on localhost,
  * a preview URL and production.
  */
-function redirectUriFor(origin: string): string {
-  const configured = process.env.GOOGLE_REDIRECT_URI?.trim();
-  if (configured) return configured;
-  const clean = origin.replace(/\/+$/, "");
-  if (!/^https?:\/\//i.test(clean)) return "";
-  return `${clean}/oauth/gmail`;
+async function redirectUriFor(origin: string): Promise<string> {
+  const { chooseRedirectUri } = await import("@/lib/gmail/redirect.ts");
+  return chooseRedirectUri(process.env, origin).uri;
 }
 
 export const completeGmailConnect = createServerFn({ method: "POST" })
@@ -478,7 +496,7 @@ export const completeGmailConnect = createServerFn({ method: "POST" })
     const store = await import("./store.server.ts");
     const gmail = await import("@/lib/gmail/client.server.ts");
 
-    const redirectUri = redirectUriFor(data.origin);
+    const redirectUri = await redirectUriFor(data.origin);
     const exchanged = await gmail.exchangeCode(data.code, redirectUri);
     if (!exchanged.ok) return { ok: false, error: exchanged.error };
 
@@ -490,7 +508,10 @@ export const completeGmailConnect = createServerFn({ method: "POST" })
     const expected = gmail.allowedSender();
     if (expected && profile.email.toLowerCase() !== expected) {
       await gmail.revokeToken(exchanged.accessToken);
-      return { ok: false, error: `That is ${profile.email}. This app is set up to send from ${expected}.` };
+      return {
+        ok: false,
+        error: `You signed in to Google as ${profile.email}. This app sends from ${expected} — press Connect Gmail again and choose ${expected}. Nothing was saved, and access for ${profile.email} was revoked.`,
+      };
     }
 
     const sql = await getSql();
@@ -1774,7 +1795,7 @@ export const checkGmailHealth = createServerFn({ method: "POST" })
       const profile = effectiveProfile(await store.loadProfile(sql, context.userId).catch(() => null));
       const mailbox = profileCheck.email.toLowerCase();
       if (pinned && pinned !== mailbox) {
-        add({ id: "identity", label: "Sender identity", level: "fail", detail: `This deployment is pinned to ${pinned} (GMAIL_SENDER) but the connected mailbox is ${mailbox}.` });
+        add({ id: "identity", label: "Sender identity", level: "fail", detail: `This app sends from ${pinned}, but the connected mailbox is ${mailbox}. Disconnect and connect ${pinned}.` });
       } else if (profile.senderEmail && profile.senderEmail !== mailbox) {
         add({ id: "identity", label: "Sender identity", level: "warn", detail: `Your business profile says ${profile.senderEmail}, but emails will come from ${mailbox}.` });
       } else {

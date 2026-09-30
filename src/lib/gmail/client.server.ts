@@ -89,9 +89,22 @@ export function oauthSetup(): OAuthSetup {
   };
 }
 
-/** The Gmail account this app is allowed to send from, if pinned. */
+/**
+ * The Gmail account outreach is meant to send from. `GMAIL_SENDER` overrides it
+ * for another deployment; nobody has to set anything for this one.
+ */
+export const DEFAULT_GMAIL_SENDER = "peakswiftstudio@gmail.com";
+
+/**
+ * The one Gmail account this app will connect and send from. It is sent to
+ * Google as `login_hint`, so the account chooser opens on it, and the callback
+ * refuses — and revokes — a sign-in to any other account. Which account signs in
+ * is unrelated to `redirect_uri`: Google checks the redirect before it shows the
+ * account chooser at all.
+ */
 export function allowedSender(): string {
-  return (process.env.GMAIL_SENDER || "").trim().toLowerCase();
+  const configured = (process.env.GMAIL_SENDER || "").trim().replace(/^["']+|["']+$/g, "").toLowerCase();
+  return configured || DEFAULT_GMAIL_SENDER;
 }
 
 export type TokenSet = {

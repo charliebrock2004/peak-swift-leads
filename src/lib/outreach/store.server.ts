@@ -115,7 +115,13 @@ export async function saveGmailHealth(sql: Sql, userId: string, report: string):
 export function publicConnection(
   row: GmailAccountRow | null,
   configured: boolean,
-  client: { clientProject?: string; clientMasked?: string; redirectUriOverride?: string; setup?: GmailConnection["setup"] } = {},
+  client: {
+    clientProject?: string;
+    clientMasked?: string;
+    redirectUriOverride?: string;
+    setup?: GmailConnection["setup"];
+    intendedSender?: string;
+  } = {},
 ): GmailConnection {
   // Which OAuth client this deployment will ask Google for. Carried on every
   // connection state, including "not configured", because that is exactly when
@@ -125,6 +131,7 @@ export function publicConnection(
     clientMasked: client.clientMasked ?? "",
     redirectUriOverride: client.redirectUriOverride ?? "",
     ...(client.setup ? { setup: client.setup } : {}),
+    ...(client.intendedSender ? { intendedSender: client.intendedSender } : {}),
   };
   if (!row || row.status === "disconnected") {
     return {

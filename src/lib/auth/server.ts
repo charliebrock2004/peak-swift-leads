@@ -165,7 +165,17 @@ const baseURL = explicitBaseURL ?? vercelOrigin ?? {
 
 // Origins Better Auth accepts on credentialed POSTs (sign-up/sign-in, etc.).
 // Missing entries here surface as FORBIDDEN "Invalid origin".
-const deployedOrigins: string[] = [vercelOrigin, vercelDeploymentOrigin].filter(
+/**
+ * The branch alias (`<project>-git-<branch>-<team>.vercel.app`) too. It is the
+ * one preview address that stays the same across commits, so it is where the
+ * Gmail connection runs and what Google has registered; without it here, sign-in
+ * on that address was refused as "Invalid origin" and a preview could only be
+ * used on its per-deployment URL, which changes with every push.
+ */
+const vercelBranchOrigin = env("VERCEL_BRANCH_URL")
+  ? `https://${env("VERCEL_BRANCH_URL")!.replace(/^https?:\/\//, "").replace(/\/+$/, "")}`
+  : undefined;
+const deployedOrigins: string[] = [vercelOrigin, vercelDeploymentOrigin, vercelBranchOrigin].filter(
   (origin): origin is string => Boolean(origin),
 );
 

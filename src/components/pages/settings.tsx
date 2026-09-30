@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { toast } from "sonner";
 import {
@@ -179,11 +179,23 @@ function GmailSection({ state }: { state: OutreachState }) {
     }
   };
 
-  const connect = () =>
+  const connect = (resumed = false) =>
     run("connect", async () => {
       const started = await startGmailConnect({ data: { origin: window.location.origin } });
       if (!started.ok) {
         toast(started.error);
+        return;
+      }
+      if ("switchTo" in started) {
+        // Google will send the browser back to one fixed address, so the flow
+        // has to start there. Never bounce twice: that would mean the server and
+        // this tab disagree about where "there" is.
+        if (resumed) {
+          toast(`Could not continue on ${new URL(started.switchTo).host}. Open that address and press Connect Gmail there.`);
+          return;
+        }
+        toast(`Continuing on ${new URL(started.switchTo).host}, the address Google returns to…`);
+        window.location.href = started.switchTo;
         return;
       }
       try {
@@ -196,6 +208,20 @@ function GmailSection({ state }: { state: OutreachState }) {
     });
 
   const callback = connection.redirectUriOverride || (typeof window === "undefined" ? "" : `${window.location.origin}/oauth/gmail`);
+
+  // Arriving here from Connect Gmail on another address of this deployment:
+  // carry on with the flow once, then drop the flag so a reload does not repeat it.
+  const search = useSearch({ from: "/_app/settings" });
+  const navigate = useNavigate();
+  const resumed = useRef(false);
+  useEffect(() => {
+    if (search.connect !== "1" || resumed.current) return;
+    resumed.current = true;
+    void navigate({ to: "/settings", search: { section: "gmail" }, replace: true });
+    if (connection.configured) void connect(true);
+    // Once per arrival.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search.connect]);
 
   return (
     <>
@@ -284,10 +310,16 @@ function GmailSection({ state }: { state: OutreachState }) {
             Disconnect
           </Button>
         </div>
+        {connection.intendedSender && connection.status !== "connected" ? (
+          <p className="text-xs text-subtle">
+            Connect <span className="text-muted">{connection.intendedSender}</span> — Google will offer that account, and any other is refused.
+          </p>
+        ) : null}
         {connection.setup?.environment ? (
           <p className="text-xs text-subtle">
             You are on {whereRunning(connection.setup)}.
-            {connection.setup.environment === "preview" ? ` Google must have ${callback} registered as a redirect URI for this address.` : ""}
+            {` Connect Gmail sends Google exactly ${callback}`}
+            {typeof window !== "undefined" && callback && !callback.startsWith(`${window.location.origin}/`) ? `, and continues on ${new URL(callback).host} first.` : "."}
           </p>
         ) : null}
         {connection.configured && connection.clientMasked ? (

@@ -207,6 +207,8 @@ export type GmailConnection = {
    * adding a variable or redeploying an older build. Names only, never values.
    */
   setup?: OAuthSetup;
+  /** The only Gmail account the Connect flow will accept. */
+  intendedSender?: string;
 };
 
 export type SuppressionEntry = {
