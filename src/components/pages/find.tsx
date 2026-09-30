@@ -552,7 +552,7 @@ export function FunnelDetail({ funnel }: { funnel: RunFunnel }) {
   const outcomes: { label: string; value: number; tone?: "good" | "warn" }[] = [
     { label: "Eligible to email", value: funnel.eligible, tone: "good" },
     { label: "Call list", value: funnel.call },
-    { label: "Held for you (sole trader / personal mailbox)", value: funnel.manualReview, tone: "warn" },
+    { label: "Held for you (not confirmed as a company)", value: funnel.manualReview, tone: "warn" },
     { label: "Already has a good website", value: funnel.goodWebsite },
     { label: "Low opportunity", value: funnel.lowOpportunity },
     { label: "Already emailed or replied", value: funnel.alreadyInTouch },

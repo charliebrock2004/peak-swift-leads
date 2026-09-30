@@ -15,6 +15,8 @@ import { checkEligibility, isWorthRinging } from "@/lib/outreach/eligibility";
 import { lifecycleOf, STAGE_LABELS } from "@/lib/outreach/lifecycle";
 import { blockedSentence } from "@/lib/outreach/block-reasons";
 import { generateEmails, getReviewQueue, recordLeadReview, type OutreachState } from "@/lib/outreach/server";
+import { checkCompanies } from "@/lib/contactability/server";
+import { LegalFormBadge, LegalFormPanel } from "@/components/app/contactability";
 import type { OutreachLead } from "@/lib/outreach/types";
 import { friendlyServerError } from "@/lib/server-errors";
 import { cn } from "@/lib/utils";
@@ -164,6 +166,41 @@ function Prospects({ state }: { state: OutreachState }) {
 
   const count = (which: Filter) => rows.filter((row) => matches(row, which)).length;
 
+  // Look up every held business on Companies House, a batch at a time, inside
+  // the shared request budget. Only an exact local match is linked; anything
+  // less is left for you to pick.
+  const [checking, setChecking] = useState("");
+  const checkHeld = async () => {
+    const totals = { confirmed: 0, noMatch: 0, ambiguous: 0, errors: 0 };
+    try {
+      for (let round = 0; round < 5; round += 1) {
+        setChecking(`Checking Companies House… ${totals.confirmed + totals.noMatch + totals.ambiguous} done`);
+        const result = await checkCompanies({ data: { limit: 10 } });
+        if (!result.success) {
+          toast(result.error);
+          break;
+        }
+        totals.confirmed += result.tally.confirmed;
+        totals.noMatch += result.tally.noMatch;
+        totals.ambiguous += result.tally.ambiguous;
+        totals.errors += result.tally.errors;
+        if (result.stopped) {
+          toast(result.stopped);
+          break;
+        }
+        if (result.tally.remaining === 0) break;
+      }
+      toast(
+        `${plural(totals.confirmed, "company", "companies")} confirmed · ${totals.noMatch} not on the register · ${plural(totals.ambiguous, "needs", "need")} you to pick${totals.errors ? ` · ${totals.errors} failed` : ""}.`,
+      );
+      await reload();
+    } catch (error) {
+      toast(friendlyServerError(error));
+    } finally {
+      setChecking("");
+    }
+  };
+
   return (
     <>
       <PageHeader
@@ -217,10 +254,16 @@ function Prospects({ state }: { state: OutreachState }) {
         </p>
       ) : null}
       {filter === "manual-review" && count("manual-review") > 0 ? (
-        <p className="text-sm text-muted">
-          UK rules treat sole traders like individuals, so these are never emailed automatically. Look at each one, and email it from your own
-          Gmail if you are happy it is a business address.
-        </p>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-sm text-muted">
+            A company may be emailed; a sole trader or partnership needs to have agreed first. These are not confirmed as companies, so they
+            are held until Companies House (or you) confirms it — or you ring them instead.
+          </p>
+          <Button variant="secondary" className="shrink-0" disabled={Boolean(checking)} onClick={() => void checkHeld()}>
+            {checking ? <Loader2 className="animate-spin" /> : <Search />}
+            {checking || "Check them on Companies House"}
+          </Button>
+        </div>
       ) : null}
       {writable.length > 0 ? (
         <div className="flex items-center justify-between text-sm text-muted">
@@ -269,6 +312,7 @@ function Prospects({ state }: { state: OutreachState }) {
                     <Badge tone={["REPLIED", "INTERESTED", "BOOKED", "WON"].includes(row.stage) ? "good" : row.stage === "CALL" ? "info" : "neutral"}>
                       {STAGE_LABELS[row.stage]}
                     </Badge>
+                    {row.eligibility && !row.eligibility.manualReview ? <LegalFormBadge legal={row.eligibility.legal} /> : null}
 
                   </div>
                   <p className="mt-0.5 truncate text-sm text-muted">
@@ -279,6 +323,11 @@ function Prospects({ state }: { state: OutreachState }) {
                   </p>
                   {reason && !row.hasDraft && !["SENT", "REPLIED", "INTERESTED", "BOOKED", "WON"].includes(row.stage) ? (
                     <p className="mt-0.5 text-xs text-warn">Not emailable — {reason}</p>
+                  ) : null}
+                  {row.eligibility?.manualReview ? (
+                    <div className="mt-2">
+                      <LegalFormPanel leadId={row.lead.id} businessName={row.lead.businessName} legal={row.eligibility.legal} onChanged={reload} />
+                    </div>
                   ) : null}
                   {filter === "needs-look" && reviewQueue.has(row.lead.id) ? (
                     <span className="mt-2 flex flex-wrap gap-2">

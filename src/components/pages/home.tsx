@@ -132,7 +132,7 @@ function Home({ state }: { state: OutreachState }) {
     attention.push({ key: "calls", tone: "info", icon: Phone, title: `${plural(calls, "call")} to make today`, detail: "Good prospects with no public email, and follow-ups whose day has come.", to: "/calls", cta: "Start calling" });
   }
   if (figures.held > 0) {
-    attention.push({ key: "held", tone: "warn", icon: UserX, title: `${plural(figures.held, "prospect")} held for you`, detail: "Sole traders or personal mailboxes — look before sending by hand.", to: "/prospects", search: { filter: "manual-review" }, cta: "Look" });
+    attention.push({ key: "held", tone: "warn", icon: UserX, title: `${plural(figures.held, "prospect")} held for you`, detail: "Not confirmed as companies — check Companies House, or call them instead.", to: "/prospects", search: { filter: "manual-review" }, cta: "Look" });
   }
 
   const activeCampaigns = state.campaigns.filter((campaign) => campaign.status === "ACTIVE").slice(0, 3);

@@ -558,6 +558,14 @@ function SendingSection({ state }: { state: OutreachState }) {
         checked={settings.includeLow}
         onChange={(includeLow) => setSettings({ ...settings, includeLow })}
       />
+      <Toggle
+        label="Treat “Ltd” in a business name as a company until checked"
+        hint="Only a registered company may use Ltd, Limited, PLC or LLP, so it is reasonable evidence — but weaker than the register. Off holds every business until Companies House confirms it. Not legal advice: see the ICO's B2B marketing guidance."
+        checked={settings.contactRules?.trustCompanySuffix ?? true}
+        onChange={(trustCompanySuffix) =>
+          setSettings({ ...settings, contactRules: { companyStatusMaxAgeDays: 180, ...settings.contactRules, trustCompanySuffix } })
+        }
+      />
       <Button className="self-start" disabled={saving} onClick={() => void save(settings)}>
         Save
       </Button>
