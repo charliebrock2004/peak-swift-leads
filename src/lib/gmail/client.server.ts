@@ -37,6 +37,8 @@ function apiBase(): string {
   return (process.env.GMAIL_API_BASE_URL || GMAIL_API_BASE).replace(/\/+$/, "");
 }
 
+import type { OAuthSetup, OAuthVariable } from "../outreach/oauth-setup.ts";
+
 export type GoogleConfig = { clientId: string; clientSecret: string };
 
 /** The OAuth client, from the environment. Absent means "not set up yet". */
@@ -65,6 +67,26 @@ export function googleConfig(): GoogleConfig | null {
   const clientSecret = cleanSecret(process.env.GOOGLE_CLIENT_SECRET);
   if (!clientId || !clientSecret) return null;
   return { clientId, clientSecret };
+}
+
+/**
+ * What this running server can see of the OAuth variables, and which build it
+ * is. Names and Vercel's own non-secret system variables only — never a value.
+ *
+ * `googleConfig()` cannot say *which* variable is absent, or that this is a
+ * Preview build made before the variables were added; both are the difference
+ * between "add the variables" and "redeploy", so the screens are told.
+ */
+export function oauthSetup(): OAuthSetup {
+  const missing: OAuthVariable[] = [];
+  if (!cleanClientId(process.env.GOOGLE_CLIENT_ID)) missing.push("GOOGLE_CLIENT_ID");
+  if (!cleanSecret(process.env.GOOGLE_CLIENT_SECRET)) missing.push("GOOGLE_CLIENT_SECRET");
+  return {
+    missing,
+    environment: (process.env.VERCEL_ENV ?? "").trim().toLowerCase(),
+    branch: (process.env.VERCEL_GIT_COMMIT_REF ?? "").trim().slice(0, 100),
+    commit: (process.env.VERCEL_GIT_COMMIT_SHA ?? "").trim().slice(0, 7),
+  };
 }
 
 /** The Gmail account this app is allowed to send from, if pinned. */

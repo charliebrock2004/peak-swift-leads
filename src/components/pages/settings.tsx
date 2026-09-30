@@ -44,6 +44,7 @@ import { friendlyServerError } from "@/lib/server-errors";
 import { cn } from "@/lib/utils";
 import { useAppData } from "@/components/app/app-data";
 import { relativeTime } from "@/components/app/format";
+import { missingAdvice, missingNames, whereRunning } from "@/lib/outreach/oauth-setup";
 
 const SECTIONS = [
   { id: "gmail", label: "Gmail" },
@@ -209,7 +210,12 @@ function GmailSection({ state }: { state: OutreachState }) {
       >
         {!connection.configured ? (
           <div className="rounded-lg bg-warn/10 px-4 py-3 text-sm">
-            <p className="font-medium text-warn">Google sign-in is not set up on this deployment</p>
+            <p className="font-medium text-warn">
+              {connection.setup?.missing.length
+                ? `${missingNames(connection.setup)} ${connection.setup.missing.length > 1 ? "are" : "is"} not visible to this build`
+                : "Google sign-in is not set up on this deployment"}
+            </p>
+            {connection.setup?.missing.length ? <p className="mt-1.5 text-muted">{missingAdvice(connection.setup)}</p> : null}
             <ol className="mt-2 list-decimal space-y-1 pl-5 text-muted">
               <li>In Google Cloud, create an OAuth client (Web application) and enable the Gmail API.</li>
               <li>
@@ -278,6 +284,12 @@ function GmailSection({ state }: { state: OutreachState }) {
             Disconnect
           </Button>
         </div>
+        {connection.setup?.environment ? (
+          <p className="text-xs text-subtle">
+            You are on {whereRunning(connection.setup)}.
+            {connection.setup.environment === "preview" ? ` Google must have ${callback} registered as a redirect URI for this address.` : ""}
+          </p>
+        ) : null}
         {connection.configured && connection.clientMasked ? (
           <p className="text-xs text-subtle">
             OAuth client <code className="text-muted">{connection.clientMasked}</code>

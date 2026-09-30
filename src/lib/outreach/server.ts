@@ -295,13 +295,16 @@ export type OutreachState = {
  * The secret is never included, and the id's random middle is masked.
  */
 async function clientIdentity(config: { clientId: string } | null) {
-  if (!config) return { clientProject: "", clientMasked: "", redirectUriOverride: "" };
+  const gmail = await import("@/lib/gmail/client.server.ts");
+  const setup = gmail.oauthSetup();
+  if (!config) return { clientProject: "", clientMasked: "", redirectUriOverride: "", setup };
   const { describeClientId } = await import("@/lib/gmail/oauth.ts");
   const described = describeClientId(config.clientId);
   return {
     clientProject: described.project,
     clientMasked: described.masked,
     redirectUriOverride: process.env.GOOGLE_REDIRECT_URI?.trim() ?? "",
+    setup,
   };
 }
 
@@ -399,9 +402,11 @@ export const startGmailConnect = createServerFn({ method: "POST" })
     const { signOAuthState } = await import("@/lib/crypto/secrets.server");
     const config = gmail.googleConfig();
     if (!config) {
+      const { missingAdvice } = await import("./oauth-setup.ts");
       return {
         ok: false,
         error:
+          missingAdvice(gmail.oauthSetup()) ||
           "Google OAuth is not set up. Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to the server environment.",
       };
     }
@@ -1217,7 +1222,7 @@ export const getSystemHealth = createServerFn({ method: "GET" })
       ]);
       const report = assessHealth({
         database: dbSource,
-        connection: store.publicConnection(account, gmail.googleConfig() !== null),
+        connection: store.publicConnection(account, gmail.googleConfig() !== null, await clientIdentity(gmail.googleConfig())),
         leads,
         emails,
         aiAvailable: Boolean(process.env.XAI_API_KEY?.trim()),
@@ -1691,13 +1696,14 @@ export const checkGmailHealth = createServerFn({ method: "POST" })
       const { clientIdProblem, hasRequiredScopes, GMAIL_SCOPES } = await import("@/lib/gmail/oauth.ts");
       const { keySource } = await import("@/lib/crypto/secrets.server");
       const { effectiveProfile } = await import("./profile.ts");
+      const { missingAdvice } = await import("./oauth-setup.ts");
       const sql = await getSql();
 
       const config = gmail.googleConfig();
       const badClient = config ? clientIdProblem(config.clientId) : null;
       add(
         !config
-          ? { id: "credentials", label: "OAuth credentials", level: "fail", detail: "GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are not set on this deployment." }
+          ? { id: "credentials", label: "OAuth credentials", level: "fail", detail: missingAdvice(gmail.oauthSetup()) || "GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are not set on this deployment." }
           : badClient
             ? { id: "credentials", label: "OAuth credentials", level: "fail", detail: badClient }
             : { id: "credentials", label: "OAuth credentials", level: "ok", detail: "Client id and secret are configured." },

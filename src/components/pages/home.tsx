@@ -34,6 +34,7 @@ import { useLeadsStore } from "@/store/leads-store";
 import { cn } from "@/lib/utils";
 import { useAppData } from "@/components/app/app-data";
 import { plural, relativeTime } from "@/components/app/format";
+import { missingNames, whereRunning } from "@/lib/outreach/oauth-setup";
 
 function greeting(now: Date): string {
   const hour = now.getHours();
@@ -88,7 +89,19 @@ function Home({ state }: { state: OutreachState }) {
   const attention: Attention[] = [];
   const connection = state.connection;
   if (!connection.configured) {
-    attention.push({ key: "oauth", tone: "bad", icon: AlertTriangle, title: "Gmail is not set up on this deployment", detail: "GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are missing, so nothing can be sent.", to: "/settings", search: { section: "gmail" }, cta: "How to fix" });
+    const setup = connection.setup;
+    attention.push({
+      key: "oauth",
+      tone: "bad",
+      icon: AlertTriangle,
+      title: setup?.missing.length ? `${missingNames(setup)} not visible to this build` : "Gmail is not set up on this deployment",
+      detail: setup?.missing.length
+        ? `This is ${whereRunning(setup)}. If you added the variables after it was built, it needs a redeploy.`
+        : "The Google client id and secret are missing, so nothing can be sent.",
+      to: "/settings",
+      search: { section: "gmail" },
+      cta: "See why",
+    });
   } else if (connection.status === "needs_attention") {
     attention.push({ key: "gmail", tone: "bad", icon: AlertTriangle, title: "Gmail needs reconnecting", detail: connection.lastError || "The connection stopped working. Nothing can be sent until it is reconnected.", to: "/settings", search: { section: "gmail" }, cta: "Reconnect" });
   } else if (connection.status !== "connected") {

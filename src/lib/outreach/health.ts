@@ -9,6 +9,7 @@ import { decideProspect } from "../decision.ts";
 import type { Lead } from "../leads.ts";
 import { sentToday } from "./limits.ts";
 import type { GmailConnection, OutreachEmail, OutreachLead } from "./types.ts";
+import { missingAdvice } from "./oauth-setup.ts";
 
 export const HEALTH_LEVELS = ["HEALTHY", "WARNING", "ERROR", "OFF"] as const;
 export type HealthLevel = (typeof HEALTH_LEVELS)[number];
@@ -113,7 +114,9 @@ export function assessHealth(input: HealthInput): HealthReport {
       id: "gmail",
       label: "Gmail OAuth",
       level: "OFF",
-      detail: "GOOGLE_CLIENT_ID is not set on this deployment.",
+      detail: input.connection.setup?.missing.length
+        ? missingAdvice(input.connection.setup)
+        : "GOOGLE_CLIENT_ID is not set on this deployment.",
     });
   } else if (input.connection.status === "connected") {
     items.push({

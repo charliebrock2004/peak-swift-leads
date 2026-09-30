@@ -6,6 +6,7 @@
  * database or a network.
  */
 import type { Lead } from "../leads.ts";
+import type { OAuthSetup } from "./oauth-setup.ts";
 
 /** Where one email has got to. The queue and the history are the same list. */
 export const EMAIL_STATUSES = [
@@ -200,6 +201,12 @@ export type GmailConnection = {
    * it from the address you are on, which is `<origin>/oauth/gmail`.
    */
   redirectUriOverride: string;
+  /**
+   * Which OAuth variables this running build cannot see, and which build it is
+   * (environment, branch, commit) — so "not set up" can say whether the fix is
+   * adding a variable or redeploying an older build. Names only, never values.
+   */
+  setup?: OAuthSetup;
 };
 
 export type SuppressionEntry = {
