@@ -1,13 +1,35 @@
 # Peak Swift Leads
 
-A prospecting tool for Peak Swift Studios: find local businesses that may need a website, review them, import the good ones, then call.
+AI prospecting and Gmail outreach for a local web studio: find real local
+businesses that need a website, verify them, find the email they publish, write
+each one a personal email from the evidence, and send it from your own Gmail —
+with every number traceable and nothing sent that you have not seen.
 
-## Workflow
+## The workflow
 
-1. **Find leads** — pick a town and trade. Grok searches the public web.
-2. **Import** — bring in a research spreadsheet, or tick prospects from a search. Duplicates merge instead of piling up.
-3. **Call** — tap Call from your phone, then record the outcome in one tap.
-4. **Follow up** — an outcome sets the next date for you; **Due today** shows who is waiting.
+1. **Find** (`/find`) — choose an area, up to four trades, how many prospects,
+   and how many emails a day. The run shows each stage live — Discovering,
+   Deduplicating, Verifying businesses, Checking websites, Finding emails,
+   Qualifying, Personalising, Ready to send — and its counts reconcile: every
+   business found is accounted for (duplicate, already known, emailable, call,
+   held, good website, no way to contact…). Nothing is sent by a run.
+2. **Review & send** (`/send`) — each email shows the business, its website and
+   how that was verified, its opportunity score and why, the email address with
+   its confidence and where it was published, and the email itself with the
+   evidence it was written from. Edit, regenerate, skip or approve; then
+   **Send N emails**, confirm, and watch "Sending 3 of 10" until "10 sent".
+   A failure is named per email and can be retried safely.
+3. **Call list** (`/calls`) — good prospects with no public email, and
+   follow-ups whose day has come. Tap to ring; one tap records the outcome and
+   sets the next date.
+4. **Replies** (`/replies`) — every reply, with a suggested stage (New,
+   Interested, Needs follow-up, Booked, Won, Not interested). You answer in
+   Gmail — the app never replies for you. Bounces and out-of-office replies are
+   kept separately and never counted as replies.
+5. **Home** answers "what needs me today"; **Prospects**, **Campaigns**,
+   **Run history** (open any run to see where every business went) and
+   **Analytics** (rates hidden until there are enough emails to mean anything)
+   cover the rest. The original **Lead sheet** is still there at `/leads`.
 
 ## Where your leads are stored
 
@@ -67,47 +89,51 @@ Empty website fields are **not** treated as "no website". Research classifies:
 **WARM** = no proper website with some reviews, or social/directory only.
 **COLD** = already has a proper site, or not enough evidence.
 
-## Outreach
+## Sending, and why nothing goes out by accident
 
-**Outreach** (button in the header) turns qualified leads into emails sent from
-your own Gmail. Five tabs: Overview, Prospects, Review, Replies, Settings.
+- A prospect is only emailable with a **public email published by the business
+  itself** (HIGH or MEDIUM confidence — never a guess), a real website
+  opportunity, and no previous contact, opt-out, Not Interested, booking or win.
+- Sole traders and personal mailboxes (`gmail.com`, `btinternet.com`, …) are
+  **held** for you to look at, never emailed automatically.
+- Every email passes a **quality gate** twice — at approval and in the second
+  before Gmail is handed it. It refuses unfilled placeholders, emails that never
+  name the business or the sender, no opt-out, insults, invented facts (review
+  counts or ratings that do not match the record, "trading since", testimonials,
+  statistics), generic openers and buzzwords, and — for AI drafts — any link or
+  address that is not your site, your portfolio or theirs. Each refusal says
+  what to fix.
+- **Sent means Gmail confirmed it.** An email is only marked sent once Gmail
+  returns its message id; the database refuses a sent row without one. Each
+  email carries its own Message-ID, so an answer lost on the way back is found
+  in your Sent folder before anything is retried — a retry can never produce a
+  second copy. Two tabs pressing Send at once still send once.
+- Daily limit (30 maximum) and a per-campaign daily pace are enforced in the
+  same database statement that claims the email, so they cannot be raced past.
+  Test emails never count against them.
+- One live email of each kind per address, across every campaign.
+- Follow-ups (off by default; 4 and 7 days after the last email unless you change it, at most two) stop on
+  any reply, bounce, opt-out or call outcome, and are never sent without you.
 
-The path is: pick prospects → write → **read every one** → approve → queue →
-send → replies stop follow-ups.
+## Business profile
 
-### Nothing sends by accident
+**Settings → Business** holds who the emails are from: business name, your
+name, sending address, website, services, area, tone, call to action, portfolio
+link, signature and opt-out line. The AI prompt, the templates, the From name
+("Charlie at PeakSwiftStudio") and the quality gate all use it — nothing about
+the sender is hard-coded.
 
-- A lead is only offered when it has a **public email found on its own site**
-  (HIGH or MEDIUM confidence — never a guess), a real website opportunity, and
-  has not been contacted, unsubscribed, marked Not Interested, booked or won.
-- Every email is checked **twice**: when you approve it, and again in the second
-  before it is handed to Gmail. Leads change; approval can be days old.
-- A draft that still contains `{{business_name}}`, never names the business,
-  never says who it is from, has no opt-out, or insults them, **cannot be sent**.
-- One live email per address per kind, enforced by a database constraint as
-  well as in code. The same business can never get two first emails.
-- LOW-opportunity leads are hidden unless you explicitly turn them on.
+## Checking Gmail works
 
-### Manual review
-
-UK marketing rules treat a sole trader like an individual. Leads whose email is
-a personal mailbox (`gmail.com`, `btinternet.com`, …) or whose name looks like a
-person's are **held** — shown, counted, but not selectable — for you to look at
-and send by hand if you are happy to.
-
-### Sending controls
-
-Daily limit (30 maximum), emails per batch (5 maximum), delay, follow-ups (off
-by default, max 2). Automatic sending is **forced off** — emails only go out
-when you press Send on the Review tab. The daily count is derived from what
-actually went out, so it cannot drift. `12 / 30` is on every screen.
-
-### Replies
-
-The app reads threads it created to notice a reply. It **never answers** — that
-is yours. A reply stops follow-ups and moves the lead to Replied. A reply asking
-to stop suppresses that address permanently; suppression outlives the lead, so
-re-importing the business cannot resurrect it.
+- **Settings → Gmail → Check connection** refreshes the token, reads the mailbox
+  profile and checks the scopes, the sender identity, token encryption and the
+  last successful send. It never sends.
+- **Send test email** sends one plain email to an address you choose.
+- **Run end-to-end test** runs the real pipeline once — a synthetic prospect,
+  the real email writer, the quality gate, approval, Gmail, the record, and
+  Gmail confirming it is in Sent — to **your test address only** (Settings →
+  Gmail → Test address, or the connected account). It refuses any other
+  recipient, and the synthetic prospect never reaches your sheet or analytics.
 
 ### Connecting Gmail (one-time, and it needs you)
 
@@ -127,8 +153,10 @@ The app needs its own Google OAuth client. This part cannot be automated:
    - `http://localhost:8080/oauth/gmail` (only if you want it locally)
 6. Copy the client ID and secret into the deployment's environment as
    `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`, then redeploy.
-7. In the app: **Outreach → Settings → Connect Gmail**, approve, and use
-   **Send test email** before contacting anyone.
+7. In the app: **Settings → Gmail → Connect Gmail**, approve, press **Check
+   connection**, then **Run end-to-end test** before contacting anyone.
+8. While the consent screen is in "Testing", Google expires the refresh token
+   after 7 days; publish it (Production) once you are happy, or reconnect weekly.
 
 ### Signing in when deployed outside the Grok platform
 
@@ -150,8 +178,9 @@ On [peak-swift-leads.vercel.app](https://peak-swift-leads.vercel.app):
 2. **Deployments → ⋯ → Redeploy** the Production deployment (or push to `main`).
 3. Hard-refresh the site, open `/login`, **Create the owner account** — do this
    promptly, because the first account created claims the app.
-4. Open **Outreach**, then **Settings → Connect Gmail**, and **Send test email**
-   to yourself before contacting anyone.
+4. Open **Settings → Gmail → Connect Gmail**, then **Check connection** and
+   **Run end-to-end test** before contacting anyone.
+5. Fill in **Settings → Business** so emails are signed as you.
 
 **`DATABASE_URL` is the only variable this needs.** Everything else is derived:
 
@@ -201,6 +230,9 @@ Server-only. None of these is ever sent to the browser, and none belongs in git.
 | `GMAIL_SENDER` | Optional | Pins the account, e.g. `PeakSwiftStudio@gmail.com`. Connecting any other account is then refused |
 | `GOOGLE_REDIRECT_URI` | Optional | Defaults to `<origin>/oauth/gmail`, which is right for most deploys |
 | `XAI_API_KEY` | Optional — AI-written emails | Without it, outreach uses the templates and says so |
+| `XAI_MODEL` | Optional | Overrides the model used for drafts |
+| `TOKEN_ENCRYPTION_KEY` | Recommended | Encrypts stored Gmail tokens (AES-256-GCM). Unset, a key is derived from `DATABASE_URL`, then `BETTER_AUTH_SECRET` — changing whichever one is in use means reconnecting Gmail once |
+| `TAVILY_API_KEY` / `BRAVE_SEARCH_API_KEY` / `BING_SEARCH_API_KEY` | Optional — better website discovery | Without one, websites come from map listings and domain checks only. Searches are capped by a daily budget (Settings → Discovery) |
 
 Two more exist **only** so the end-to-end test can point at a local stand-in for
 Google, and must never be set in production: `GOOGLE_OAUTH_BASE` and

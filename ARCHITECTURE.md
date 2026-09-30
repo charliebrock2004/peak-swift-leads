@@ -243,19 +243,69 @@ and Connect is disabled — rather than failing at the moment you try to send.
   push them straight into the real account. Examples are now one explicit tap in
   the empty state.
 
-## Outreach, as shipped
+## Outreach, as shipped (production overhaul)
 
-Phase 3 is built. Sending is **user-triggered only**: `sendQueued` runs from the
-Review tab's Send button, automatic sending is forced off, follow-ups default
-off, and the product ceiling is 30 emails/day and 5 per batch. Tokens never
-leave the server. Do not add a scheduler.
+The overlay panel is gone. The app is a routed shell (`src/routes/_app.*.tsx`,
+screens in `src/components/pages/`) around one workflow: **Find → Review &
+send → Call / Replies**, with Home, Prospects, Campaigns, Run history,
+Analytics, Settings and the original Lead sheet (`/leads`).
 
-The lead fields `email`, `demoUrl`, `placeId`, `foundAt` and `businessStatus`
-are stored, editable, importable and exported, and are what outreach reads.
+### Where things live
+
+| Concern | Module |
+| --- | --- |
+| The send path | `src/lib/outreach/send-engine.server.ts` — `sendOne`, `retryEmails`, `reconcileStale`, `runEndToEndTest` |
+| Gmail HTTP | `src/lib/gmail/client.server.ts` — every failure classified `auth` / `rate_limit` / `permanent` / `transient` / `uncertain`; `findSentMessage` searches Sent by our own Message-ID |
+| Storage | `src/lib/outreach/store.server.ts` (all SQL), `migrations/0009_production.sql` |
+| Quality gate | `src/lib/outreach/quality.ts` (text), `eligibility.ts` (who), `approval.ts` (both, at approval) |
+| Writing | `compose.ts` (prompt + AI acceptance), `templates.ts`, `profile.ts` (the sender) |
+| A Find run | `src/components/app/use-prospect-run.ts` (browser-orchestrated; each step is one short server call), `run-funnel.ts` (the reconciling counts) |
+| What "ready" means | `src/components/app/send-queue.ts` — one classification for the badge, Home and Send |
+| Replies | `replies.ts` (bounce / auto-reply / human / unsubscribe; stage suggestion) |
+| Secrets | `src/lib/crypto/secrets.server.ts` — AES-256-GCM token sealing, HMAC-signed OAuth state |
+| Outbound fetches | `src/lib/net/safe-fetch.server.ts` — public hosts only, DNS-checked, every redirect re-checked |
+
+### How one email is sent
+
+1. The browser asks `sendEmail({ id })` — one email per request, so no
+   serverless function ever holds a batch.
+2. The engine re-reads the email, lead, suppression list, campaign and settings
+   from the database and runs the gate again. Any refusal is recorded with the
+   sentence the UI shows.
+3. `claimWithinLimits` moves the row to `sending` **in one conditional UPDATE**
+   that also counts today's sends (globally and for the campaign). Two tabs,
+   two devices or a double click cannot both claim it, and neither can pass the
+   daily limit.
+4. The message is built with our own `Message-ID` (`<peakswift.<id>@domain>`)
+   and handed to Gmail.
+5. Only Gmail's `id` makes it `sent` (`outreach_emails_sent_has_proof` refuses a
+   sent row without one). An `uncertain` failure (timeout, dropped connection)
+   searches Sent for that Message-ID before saying anything; a retry does the
+   same, so a lost answer is recorded, never re-sent.
+6. A row left in `sending` (the function died) is settled by
+   `reconcileStale` against Gmail the next time Send opens.
+
+Sending stays **user-triggered only**. There is no scheduler and no auto-reply;
+`autoSend` is forced false on every read and write. The product ceiling is 30
+emails a day, applied when settings are saved *and* when they are read.
+
+### Tests that exercise it for real
+
+`send-engine.test.ts` runs the engine against PGLite with every migration and a
+scripted Gmail: happy path, idempotency, a concurrent race, every failure kind,
+partial batches, lost answers (including Gmail indexing late), a database
+failure after Gmail accepted, a function dying after the claim, token expiry
+mid-batch, limits, threading and the end-to-end test's refusals.
+`gmail/client.test.ts` runs the HTTP client against a local stand-in for
+Google. `migrations-upgrade.test.ts` upgrades a database full of legacy (and
+dirty) rows through 0009.
+
+None of this has been run against the real Gmail API from this repository: the
+in-app **Run end-to-end test** is how a deployment proves its own Gmail path.
 
 ## Testing
 
-- `npm run test:app` — the app's own unit tests (leads, sync, CSV import).
+- `npm run test:app` — the app's own tests: units, plus PGLite-backed integration tests of sync, sending and the migrations.
 - `npm test` — those, then the platform template's script tests. Several of the
   latter fail in a plain checkout because they read `.grok/skills/**`, which
   exists only inside the Grok sandbox. That is pre-existing and unrelated to the
