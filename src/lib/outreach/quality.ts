@@ -332,6 +332,45 @@ export function checkEmailQuality(input: QualityInput): QualityVerdict {
   return problems.length === 0 ? { ok: true } : { ok: false, problems };
 }
 
+const LINK_TLDS = "com|co\\.uk|org\\.uk|uk|org|net|io|scot|info|biz|me|ly|app|dev|site|online|xyz|link|website|co";
+// A scheme or "www." makes anything a link; a bare name only counts with a
+// real-looking ending, so "4.9" and "e.g." are never mistaken for one.
+const LINK_PATTERN = new RegExp(
+  `\\b(?:https?:\\/\\/[^\\s<>"')]+|www\\.[^\\s<>"')]+|[a-z0-9][a-z0-9-]*(?:\\.[a-z0-9-]+)*\\.(?:${LINK_TLDS})\\b(?:\\/[^\\s<>"')]*)?)`,
+  "gi",
+);
+
+/** The host of a link or address, lowercased and without "www.", or "". */
+export function linkHost(raw: string): string {
+  let value = raw.trim().toLowerCase().replace(/[.,;:!?]+$/, "");
+  const at = value.lastIndexOf("@");
+  if (at >= 0) value = value.slice(at + 1);
+  value = value.replace(/^[a-z]+:\/\//, "").replace(/^www\./, "");
+  return value.split(/[/?#:]/)[0] ?? "";
+}
+
+/**
+ * Links in a draft that point anywhere other than the places it may point:
+ * your own site, your portfolio, your email's domain, or the business's own
+ * site. Text the model was given — a business name, a scraped page — can try to
+ * smuggle a link in; so can the model on its own. Neither reaches a prospect.
+ */
+export function unexpectedLinks(text: string, allowed: readonly string[]): string[] {
+  const hosts = allowed.map(linkHost).filter(Boolean);
+  const found = new Set<string>();
+  const withoutEmails = text.replace(/[^\s<>()]+@[^\s<>()]+/g, (address) => {
+    const host = linkHost(address);
+    if (host && !hosts.some((ok) => host === ok || host.endsWith(`.${ok}`))) found.add(host);
+    return " ";
+  });
+  for (const match of withoutEmails.matchAll(LINK_PATTERN)) {
+    const host = linkHost(match[0]);
+    if (!host || !host.includes(".")) continue;
+    if (!hosts.some((ok) => host === ok || host.endsWith(`.${ok}`))) found.add(host);
+  }
+  return [...found];
+}
+
 /**
  * Does the text tell them how to stop hearing from us?
  *

@@ -18,7 +18,7 @@ import {
   strongestEvidence,
   type Evidence,
 } from "./evidence.ts";
-import { checkEmailQuality } from "./quality.ts";
+import { checkEmailQuality, unexpectedLinks } from "./quality.ts";
 import {
   composeFromTemplate,
   DEFAULT_SIGNATURE,
@@ -226,6 +226,20 @@ export async function composeEmail(
 
   const signature = profile ? profileSignature(profile) : DEFAULT_SIGNATURE;
   const body = `${draft.body.trim()}\n\n${signature}`;
+  const sender = effectiveProfile(profile);
+  const strayLinks = unexpectedLinks(`${draft.subject}\n${draft.body}`, [
+    sender.website,
+    sender.portfolioUrl,
+    sender.senderEmail,
+    lead.website,
+    lead.email,
+  ]);
+  if (strayLinks.length > 0) {
+    return {
+      ...templateFallback(),
+      fellBackBecause: `AI draft rejected (it pointed to ${strayLinks[0]}, which is neither your site nor theirs) — used a template.`,
+    };
+  }
   const verdict = checkEmailQuality({
     subject: draft.subject,
     body,

@@ -162,6 +162,42 @@ describe("composing", () => {
     assert.match(result.fellBackBecause ?? "", /insulting/i);
   });
 
+  it("falls back when the AI slips in a link that is neither yours nor theirs", async () => {
+    // What a prompt injection in a scraped business name or page would try.
+    const result = await composeEmail(lead({ businessName: "Strathearn Joinery Ltd" }), {
+      profile: { businessName: "PeakSwift Studio", website: "https://peakswift.studio" },
+      generate: async () => ({
+        subject: "A website for Strathearn Joinery Ltd?",
+        body: "Hi,\n\nI'm Charlie from PeakSwift Studio. I couldn't find a website for Strathearn Joinery Ltd in Crieff. Book a slot at https://cheap-sites.example.net/offer and I'll sort it.\n\nIf you'd rather I didn't contact you again, just let me know and I won't.",
+      }),
+    });
+    assert.match(result.generatedBy, /^template:/);
+    assert.match(result.fellBackBecause ?? "", /cheap-sites\.example\.net/);
+    assert.doesNotMatch(result.body, /cheap-sites/);
+  });
+
+  it("keeps an AI draft that links only to your own site or theirs", async () => {
+    const result = await composeEmail(lead({ websiteStatus: "Basic Website", website: "http://strathearnjoinery.co.uk", websiteQuality: "improve" }), {
+      profile: { businessName: "PeakSwift Studio", website: "https://peakswift.studio", portfolioUrl: "https://peakswift.studio/work" },
+      generate: async () => ({
+        subject: "Strathearn Joinery Ltd website",
+        body: "Hi,\n\nI'm Charlie from PeakSwift Studio. I had a look at strathearnjoinery.co.uk, the site for Strathearn Joinery Ltd in Crieff, and I think it could do more for you. Some of my work is at peakswift.studio/work.\n\nIf you'd rather I didn't contact you again, just let me know and I won't.",
+      }),
+    });
+    assert.equal(result.generatedBy, "ai", result.fellBackBecause);
+  });
+
+  it("refuses a stray email address the same way as a stray link", async () => {
+    const result = await composeEmail(lead(), {
+      generate: async () => ({
+        subject: "A website for Strathearn Joinery Ltd?",
+        body: "Hi,\n\nI'm Charlie from PeakSwift Studio. I couldn't find a website for Strathearn Joinery Ltd in Crieff. Reply to deals@othermail.example.com for a quote.\n\nIf you'd rather I didn't contact you again, just let me know and I won't.",
+      }),
+    });
+    assert.match(result.generatedBy, /^template:/);
+    assert.match(result.fellBackBecause ?? "", /othermail\.example\.com/);
+  });
+
   it("falls back when the AI leaves a placeholder in", async () => {
     const result = await composeEmail(lead(), {
       generate: async () => ({

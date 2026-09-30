@@ -22,6 +22,7 @@ import {
   type TemplateKind,
 } from "./types.ts";
 import { DEFAULT_TEMPLATES } from "./templates.ts";
+import { sanitizeSettings } from "./limits.ts";
 import type { Campaign } from "./campaigns.ts";
 import type { BusinessProfile } from "./profile.ts";
 
@@ -217,7 +218,10 @@ export async function loadSettings(sql: Sql, userId: string): Promise<OutreachSe
   );
   const row = rows[0];
   if (!row) return { ...DEFAULT_SETTINGS };
-  return {
+  // Clamped on the way out as well as on the way in: a row written when the
+  // ceilings were looser (an 80-a-day limit from the old settings form) must
+  // not let today's code send past today's ceiling.
+  return sanitizeSettings({
     dailyLimit: Number(row.daily_limit ?? DEFAULT_SETTINGS.dailyLimit),
     batchSize: Number(row.batch_size ?? DEFAULT_SETTINGS.batchSize),
     delaySeconds: Number(row.delay_seconds ?? DEFAULT_SETTINGS.delaySeconds),
@@ -231,7 +235,7 @@ export async function loadSettings(sql: Sql, userId: string): Promise<OutreachSe
     testRecipient: text(row.test_recipient),
     searchDailyBudget: Number(row.search_daily_budget ?? DEFAULT_SETTINGS.searchDailyBudget),
     aiDailyBudget: Number(row.ai_daily_budget ?? DEFAULT_SETTINGS.aiDailyBudget),
-  };
+  }, DEFAULT_SETTINGS);
 }
 
 export async function saveSettings(sql: Sql, userId: string, settings: OutreachSettings): Promise<void> {

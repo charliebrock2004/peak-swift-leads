@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { afterEach, describe, it } from "node:test";
 import {
   bboxFrom,
+  discoverBusinesses,
+  geocodeWithStatus,
   isMerchantName,
   isNationalChain,
   isRejectedOsm,
@@ -150,5 +152,40 @@ describe("listingWebsiteHint", () => {
       }),
       "url",
     );
+  });
+});
+
+describe("when the place lookup fails", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+  const respond = (status: number, body: string) => {
+    globalThis.fetch = (async () => new Response(body, { status, headers: { "content-type": "application/json" } })) as typeof fetch;
+  };
+
+  it("says the service could not be reached — not that the town is wrong — on a 403 or 5xx", async () => {
+    respond(403, "Host not in allowlist");
+    const geo = await geocodeWithStatus("Crieff");
+    assert.equal(geo.point, null);
+    assert.equal(geo.reached, false);
+    const result = await discoverBusinesses({ location: "Crieff", businessType: "Joiner", limit: 10, radiusMiles: 10 });
+    assert.equal(result.ok, false);
+    assert.match(result.ok ? "" : result.error, /could not be reached \(HTTP 403\)/);
+    assert.doesNotMatch(result.ok ? "" : result.error, /Could not find/);
+  });
+
+  it("says the same when the network itself fails", async () => {
+    globalThis.fetch = (async () => {
+      throw new TypeError("fetch failed");
+    }) as typeof fetch;
+    const result = await discoverBusinesses({ location: "Crieff", businessType: "Joiner", limit: 10, radiusMiles: 10 });
+    assert.match(result.ok ? "" : result.error, /could not be reached/);
+  });
+
+  it("only blames the place name when the service answered and found nothing", async () => {
+    respond(200, JSON.stringify({ features: [], results: [] }));
+    const result = await discoverBusinesses({ location: "Nowheresville", businessType: "Joiner", limit: 10, radiusMiles: 10 });
+    assert.match(result.ok ? "" : result.error, /Could not find “Nowheresville”/);
   });
 });
