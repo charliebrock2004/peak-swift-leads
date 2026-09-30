@@ -36,20 +36,16 @@ function place(partial: Partial<DiscoveredPlace> & { businessName: string }): Di
 }
 
 describe("profileFor", () => {
-  it("maps joiners to Photon queries, not a BizData category", () => {
+  it("maps joiners to Photon queries", () => {
     const profile = profileFor("Joiner");
     assert.deepEqual(profile.queries, ["joinery", "joiner", "carpenter"]);
     assert.deepEqual(profile.nominatim, ["joinery", "carpenter"]);
-    assert.equal(profile.bizdata, undefined);
   });
 
-  it("maps restaurants to BizData", () => {
-    assert.equal(profileFor("Restaurant").bizdata, "restaurant");
-  });
-
-  it("maps garages to car_repair", () => {
-    assert.equal(profileFor("Mechanic").bizdata, "car_repair");
-    assert.equal(profileFor("Garage").bizdata, "car_repair");
+  it("has no unknown third-party source in any trade profile", () => {
+    for (const trade of ["Joiner", "Restaurant", "Mechanic", "Garage", "Hairdresser"]) {
+      assert.equal("bizdata" in profileFor(trade), false, trade);
+    }
   });
 
   it("maps tilers, flooring and gyms", () => {

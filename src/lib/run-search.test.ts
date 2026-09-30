@@ -242,7 +242,7 @@ describe("the discovery funnel a run reports", () => {
       location: input.location,
       businessType: "Joiner",
       funnel: {
-        queriesSent: 0, towns: [], rawBySource: { nominatim: 0, photon: 0, bizdata: 0, companiesHouse: 0 },
+        queriesSent: 0, towns: [], rawBySource: { nominatim: 0, photon: 0, companiesHouse: 0 },
         rawTotal: 0, unique: 0, duplicatesMerged: 0, droppedToFetchBudget: 0,
         withWebsite: 0, withoutWebsite: 0, withListedEmail: 0, returned: 1, ...funnel,
       },

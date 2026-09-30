@@ -10,7 +10,6 @@ import {
   MAX_EMAIL_SEARCHES,
   classifySearchFailure,
   MAX_RESULTS_PER_QUERY,
-  parseBing,
   parseBrave,
   parseProvider,
   parseTavily,
@@ -194,18 +193,9 @@ describe("provider responses", () => {
     assert.equal(out[1].snippet, "");
   });
 
-  it("reads a Bing payload", () => {
-    const out = parseBing({ webPages: { value: [
-      { name: "Cutting Edge", url: "https://cuttingedge.co.uk", snippet: "Cupar salon" },
-    ] } });
-    assert.equal(out[0].title, "Cutting Edge");
-    assert.equal(out[0].snippet, "Cupar salon");
-  });
-
   it("survives a payload in any unexpected shape", () => {
     for (const junk of [null, undefined, {}, { web: {} }, { web: { results: "no" } }, [1, 2]]) {
       assert.deepEqual(parseBrave(junk), []);
-      assert.deepEqual(parseBing(junk), []);
     }
   });
 
@@ -215,7 +205,7 @@ describe("provider responses", () => {
 
   it("dispatches to the right parser", () => {
     assert.equal(parseProvider("brave", { web: { results: [{ url: "https://a.test" }] } }).length, 1);
-    assert.equal(parseProvider("bing", { webPages: { value: [{ url: "https://a.test" }] } }).length, 1);
+    assert.equal(parseProvider("tavily", { results: [{ url: "https://a.test" }] }).length, 1);
   });
 });
 
@@ -224,19 +214,19 @@ describe("how a provider is called", () => {
     // Scraping a search results page breaks the provider's terms and their
     // markup. Only documented API endpoints are ever contacted.
     assert.ok(providerRequest("brave", "k", "q").url.startsWith("https://api.search.brave.com/"));
-    assert.ok(providerRequest("bing", "k", "q").url.startsWith("https://api.bing.microsoft.com/"));
-    for (const p of ["brave", "bing"] as const) {
+    assert.ok(providerRequest("tavily", "k", "q").url.startsWith("https://api.tavily.com/"));
+    for (const p of ["brave", "tavily"] as const) {
       assert.ok(!/google\.com\/search|bing\.com\/search|duckduckgo/.test(providerRequest(p, "k", "q").url));
     }
   });
 
   it("sends the key in the header each provider documents", () => {
     assert.equal(providerRequest("brave", "secret", "q").headers["X-Subscription-Token"], "secret");
-    assert.equal(providerRequest("bing", "secret", "q").headers["Ocp-Apim-Subscription-Key"], "secret");
+    assert.equal(providerRequest("tavily", "secret", "q").headers.Authorization, "Bearer secret");
   });
 
   it("never puts the key in the URL", () => {
-    for (const p of ["brave", "bing"] as const) {
+    for (const p of ["brave", "tavily"] as const) {
       assert.ok(!providerRequest(p, "secret", "q").url.includes("secret"), p);
     }
   });
@@ -317,9 +307,8 @@ describe("how Tavily is called", () => {
     assert.equal(body.include_answer, false);
   });
 
-  it("still sends GET for the header-authenticated providers", () => {
+  it("still sends GET for the header-authenticated provider", () => {
     assert.equal(providerRequest("brave", "k", "q").method, "GET");
-    assert.equal(providerRequest("bing", "k", "q").method, "GET");
     assert.equal(providerRequest("brave", "k", "q").body, undefined);
   });
 });
@@ -380,5 +369,11 @@ describe("nameVariations", () => {
   it("has nothing to say about an empty name", () => {
     assert.deepEqual(nameVariations(""), []);
     assert.deepEqual(nameVariations("   "), []);
+  });
+});
+
+describe("retired providers", () => {
+  it("no longer offers Bing, whose API Microsoft retired in August 2025", () => {
+    assert.deepEqual([...SEARCH_PROVIDERS], ["tavily", "brave"]);
   });
 });

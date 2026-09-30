@@ -177,7 +177,8 @@ export const researchProspects = createServerFn({ method: "POST" })
     return { location, businessType, limit, radiusMiles };
   })
   .handler(async ({ data }): Promise<ResearchResult> => {
-    const found = await discoverBusinesses(data);
+    const { sharedChLimiter } = await import("@/lib/sources/ch-limiter.server");
+    const found = await discoverBusinesses({ ...data, companiesHouse: { limiter: await sharedChLimiter() } });
     if (!found.ok) return { ok: false, error: found.error };
 
     // Live-checking a website costs an HTTP round trip, so one area inspects at

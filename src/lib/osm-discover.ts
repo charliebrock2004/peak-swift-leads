@@ -1,10 +1,10 @@
 /**
- * Free local-business discovery.
+ * Local-business discovery from sources with a known owner and licence.
  *
- * Sources, all without an API key:
- *   1. Companies House — UK trades (joiners, plumbers, builders, electricians)
- *   2. Nominatim / Photon / BizData — mapped shops (restaurants, hair, garages)
- *   3. Overpass, last resort if maps fail and CH is empty
+ *   1. Companies House official API (`COMPANIES_HOUSE_API_KEY`) — registered
+ *      companies by SIC code near the target towns (see companies-house.ts)
+ *   2. OpenStreetMap via Nominatim / Photon — mapped premises (ODbL)
+ *   3. Overpass (OpenStreetMap), last resort if the others return nothing
  *
  * Nothing here talks to Google Places or xAI. Later phases can add a paid
  * Places adapter behind the same DiscoveredPlace shape.
@@ -12,7 +12,7 @@
 
 import { normalizeName } from "./leads.ts";
 import { chSearchTowns } from "./scotland-places.ts";
-import { chSearchQueries, searchCompaniesHouse, type CompanyHit } from "./companies-house.ts";
+import { companiesHouseKey, searchCompaniesHouse, type ChClientOptions, type CompanyHit } from "./companies-house.ts";
 
 export type DiscoveredPlace = {
   businessName: string;
@@ -46,7 +46,7 @@ export type DiscoveryFunnel = {
   queriesSent: number;
   /** The towns Companies House was asked about. */
   towns: string[];
-  rawBySource: { nominatim: number; photon: number; bizdata: number; companiesHouse: number };
+  rawBySource: { nominatim: number; photon: number; companiesHouse: number };
   /** Rows returned before de-duplication. */
   rawTotal: number;
   /** Distinct businesses after merging. */
@@ -163,7 +163,6 @@ const REJECT_VALUES = new Set([
 type TradeProfile = {
   queries: string[];
   nominatim: string[];
-  bizdata?: string;
   rejectName?: RegExp;
   /** false = bias to the area, then radius-filter (sparse UK crafts). */
   bounded?: boolean;
@@ -203,28 +202,28 @@ const TRADE_PROFILES: Array<{ match: RegExp; profile: TradeProfile }> = [
   { match: /tree/, profile: { queries: ["tree surgeon", "arborist"], nominatim: ["tree surgeon"] } },
   {
     match: /mechan/,
-    profile: { queries: ["mechanic", "garage"], nominatim: ["car repair", "garage"], bizdata: "car_repair" },
+    profile: { queries: ["mechanic", "garage"], nominatim: ["car repair", "garage"] },
   },
   {
     match: /garage/,
-    profile: { queries: ["garage", "car repair"], nominatim: ["garage"], bizdata: "car_repair" },
+    profile: { queries: ["garage", "car repair"], nominatim: ["garage"] },
   },
-  { match: /barber/, profile: { queries: ["barber"], nominatim: ["barber", "hairdresser"], bizdata: "hairdresser" } },
+  { match: /barber/, profile: { queries: ["barber"], nominatim: ["barber", "hairdresser"] } },
   {
     match: /hair/,
-    profile: { queries: ["hairdresser", "salon"], nominatim: ["hairdresser"], bizdata: "hairdresser" },
+    profile: { queries: ["hairdresser", "salon"], nominatim: ["hairdresser"] },
   },
-  { match: /beauty|beautician/, profile: { queries: ["beauty salon", "beauty"], nominatim: ["beauty"], bizdata: "beauty" } },
-  { match: /florist|flower/, profile: { queries: ["florist"], nominatim: ["florist"], bizdata: "florist" } },
+  { match: /beauty|beautician/, profile: { queries: ["beauty salon", "beauty"], nominatim: ["beauty"] } },
+  { match: /florist|flower/, profile: { queries: ["florist"], nominatim: ["florist"] } },
   {
     match: /restaurant/,
-    profile: { queries: ["restaurant"], nominatim: ["restaurant"], bizdata: "restaurant" },
+    profile: { queries: ["restaurant"], nominatim: ["restaurant"] },
   },
-  { match: /cafe|café/, profile: { queries: ["cafe"], nominatim: ["cafe"], bizdata: "cafe" } },
-  { match: /\bpub\b/, profile: { queries: ["pub"], nominatim: ["pub"], bizdata: "bar" } },
+  { match: /cafe|café/, profile: { queries: ["cafe"], nominatim: ["cafe"] } },
+  { match: /\bpub\b/, profile: { queries: ["pub"], nominatim: ["pub"] } },
   {
     match: /takeaway|take away/,
-    profile: { queries: ["takeaway", "fast food"], nominatim: ["fast food", "takeaway"], bizdata: "restaurant" },
+    profile: { queries: ["takeaway", "fast food"], nominatim: ["fast food", "takeaway"] },
   },
   { match: /clean/, profile: { queries: ["cleaner", "cleaning"], nominatim: ["cleaning"] } },
   { match: /dog groom/, profile: { queries: ["dog groomer", "grooming"], nominatim: ["pet grooming"] } },
@@ -591,72 +590,6 @@ function keepPlace(
   if (profile.rejectName?.test(name)) return false;
   if (isStreetLike(name, phone, website)) return false;
   return true;
-}
-
-type BizDataBusiness = {
-  name?: string;
-  category?: string;
-  address?: string;
-  phone?: string;
-  website?: string;
-  email?: string;
-  lat?: number;
-  lon?: number;
-};
-
-async function searchBizData(
-  location: string,
-  category: string,
-  radiusMiles: number,
-  limit: number,
-  trade: string,
-  center: GeoPoint,
-): Promise<{ places: DiscoveredPlace[]; error?: string }> {
-  const radiusKm = Math.min(80, Math.max(1, Math.round(radiusMiles * MILES_TO_KM)));
-  const url = `https://bizdata-web.vercel.app/api/businesses?location=${encodeURIComponent(location)}&category=${encodeURIComponent(category)}&radius_km=${radiusKm}&limit=${Math.min(200, Math.max(limit, 20))}`;
-  const result = await fetchJson(url, { timeoutMs: 3_000 });
-  if (!result.ok) {
-    if (result.status === 400) return { places: [] };
-    return { places: [], error: `BizData: ${result.error || `HTTP ${result.status}`}` };
-  }
-  const payload = result.json as { businesses?: BizDataBusiness[]; error?: string };
-  if (payload?.error) return { places: [], error: `BizData: ${payload.error}` };
-  const places: DiscoveredPlace[] = [];
-  for (const row of payload.businesses ?? []) {
-    const name = asText(row.name);
-    if (name.length < 2 || isNationalChain(name) || isMerchantName(name)) continue;
-    const lat = asNum(row.lat);
-    const lng = asNum(row.lon);
-    if (typeof lat === "number" && typeof lng === "number") {
-      if (milesBetween(center, { lat, lng }) > radiusMiles + 2) continue;
-    }
-    const address = asText(row.address);
-    const town =
-      address
-        .split(",")
-        .map((part) => part.trim())
-        .filter((part) => part && !/^[A-Z]{1,2}\d/i.test(part))
-        .slice(-2, -1)[0] || location;
-    places.push(
-      toPlace(
-        name,
-        trade,
-        town,
-        address,
-        asText(row.phone),
-        asText(row.email),
-        asText(row.website),
-        lat,
-        lng,
-        "OpenStreetMap via BizData",
-        "",
-        "",
-        "",
-        true,
-      ),
-    );
-  }
-  return { places };
 }
 
 async function searchPhoton(
@@ -1149,6 +1082,8 @@ export async function discoverBusinesses(options: {
   businessType: string;
   limit: number;
   radiusMiles: number;
+  /** Key, shared rate limiter and transport for Companies House. */
+  companiesHouse?: ChClientOptions;
 }): Promise<DiscoverResult> {
   const location = options.location.trim();
   const trade = options.businessType.trim();
@@ -1177,29 +1112,31 @@ export async function discoverBusinesses(options: {
   // town rather than every word in three, so a wider ring costs no more calls.
   const towns = chSearchTowns(location, radiusMiles >= 40 ? 12 : 8);
 
-  const chQueryCount = chSearchQueries(trade, towns).length;
+  const chQueryCount = companiesHouseKey() ? Math.min(14, towns.length + 1) : 0;
   const nominatimTermCount = (profile.nominatim.length ? profile.nominatim : profile.queries).slice(0, 3).length;
 
-  const [nominatim, photon, biz, companies] = await Promise.all([
+  const [nominatim, photon, companies] = await Promise.all([
     searchNominatim(trade, profile, center, radiusMiles, limit, center.label),
     searchPhoton(trade, profile, center, radiusMiles, limit, center.label),
-    profile.bizdata
-      ? searchBizData(location, profile.bizdata, radiusMiles, limit, trade, center)
-      : Promise.resolve({ places: [] as DiscoveredPlace[], error: undefined as string | undefined }),
-    searchCompaniesHouse({
-      trade,
-      location,
-      towns,
-      center,
-      radiusMiles,
-      limit,
-    }),
+    searchCompaniesHouse(
+      {
+        trade,
+        location,
+        towns,
+        center,
+        radiusMiles,
+        limit,
+      },
+      options.companiesHouse ?? {},
+    ),
   ]);
   const sourceErrors: string[] = [];
   if (nominatim.error && nominatim.places.length === 0) sourceErrors.push(nominatim.error);
   if (photon.error && photon.places.length === 0) sourceErrors.push(`OpenStreetMap search: ${photon.error}`);
-  if (biz.error && biz.places.length === 0) sourceErrors.push(biz.error);
-  if (companies.error && companies.hits.length === 0) sourceErrors.push(companies.error);
+  // "Off" is a configuration state, not an outage: it is reported as a warning
+  // on a successful run, never as the reason a run failed.
+  if (companies.disabled) warnings.push(companies.error ?? "Companies House is off.");
+  else if (companies.error && companies.hits.length === 0) sourceErrors.push(companies.error);
 
   // The funnel, counted rather than guessed at. Without these it is impossible
   // to tell whether a disappointing run failed to FIND businesses, failed to
@@ -1209,14 +1146,11 @@ export async function discoverBusinesses(options: {
   const rawBySource = {
     nominatim: nominatim.places.length,
     photon: photon.places.length,
-    bizdata: biz.places.length,
     companiesHouse: companyPlaces.length,
   };
-  const rawTotal =
-    rawBySource.nominatim + rawBySource.photon + rawBySource.bizdata + rawBySource.companiesHouse;
+  const rawTotal = rawBySource.nominatim + rawBySource.photon + rawBySource.companiesHouse;
 
   let places = mergePlaces(nominatim.places, photon.places);
-  places = mergePlaces(places, biz.places);
   places = mergePlaces(places, companyPlaces);
 
   if (

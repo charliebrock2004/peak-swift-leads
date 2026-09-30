@@ -266,7 +266,6 @@ function searchProvider(): { name: SearchProviderName; key: string } | null {
   const keys: Record<SearchProviderName, string | undefined> = {
     tavily: process.env.TAVILY_API_KEY,
     brave: process.env.BRAVE_SEARCH_API_KEY,
-    bing: process.env.BING_SEARCH_API_KEY,
   };
   for (const name of SEARCH_PROVIDERS) {
     const key = keys[name]?.trim();

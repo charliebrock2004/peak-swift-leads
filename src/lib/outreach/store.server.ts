@@ -1375,7 +1375,7 @@ export async function saveProfile(sql: Sql, userId: string, profile: BusinessPro
 export async function consumeBudget(
   sql: Sql,
   userId: string,
-  kind: "search" | "ai",
+  kind: "search" | "ai" | "companies-house",
   amount: number,
   limit: number,
   day: string = new Date().toISOString().slice(0, 10),

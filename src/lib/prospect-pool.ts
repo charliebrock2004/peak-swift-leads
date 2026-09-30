@@ -16,12 +16,12 @@ export type PoolExclusion = "duplicate" | "known" | "suppressed" | "contacted";
  * actually stamps maps to one of the named keys, so `other` staying at zero is
  * a checked property and not a hope.
  */
-export const SOURCE_KEYS = ["companiesHouse", "nominatim", "photon", "bizdata", "overpass", "other"] as const;
+export const SOURCE_KEYS = ["companiesHouse", "nominatim", "photon", "overpass", "other"] as const;
 export type SourceKey = (typeof SOURCE_KEYS)[number];
 export type SourceTally = Record<SourceKey, number>;
 
 export function emptySourceTally(): SourceTally {
-  return { companiesHouse: 0, nominatim: 0, photon: 0, bizdata: 0, overpass: 0, other: 0 };
+  return { companiesHouse: 0, nominatim: 0, photon: 0, overpass: 0, other: 0 };
 }
 
 /**
@@ -34,7 +34,6 @@ export function emptySourceTally(): SourceTally {
 export function sourceKeyOf(source: string): SourceKey {
   const value = source.toLowerCase();
   if (value.includes("companies house")) return "companiesHouse";
-  if (value.includes("bizdata")) return "bizdata";
   if (value.includes("nominatim")) return "nominatim";
   if (value.includes("overpass")) return "overpass";
   // Plain "OpenStreetMap" is what the Photon search stamps; the other OSM

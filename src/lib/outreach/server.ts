@@ -349,9 +349,7 @@ export const getOutreachState = createServerFn({ method: "GET" })
           ? "Tavily"
           : process.env.BRAVE_SEARCH_API_KEY?.trim()
             ? "Brave"
-            : process.env.BING_SEARCH_API_KEY?.trim()
-              ? "Bing"
-              : "",
+            : "",
         connection: store.publicConnection(account, config !== null, await clientIdentity(config)),
         settings,
         templates,

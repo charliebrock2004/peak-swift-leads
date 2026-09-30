@@ -17,8 +17,13 @@
  * dependency.
  */
 
-/** Providers this app knows how to talk to, in the order they are preferred. */
-export const SEARCH_PROVIDERS = ["tavily", "brave", "bing"] as const;
+/**
+ * Providers this app knows how to talk to, in the order they are preferred.
+ *
+ * Bing was removed: Microsoft retired the Bing Search APIs in August 2025, so
+ * the integration could only ever fail.
+ */
+export const SEARCH_PROVIDERS = ["tavily", "brave"] as const;
 export type SearchProviderName = (typeof SEARCH_PROVIDERS)[number];
 
 export type SearchResult = {
@@ -29,7 +34,7 @@ export type SearchResult = {
   /**
    * The page's extracted text, when the provider returns it.
    *
-   * Tavily does; Brave and Bing do not. It matters more than it sounds: the
+   * Tavily does; Brave does not. It matters more than it sounds: the
    * provider has already fetched the page, so an address published there can be
    * read without spending one of our own page budget on it — and on a site that
    * blocks our crawler but not theirs, it is the only way we will ever see it.
@@ -311,23 +316,6 @@ export function parseBrave(payload: unknown): SearchResult[] {
     .slice(0, MAX_RESULTS_PER_QUERY);
 }
 
-/** Bing's `/v7.0/search` payload, reduced to what we use. */
-export function parseBing(payload: unknown): SearchResult[] {
-  const pages = (payload as { webPages?: { value?: unknown } })?.webPages?.value;
-  if (!Array.isArray(pages)) return [];
-  return pages
-    .map((entry) => {
-      const row = entry as { name?: unknown; url?: unknown; snippet?: unknown };
-      return {
-        title: typeof row.name === "string" ? row.name : "",
-        url: typeof row.url === "string" ? row.url : "",
-        snippet: typeof row.snippet === "string" ? row.snippet : "",
-      };
-    })
-    .filter((row) => row.url !== "")
-    .slice(0, MAX_RESULTS_PER_QUERY);
-}
-
 /** Where to send the request, and how to authenticate it. */
 export type ProviderRequest = {
   url: string;
@@ -370,17 +358,10 @@ export function providerRequest(
       }),
     };
   }
-  if (provider === "brave") {
-    return {
-      url: `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${MAX_RESULTS_PER_QUERY}&country=gb`,
-      method: "GET",
-      headers: { Accept: "application/json", "X-Subscription-Token": key },
-    };
-  }
   return {
-    url: `https://api.bing.microsoft.com/v7.0/search?q=${encodeURIComponent(query)}&count=${MAX_RESULTS_PER_QUERY}&mkt=en-GB`,
+    url: `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${MAX_RESULTS_PER_QUERY}&country=gb`,
     method: "GET",
-    headers: { Accept: "application/json", "Ocp-Apim-Subscription-Key": key },
+    headers: { Accept: "application/json", "X-Subscription-Token": key },
   };
 }
 
@@ -409,7 +390,7 @@ export function parseTavily(payload: unknown): SearchResult[] {
 
 export function parseProvider(provider: SearchProviderName, payload: unknown): SearchResult[] {
   if (provider === "tavily") return parseTavily(payload);
-  return provider === "brave" ? parseBrave(payload) : parseBing(payload);
+  return parseBrave(payload);
 }
 
 

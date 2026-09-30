@@ -45,7 +45,7 @@ export type PlannedSearchResult = {
     queriesSent: number;
     rawTotal: number;
     /** Rows each source contributed, so a dead source is visible as a zero. */
-    rawBySource: { nominatim: number; photon: number; bizdata: number; companiesHouse: number };
+    rawBySource: { nominatim: number; photon: number; companiesHouse: number };
     unique: number;
     duplicatesMerged: number;
     droppedToFetchBudget: number;
@@ -144,7 +144,7 @@ export async function runPlannedSearch(options: {
     areas: 0,
     queriesSent: 0,
     rawTotal: 0,
-    rawBySource: { nominatim: 0, photon: 0, bizdata: 0, companiesHouse: 0 },
+    rawBySource: { nominatim: 0, photon: 0, companiesHouse: 0 },
     unique: 0,
     duplicatesMerged: 0,
     droppedToFetchBudget: 0,
