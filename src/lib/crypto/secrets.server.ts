@@ -135,3 +135,47 @@ export function verifyOAuthState(
   if (!Number.isFinite(at) || now - at > STATE_MAX_AGE_MS || at - now > 60_000) return { ok: false, reason: "expired" };
   return { ok: true };
 }
+
+// ── Unsubscribe links ────────────────────────────────────────────────────────
+
+export type UnsubscribeClaim = { userId: string; email: string; emailId: string };
+
+function unsubscribeMac(payload: string): string {
+  const { key } = material();
+  return createHmac("sha256", key).update(`unsubscribe:${payload}`).digest("base64url").slice(0, 32);
+}
+
+/**
+ * A token for an unsubscribe link, bound to one account, one address and the
+ * email it was sent in.
+ *
+ * Signed rather than stored, so the link works for as long as the recipient
+ * keeps the email, and cannot be edited to unsubscribe some other address or
+ * act on another account. It deliberately never expires: an opt-out that stops
+ * working after a month is not an opt-out.
+ */
+export function signUnsubscribe(claim: UnsubscribeClaim): string {
+  const payload = Buffer.from(
+    JSON.stringify({ u: claim.userId, e: claim.email.trim().toLowerCase(), i: claim.emailId }),
+  ).toString("base64url");
+  return `v1.${payload}.${unsubscribeMac(payload)}`;
+}
+
+export function verifyUnsubscribe(token: string): { ok: true; claim: UnsubscribeClaim } | { ok: false } {
+  const parts = (token ?? "").trim().split(".");
+  if (parts.length !== 3 || parts[0] !== "v1") return { ok: false };
+  const [, payload, mac] = parts as [string, string, string];
+  const expected = Buffer.from(unsubscribeMac(payload));
+  const given = Buffer.from(mac);
+  if (expected.length !== given.length || !timingSafeEqual(expected, given)) return { ok: false };
+  try {
+    const parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as { u?: unknown; e?: unknown; i?: unknown };
+    const userId = typeof parsed.u === "string" ? parsed.u : "";
+    const email = typeof parsed.e === "string" ? parsed.e : "";
+    const emailId = typeof parsed.i === "string" ? parsed.i : "";
+    if (!userId || !email.includes("@")) return { ok: false };
+    return { ok: true, claim: { userId, email, emailId } };
+  } catch {
+    return { ok: false };
+  }
+}

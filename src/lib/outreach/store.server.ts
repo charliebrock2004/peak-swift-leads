@@ -972,6 +972,47 @@ export async function suppress(
   );
 }
 
+/**
+ * An opt-out arriving from the recipient's own unsubscribe link.
+ *
+ * Everything that could still reach the address stops at once: the address is
+ * suppressed (permanently, and outliving the lead), the business is marked
+ * unsubscribed, and any draft or approved email to it is withdrawn. Idempotent
+ * — a second click, or a mail client's one-click POST after a human click,
+ * changes nothing.
+ */
+export async function unsubscribeByLink(
+  sql: Sql,
+  userId: string,
+  claim: { email: string; emailId: string },
+  now: Date = new Date(),
+): Promise<{ businessName: string; alreadySuppressed: boolean }> {
+  const email = claim.email.trim().toLowerCase();
+  const rows = await sql.query<{ lead_id: string; business_name: string }>(
+    `select lead_id, business_name from outreach_emails where user_id = $1 and id = $2`,
+    [userId, claim.emailId],
+  );
+  const leadId = rows[0]?.lead_id ?? "";
+  const businessName = rows[0]?.business_name ?? "";
+  const before = await sql.query<{ n: number }>(
+    `select count(*)::int as n from outreach_suppression where user_id = $1 and email = $2`,
+    [userId, email],
+  );
+  await suppress(sql, userId, { email, reason: "Unsubscribed with the link in our email", leadId, businessName });
+  await sql.query(
+    `update leads set unsubscribed = case when unsubscribed <> '' then unsubscribed else $3 end,
+                      outreach_status = 'Unsubscribed', updated_at = now()
+      where user_id = $1 and (lower(email) = $2 or id = $4)`,
+    [userId, email, now.toISOString(), leadId],
+  );
+  await sql.query(
+    `update outreach_emails set status = 'skipped', error = 'The recipient unsubscribed.', updated_at = now()
+      where user_id = $1 and lower(recipient) = $2 and status in ('draft', 'approved', 'queued')`,
+    [userId, email],
+  );
+  return { businessName, alreadySuppressed: Number(before[0]?.n ?? 0) > 0 };
+}
+
 export async function suppressedSet(sql: Sql, userId: string): Promise<Set<string>> {
   const rows = await sql.query<{ email: string }>(
     `select email from outreach_suppression where user_id = $1`,

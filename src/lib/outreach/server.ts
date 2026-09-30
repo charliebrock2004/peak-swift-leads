@@ -924,10 +924,12 @@ async function engineDeps(userId: string): Promise<import("./send-engine.server.
   const { getSql } = await import("@/lib/db");
   const gmail = await import("@/lib/gmail/client.server.ts");
   const sql = await getSql();
+  const { appOrigin } = await import("@/lib/app-origin");
   let token: Promise<import("./send-engine.server.ts").TokenResult> | null = null;
   return {
     sql,
     userId,
+    publicOrigin: appOrigin(),
     gmail: {
       sendMessage: gmail.sendMessage,
       findSentMessage: gmail.findSentMessage,
@@ -1799,6 +1801,16 @@ export const checkGmailHealth = createServerFn({ method: "POST" })
       } else {
         add({ id: "identity", label: "Sender identity", level: "ok", detail: `Emails are sent as "${profile.senderName} at ${profile.businessName}" <${mailbox}>.` });
       }
+      const { senderAdvice } = await import("./sender-advice.ts");
+      const advice = senderAdvice(mailbox);
+      if (advice.kind === "consumer") add({ id: "sender-domain", label: "Sending domain", level: "warn", detail: advice.advice });
+      else if (advice.kind === "domain") add({ id: "sender-domain", label: "Sending domain", level: "ok", detail: advice.advice });
+      const { appOrigin } = await import("@/lib/app-origin");
+      add(
+        appOrigin()
+          ? { id: "unsubscribe", label: "Unsubscribe link", level: "ok", detail: `Each email carries a signed one-click unsubscribe link to ${appOrigin()}/unsubscribe.` }
+          : { id: "unsubscribe", label: "Unsubscribe link", level: "warn", detail: "No public address is known for this deployment, so emails carry only the reply-to-stop line and a mailto unsubscribe. Set APP_URL." },
+      );
 
       const lastSend = account.last_send_at ? new Date(account.last_send_at as string).toISOString() : "";
       add({

@@ -45,6 +45,7 @@ import { cn } from "@/lib/utils";
 import { useAppData } from "@/components/app/app-data";
 import { relativeTime } from "@/components/app/format";
 import { missingAdvice, missingNames, whereRunning } from "@/lib/outreach/oauth-setup";
+import { senderAdvice } from "@/lib/outreach/sender-advice";
 
 const SECTIONS = [
   { id: "gmail", label: "Gmail" },
@@ -310,6 +311,9 @@ function GmailSection({ state }: { state: OutreachState }) {
             Disconnect
           </Button>
         </div>
+        {connection.status === "connected" && senderAdvice(connection.email).kind === "consumer" ? (
+          <p className="rounded-lg bg-warn/10 px-3.5 py-2.5 text-sm text-muted">{senderAdvice(connection.email).advice}</p>
+        ) : null}
         {connection.intendedSender && connection.status !== "connected" ? (
           <p className="text-xs text-subtle">
             Connect <span className="text-muted">{connection.intendedSender}</span> — Google will offer that account, and any other is refused.

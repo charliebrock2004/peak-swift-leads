@@ -79,6 +79,11 @@ export type MessageInput = {
   /** Override the Date header. Tests pin this; production uses now. */
   date?: Date;
   messageId?: string;
+  /**
+   * RFC 2369 / RFC 8058 one-click unsubscribe. `url` must be https and is what
+   * a mail client's "Unsubscribe" button POSTs to; `mailto` is the fallback.
+   */
+  listUnsubscribe?: { url: string; mailto?: string };
 };
 
 /**
@@ -105,9 +110,31 @@ export function buildMimeMessage(input: MessageInput): string {
   if (input.replyTo) headers.push(`Reply-To: ${formatAddress(input.replyTo)}`);
   if (input.inReplyTo) headers.push(`In-Reply-To: ${sanitizeHeaderValue(input.inReplyTo)}`);
   if (input.references) headers.push(`References: ${sanitizeHeaderValue(input.references)}`);
+  const unsubscribe = listUnsubscribeHeaders(input.listUnsubscribe);
+  headers.push(...unsubscribe);
 
   const body = wrap(base64OfText(input.body.replace(/\r?\n/g, "\r\n")));
   return `${headers.join("\r\n")}\r\n\r\n${body}`;
+}
+
+/**
+ * `List-Unsubscribe` + `List-Unsubscribe-Post`, or nothing.
+ *
+ * Only an https URL is accepted for the one-click header (RFC 8058 requires
+ * it), and both values pass through the header sanitiser: a URL can never
+ * carry a line break into a new header.
+ */
+export function listUnsubscribeHeaders(value: MessageInput["listUnsubscribe"]): string[] {
+  if (!value) return [];
+  const url = sanitizeHeaderValue(value.url);
+  const mailto = value.mailto ? sanitizeHeaderValue(value.mailto) : "";
+  const parts: string[] = [];
+  if (/^https:\/\/[^\s<>]+$/i.test(url)) parts.push(`<${url}>`);
+  if (/^[^\s<>@]+@[^\s<>@]+$/.test(mailto)) parts.push(`<mailto:${mailto}?subject=unsubscribe>`);
+  if (parts.length === 0) return [];
+  const headers = [`List-Unsubscribe: ${parts.join(", ")}`];
+  if (parts[0]!.startsWith("<https:")) headers.push("List-Unsubscribe-Post: List-Unsubscribe=One-Click");
+  return headers;
 }
 
 /** The `raw` value for `users.messages.send`. */

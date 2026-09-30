@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as AppRouteImport } from './routes/_app'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as UnsubscribeRouteImport } from './routes/unsubscribe'
 import { Route as AppIndexRouteImport } from './routes/_app.index'
 import { Route as AppAnalyticsRouteImport } from './routes/_app.analytics'
 import { Route as AppCallsRouteImport } from './routes/_app.calls'
@@ -34,6 +35,11 @@ const AppRoute = AppRouteImport.update({
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const UnsubscribeRoute = UnsubscribeRouteImport.update({
+  id: '/unsubscribe',
+  path: '/unsubscribe',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AppIndexRoute = AppIndexRouteImport.update({
@@ -115,6 +121,7 @@ const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
   '/login': typeof LoginRoute
+  '/unsubscribe': typeof UnsubscribeRoute
   '/analytics': typeof AppAnalyticsRoute
   '/calls': typeof AppCallsRoute
   '/campaigns': typeof AppCampaignsRoute
@@ -132,6 +139,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/login': typeof LoginRoute
+  '/unsubscribe': typeof UnsubscribeRoute
   '/analytics': typeof AppAnalyticsRoute
   '/calls': typeof AppCallsRoute
   '/campaigns': typeof AppCampaignsRoute
@@ -152,6 +160,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_app': typeof AppRouteWithChildren
   '/login': typeof LoginRoute
+  '/unsubscribe': typeof UnsubscribeRoute
   '/_app/analytics': typeof AppAnalyticsRoute
   '/_app/calls': typeof AppCallsRoute
   '/_app/campaigns': typeof AppCampaignsRoute
@@ -173,6 +182,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/login'
+    | '/unsubscribe'
     | '/analytics'
     | '/calls'
     | '/campaigns'
@@ -190,6 +200,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/login'
+    | '/unsubscribe'
     | '/analytics'
     | '/calls'
     | '/campaigns'
@@ -209,6 +220,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/_app'
     | '/login'
+    | '/unsubscribe'
     | '/_app/analytics'
     | '/_app/calls'
     | '/_app/campaigns'
@@ -229,6 +241,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   AppRoute: typeof AppRouteWithChildren
   LoginRoute: typeof LoginRoute
+  UnsubscribeRoute: typeof UnsubscribeRoute
   AdminOwnerEmailRoute: typeof AdminOwnerEmailRoute
   OauthGmailRoute: typeof OauthGmailRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
@@ -248,6 +261,13 @@ declare module '@tanstack/react-router' {
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/unsubscribe': {
+      id: '/unsubscribe'
+      path: '/unsubscribe'
+      fullPath: '/unsubscribe'
+      preLoaderRoute: typeof UnsubscribeRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_app/': {
@@ -393,6 +413,7 @@ const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)
 const rootRouteChildren: RootRouteChildren = {
   AppRoute: AppRouteWithChildren,
   LoginRoute: LoginRoute,
+  UnsubscribeRoute: UnsubscribeRoute,
   AdminOwnerEmailRoute: AdminOwnerEmailRoute,
   OauthGmailRoute: OauthGmailRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,

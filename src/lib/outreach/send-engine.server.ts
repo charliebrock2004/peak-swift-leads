@@ -36,6 +36,7 @@ import { composeEmail, type AiGenerator } from "./compose.ts";
 import { campaignCanSend } from "./campaigns.ts";
 import { blockedSentence } from "./block-reasons.ts";
 import * as store from "./store.server.ts";
+import { signUnsubscribe } from "../crypto/secrets.server.ts";
 import type { OutreachEmail, OutreachSettings } from "./types.ts";
 
 export type GmailApi = {
@@ -59,7 +60,33 @@ export type EngineDeps = {
   token: () => Promise<TokenResult>;
   now?: () => Date;
   newId?: () => string;
+  /**
+   * The deployment's stable public origin (production domain / branch alias).
+   * When set, every email carries a signed one-click unsubscribe link.
+   */
+  publicOrigin?: string;
 };
+
+/**
+ * The unsubscribe line and headers for one email.
+ *
+ * The link is signed to this account, address and email, so it works for as
+ * long as the recipient keeps the message and cannot be altered to act on
+ * another address. The mailto fallback lands in our own inbox as a reply,
+ * where the reply classifier suppresses the sender.
+ */
+export function unsubscribeParts(
+  deps: Pick<EngineDeps, "publicOrigin" | "userId">,
+  email: { id: string; recipient: string },
+  sender: string,
+): { footer: string; header?: { url: string; mailto?: string } } {
+  const origin = (deps.publicOrigin ?? "").replace(/\/+$/, "");
+  const mailto = sender || undefined;
+  if (!/^https:\/\//i.test(origin)) return { footer: "", header: mailto ? { url: "", mailto } : undefined };
+  const token = signUnsubscribe({ userId: deps.userId, email: email.recipient, emailId: email.id });
+  const url = `${origin}/unsubscribe?t=${encodeURIComponent(token)}`;
+  return { footer: `\n\nTo stop hearing from me: ${url}`, header: { url, mailto } };
+}
 
 export type SendOutcome = {
   emailId: string;
@@ -309,16 +336,18 @@ export async function sendOne(deps: EngineDeps, emailId: string, options: SendOp
     }
   }
 
+  const unsubscribe = unsubscribeParts(deps, email, token.email);
   const raw = buildRawMessage({
     to: email.recipient,
     from: token.email,
     fromName: fromName(profile),
     subject: email.subject,
-    body: email.body,
+    body: `${email.body}${unsubscribe.footer}`,
     messageId: rfc822MessageId,
     inReplyTo,
     references: inReplyTo,
     date: now,
+    listUnsubscribe: unsubscribe.header,
   });
 
   const result = await deps.gmail.sendMessage(token.accessToken, raw, threadId);
@@ -646,14 +675,16 @@ export async function runEndToEndTest(
   const id = newId(deps);
   const rfc822MessageId = newMessageId(id, token.email);
   const subject = `[TEST] ${composed.subject}`;
+  const testUnsubscribe = unsubscribeParts(deps, { id, recipient: to }, token.email);
   const raw = buildRawMessage({
     to,
     from: token.email,
     fromName: fromName(profile),
     subject,
-    body: composed.body,
+    body: `${composed.body}${testUnsubscribe.footer}`,
     messageId: rfc822MessageId,
     date: nowOf(deps),
+    listUnsubscribe: testUnsubscribe.header,
   });
   const sent = await deps.gmail.sendMessage(token.accessToken, raw);
   if (!step("Sent through Gmail", sent.ok, sent.ok ? `Gmail message id ${sent.messageId}` : `${sent.error} (${sent.kind})`)) {
