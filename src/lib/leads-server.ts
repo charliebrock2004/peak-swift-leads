@@ -58,7 +58,7 @@ function isoOrEmpty(value: unknown): string {
 }
 
 /** Clamp one client-sent lead to something safe to store. */
-function sanitizeLead(raw: unknown): Lead | null {
+export function sanitizeLead(raw: unknown): Lead | null {
   if (!raw || typeof raw !== "object") return null;
   const row = raw as Record<string, unknown>;
   const id = text(row.id, 64).trim();

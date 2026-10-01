@@ -31,9 +31,6 @@ export function WithState({ children }: { children: (state: OutreachState) => Re
             <Link to="/login">
               <Button>Sign in</Button>
             </Link>
-            <Link to="/leads">
-              <Button variant="secondary">Open the lead sheet</Button>
-            </Link>
           </>
         ) : (
           <>
@@ -41,9 +38,6 @@ export function WithState({ children }: { children: (state: OutreachState) => Re
               {loading ? <Loader2 className="animate-spin" /> : null}
               Try again
             </Button>
-            <Link to="/leads">
-              <Button variant="secondary">Open the lead sheet</Button>
-            </Link>
           </>
         )
       }

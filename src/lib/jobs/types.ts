@@ -50,6 +50,9 @@ export type FindInput = {
   /** An existing campaign, or empty to create (or reuse) one called `campaignName`. */
   campaignId: string;
   campaignName: string;
+  /** "enrich": check, audit and score these existing businesses — no search, no drafts. */
+  mode?: "find" | "enrich";
+  leadIds?: string[];
 };
 
 export type FindEvent = { at: string; text: string; tone: "info" | "good" | "warn" | "bad" };

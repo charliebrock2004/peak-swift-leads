@@ -24,11 +24,12 @@ test("every reason except the catch-all offers a fix", () => {
   }
 });
 
-test("each message reassures that the lead sheet is unaffected", () => {
-  // Every one of these states leaves the local-first lead sheet working, and
-  // the owner should not have to wonder whether 146 leads just vanished.
+test("each message reassures that nothing saved is lost", () => {
+  // None of these states deletes anything — the businesses are on the
+  // account — and the owner should not have to wonder whether 146 leads just
+  // vanished.
   for (const reason of SETUP_REASONS) {
-    assert.match(SETUP_COPY[reason].detail, /lead sheet is unaffected/i, `${reason} does not say so`);
+    assert.match(SETUP_COPY[reason].detail, /nothing you have saved is lost/i, `${reason} does not say so`);
   }
 });
 

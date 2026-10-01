@@ -12,7 +12,6 @@ import {
 } from "@/lib/jobs/types";
 import { emptyFunnel, type RunFunnel } from "@/lib/outreach/run-funnel";
 import { friendlyServerError } from "@/lib/server-errors";
-import { useLeadsStore } from "@/store/leads-store";
 
 /**
  * Find & reach — one run, on the server.
@@ -143,14 +142,14 @@ export function useProspectRun(onFinished?: () => void) {
       }
       failures = 0;
       const next = fromJob(view);
-      setRun(next);
-      // New leads are written on the server; pull them onto this device as
-      // each stage lands, so the Prospects tab fills in while the run goes on.
-      if (next.stage && next.stage !== lastStage && lastStage) void useLeadsStore.getState().sync();
+      // Until the job's first step writes its progress, keep what was started.
+      setRun((current) => (next.config ? next : { ...next, config: current.config, stage: current.config?.mode === "enrich" ? "verifying" : next.stage }));
+      // New businesses are written on the server; refresh the shared data as
+      // each stage lands, so Businesses fills in while the run goes on.
+      if (next.stage && next.stage !== lastStage && lastStage) finishedRef.current?.();
       lastStage = next.stage ?? "";
       if (next.status !== "running") {
         following.current = "";
-        void useLeadsStore.getState().sync();
         finishedRef.current?.();
         return;
       }
@@ -185,17 +184,15 @@ export function useProspectRun(onFinished?: () => void) {
   const start = useCallback(
     async (config: RunConfig) => {
       if (following.current) return;
-      setRun({ ...initial(), status: "starting", config, detail: "Starting…", stage: "discovering", startedAt: new Date().toISOString() });
-      // The run de-duplicates against the server's copy of the sheet, so
-      // anything added on this device goes up first.
-      await useLeadsStore.getState().sync().catch(() => undefined);
+      setRun({ ...initial(), status: "starting", config, detail: "Starting…", stage: config.mode === "enrich" ? "verifying" : "discovering", startedAt: new Date().toISOString() });
       const reply = await startJob({ data: { type: "find", input: config } }).catch((error: unknown) => ({ ok: false as const, error: friendlyServerError(error) }));
       const view = parse(reply);
       if (!view) {
         setRun({ ...initial(), status: "failed", config, detail: reply.ok ? "Could not start the run." : reply.error });
         return;
       }
-      setRun(fromJob(view));
+      const started = fromJob(view);
+      setRun(started.config ? started : { ...started, config, stage: config.mode === "enrich" ? "verifying" : started.stage });
       void follow(view.id);
     },
     [follow],

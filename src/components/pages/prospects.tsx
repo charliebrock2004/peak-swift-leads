@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearch } from "@tanstack/react-router";
 import { toast } from "sonner";
-import { Loader2, PenLine, Search, Users, X } from "lucide-react";
+import { Download, FileUp, Loader2, PenLine, Plus, ScanSearch, Search, Users, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Page } from "@/components/app/app-shell";
@@ -9,7 +9,7 @@ import { Page } from "@/components/app/app-shell";
 import { WithState } from "@/components/app/setup-gate";
 import { Badge, Card, EmptyState, PageHeader, ScoreBadge, Segmented } from "@/components/app/ui";
 
-import { BAND_LABEL, ACTION_LABEL } from "@/lib/scoring/prospect-score";
+import { BAND_LABEL, ACTION_LABEL, type ProspectScore } from "@/lib/scoring/prospect-score";
 import { useScores } from "@/components/app/use-scores";
 import { WhyThisProspect } from "@/components/app/prospect-facts";
 import { checkEligibility, isWorthRinging } from "@/lib/outreach/eligibility";
@@ -23,6 +23,11 @@ import type { OutreachLead } from "@/lib/outreach/types";
 import { friendlyServerError } from "@/lib/server-errors";
 import { cn } from "@/lib/utils";
 import { useAppData } from "@/components/app/app-data";
+import { BusinessForm } from "@/components/app/business-form";
+import { ImportPanel } from "@/components/app/import-panel";
+import { businessAction } from "@/lib/businesses/server";
+import { createLead, type Lead } from "@/lib/leads";
+import { downloadCsv } from "@/lib/csv-export";
 import { plural, websiteLine } from "@/components/app/format";
 
 type Filter = "all" | "ready" | "email" | "call" | "needs-look" | "manual-review" | "emailed" | "replied" | "low";
@@ -37,7 +42,9 @@ export function ProspectsPage() {
 }
 
 function Prospects({ state }: { state: OutreachState }) {
-  const { context, reload } = useAppData();
+  const { context, reload, prospecting } = useAppData();
+  const [panel, setPanel] = useState<"" | "add" | "import">("");
+  const [imported, setImported] = useState<string[]>([]);
   const scores = useScores(state);
   const search = useSearch({ from: "/_app/prospects" });
   const navigate = useNavigate();
@@ -225,6 +232,24 @@ function Prospects({ state }: { state: OutreachState }) {
           )
         }
       />
+      <BusinessTools
+        leads={state.leads as OutreachLead[]}
+        scores={scores}
+        panel={panel}
+        setPanel={setPanel}
+        imported={imported}
+        onImported={(ids) => {
+          setImported(ids);
+          void reload();
+        }}
+        onAdded={(id) => void navigate({ to: "/businesses/$leadId", params: { leadId: id } })}
+        onCheck={(ids) => {
+          if (prospecting.running) return void toast("A run is already going — wait for it to finish.");
+          void prospecting.start({ location: "Your businesses", trades: [], target: ids.length, dailyLimit: 10, radiusMiles: 0, campaignId: "", campaignName: "", mode: "enrich", leadIds: ids });
+          setImported([]);
+          void navigate({ to: "/find" });
+        }}
+      />
       {campaign ? (
         <div className="flex items-center gap-2">
           <Badge tone="info">Campaign: {campaign.name}</Badge>
@@ -400,6 +425,81 @@ function Prospects({ state }: { state: OutreachState }) {
           Show more ({filtered.length - limit})
         </Button>
       ) : null}
+    </>
+  );
+}
+
+/** Never checked: no website check, no email search, no audit, no Companies House look. */
+function unchecked(lead: OutreachLead): boolean {
+  return !lead.websiteCheckedAt && !lead.emailFoundAt && !lead.facts?.audit && !lead.facts?.companyCheckedAt;
+}
+
+/**
+ * Add, import, export and check — what the old lead sheet did, on the one list.
+ */
+function BusinessTools({
+  leads,
+  scores,
+  panel,
+  setPanel,
+  imported,
+  onImported,
+  onAdded,
+  onCheck,
+}: {
+  leads: OutreachLead[];
+  scores: ReadonlyMap<string, ProspectScore>;
+  panel: "" | "add" | "import";
+  setPanel: (next: "" | "add" | "import") => void;
+  imported: string[];
+  onImported: (ids: string[]) => void;
+  onAdded: (id: string) => void;
+  onCheck: (ids: string[]) => void;
+}) {
+  const fresh = leads.filter(unchecked).map((lead) => lead.id).slice(0, 200);
+  // The server's rows as full sheet rows (every column present), for export and import matching.
+  // (Fields the server did not send stay at their defaults rather than undefined.)
+  const sheet = leads.map((lead) => createLead(Object.fromEntries(Object.entries(lead).filter(([, value]) => value !== undefined && value !== null)) as Partial<Lead>));
+  const apply = async ({ adds, merges }: { adds: Partial<Lead>[]; merges: { id: string; patch: Partial<Lead> }[] }) => {
+    const reply = await businessAction({ data: { action: "import", adds, merges } }).catch((error: unknown) => ({ ok: false as const, error: friendlyServerError(error) }));
+    if (!reply.ok) return void toast(reply.error);
+    const result = JSON.parse(reply.json) as { added: number; merged: number; ids: string[] };
+    toast(`${plural(result.added, "business", "businesses")} added${result.merged ? ` · ${result.merged} topped up` : ""}.`);
+    setPanel("");
+    onImported(result.ids);
+  };
+  return (
+    <>
+      <div className="-mt-2 flex flex-wrap gap-2">
+        <Button variant="secondary" size="sm" onClick={() => setPanel(panel === "add" ? "" : "add")}>
+          <Plus /> Add a business
+        </Button>
+        <Button variant="secondary" size="sm" onClick={() => setPanel(panel === "import" ? "" : "import")}>
+          <FileUp /> Import a spreadsheet
+        </Button>
+        <Button variant="ghost" size="sm" disabled={leads.length === 0} onClick={() => downloadCsv(sheet, scores)}>
+          <Download /> Export CSV
+        </Button>
+        {fresh.length > 0 && imported.length === 0 ? (
+          <Button variant="ghost" size="sm" onClick={() => onCheck(fresh)}>
+            <ScanSearch /> Check {plural(fresh.length, "new business", "new businesses")}
+          </Button>
+        ) : null}
+      </div>
+      {imported.length > 0 ? (
+        <Card className="flex flex-col gap-2 px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+          <span>Check websites, emails, Companies House and audits for the {plural(imported.length, "business", "businesses")} you just imported?</span>
+          <Button size="sm" onClick={() => onCheck(imported)}>
+            <ScanSearch /> Check them now
+          </Button>
+        </Card>
+      ) : null}
+      {panel === "add" ? (
+        <Card className="px-4 py-4">
+          <BusinessForm onSaved={onAdded} onCancel={() => setPanel("")} />
+        </Card>
+      ) : null}
+      {panel === "import" ? <ImportPanel leads={sheet} onClose={() => setPanel("")} onApply={(result) => void apply(result)} /> : null}
     </>
   );
 }

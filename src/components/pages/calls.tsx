@@ -13,15 +13,16 @@ import { WhyThisProspect } from "@/components/app/prospect-facts";
 import { liveLeads, mapsHref, phoneHref } from "@/lib/leads";
 import { callQueue, type CallItem } from "@/lib/outreach/call-queue";
 import type { OutreachLead } from "@/lib/outreach/types";
-import { useLeadsStore } from "@/store/leads-store";
+import { useAppData } from "@/components/app/app-data";
+import type { Lead } from "@/lib/leads";
 import { plural } from "@/components/app/format";
 import { CallBriefView, CallOutcomePicker } from "@/components/app/sales";
 import type { CallBrief } from "@/lib/sales/call-brief";
 import { getBusiness } from "@/lib/sales/server";
 
 /**
- * The call list. Local-first like the lead sheet it reads: outcomes land on the
- * phone immediately and sync to the account when there is signal.
+ * The call list, from the account's businesses. Every outcome is logged on the
+ * server — the call record, the next task, the stage — and the list refreshes.
  *
  * A marketing call may only go to a number screened against both the TPS and
  * the CTPS within the last 28 days (or one that asked you to call). So the
@@ -29,8 +30,9 @@ import { getBusiness } from "@/lib/sales/server";
  * do-not-call list, or registered with either service, is not shown at all.
  */
 export function CallsPage() {
-  const leads = useLeadsStore((store) => store.leads);
-  const updateLead = useLeadsStore((store) => store.updateLead);
+  // The server's copy is the one list; every outcome is logged there.
+  const { state, reload } = useAppData();
+  const leads = useMemo(() => (state?.leads ?? []) as unknown as Lead[], [state]);
   const queue = useMemo(() => callQueue(liveLeads(leads)), [leads]);
   const [view, setView] = useState<"today" | "screen" | "later">("today");
   const [contact, setContact] = useState<ContactContext | null>(null);
@@ -81,7 +83,7 @@ export function CallsPage() {
   const later = useMemo(() => queue.later.map((item) => ({ item, call: statusOf(item) })).filter((row) => row.call.status !== "BLOCKED"), [queue.later, statusOf]);
 
   /** The server logged the call; mirror its call fields here so the list moves on at once. */
-  const applied = (leadId: string, leadPatch: Record<string, string>) => updateLead(leadId, leadPatch);
+  const applied = (_leadId: string, _leadPatch: Record<string, string>) => void reload();
 
   const doNotCall = async (item: CallItem, objection: boolean) => {
     try {

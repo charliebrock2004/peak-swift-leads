@@ -18,6 +18,7 @@ import {
   CALL_RESULT_OPTIONS,
   WEBSITE_STATUS_OPTIONS,
   classifyWebsiteUrl,
+  createLead,
   findDuplicate,
   hasWebsite,
   parseNumberInput,
@@ -384,7 +385,7 @@ export function planImport(rows: string[][], map: (ImportField | null)[], existi
     );
     if (!duplicate) {
       // Provisional lead so later rows can match against this one.
-      known.push({ ...(draft as Lead), id: `pending-${index}` });
+      known.push(createLead({ ...draft, id: `pending-${index}` }));
       entries.push({
         rowNumber: index + 1,
         draft,

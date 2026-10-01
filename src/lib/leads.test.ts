@@ -2,25 +2,19 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   classifyWebsiteUrl,
-  compareLeads,
-  computePriority,
   createLead,
   extractIndependentUrl,
   findDuplicate,
   fillMissingLead,
-  leadsToCsv,
   mergeWebsiteEvidence,
   migrateLead,
   normalizeName,
   normalizePhone,
-  priorityReason,
   resolveWebsiteStatus,
-  summarise,
   addDays,
   callOutcomePatch,
   todayIso,
   websiteActionLabel,
-  websiteSignal,
   type Lead,
 } from "./leads.ts";
 
@@ -86,106 +80,6 @@ describe("website classification", () => {
   });
 });
 
-describe("priority", () => {
-  it("keeps HOT as no proper site + 20 reviews + 4.5 rating", () => {
-    assert.equal(
-      computePriority(lead({ website: "", reviews: 47, rating: 4.8, websiteStatus: "No Website Found" })),
-      "HOT",
-    );
-  });
-
-  it("does not treat a proper website as HOT even with strong reviews", () => {
-    assert.equal(
-      computePriority(
-        lead({
-          website: "https://bridgeofallandental.co.uk",
-          reviews: 120,
-          rating: 4.9,
-          websiteStatus: "Proper Website",
-        }),
-      ),
-      "COLD",
-    );
-  });
-
-  it("ranks directory-only listings as WARM even without review counts", () => {
-    assert.equal(
-      computePriority(
-        lead({
-          website: "https://www.yell.com/biz/dodds",
-          reviews: "",
-          rating: "",
-          websiteStatus: "Directory Only",
-        }),
-      ),
-      "WARM",
-    );
-  });
-
-  it("ranks social-only with reviews as HOT when the numbers qualify", () => {
-    assert.equal(
-      computePriority(
-        lead({
-          website: "https://facebook.com/garage",
-          reviews: 61,
-          rating: 4.6,
-          websiteStatus: "Social Only",
-        }),
-      ),
-      "HOT",
-    );
-  });
-
-  it("ranks no-site with some reviews as WARM", () => {
-    assert.equal(
-      computePriority(lead({ website: "", reviews: 8, rating: 5, websiteStatus: "No Website Found" })),
-      "WARM",
-    );
-  });
-
-  it("ranks no-site with a phone as HOT — those are the ones to call", () => {
-    assert.equal(
-      computePriority(
-        lead({
-          website: "",
-          reviews: "",
-          rating: "",
-          websiteStatus: "No Website Found",
-          phone: "01764 650000",
-        }),
-      ),
-      "HOT",
-    );
-  });
-
-  it("ranks a basic website as WARM", () => {
-    assert.equal(
-      computePriority(
-        lead({
-          website: "https://example.wixsite.com/mysite",
-          websiteStatus: "Basic Website",
-          phone: "01738 123456",
-        }),
-      ),
-      "WARM",
-    );
-  });
-
-  it("ranks unclear listings with no website URL as WARM — unconfirmed, still worth a look", () => {
-    assert.equal(
-      computePriority(lead({ website: "", reviews: "", rating: "", websiteStatus: "Unclear" })),
-      "WARM",
-    );
-  });
-
-  it("explains the score in plain language", () => {
-    const reason = priorityReason(
-      lead({ website: "", reviews: 48, rating: 4.8, websiteStatus: "No Website Found", phone: "01764 650000" }),
-    );
-    assert.equal(reason, "HOT — 48 reviews, 4.8 rating, no proper website found.");
-  });
-});
-
 describe("duplicates", () => {
   const existing: Lead[] = [
     lead({
@@ -242,16 +136,6 @@ describe("duplicates", () => {
       findDuplicate({ businessName: "Monzie Joinery", town: "Crieff", phone: "01764 111111", mapsLink: "" }, existing),
       null,
     );
-  });
-
-  it("maps website status to green / yellow / red without calling Unclear red", () => {
-    assert.equal(websiteSignal("Proper Website"), "green");
-    assert.equal(websiteSignal("Basic Website"), "yellow");
-    assert.equal(websiteSignal("Social Only"), "yellow");
-    assert.equal(websiteSignal("Directory Only"), "yellow");
-    assert.equal(websiteSignal("No Website Found"), "red");
-    assert.equal(websiteSignal("Unclear"), "unclear");
-    assert.equal(websiteSignal(""), "unclear");
   });
 
   it("matches a distinctive name even in another town", () => {
@@ -322,7 +206,7 @@ describe("fillMissingLead", () => {
   });
 });
 
-describe("migrate, csv, summary", () => {
+describe("migrating old records", () => {
   it("infers website status for old records", () => {
     const next = migrateLead({
       id: "old",
@@ -332,58 +216,6 @@ describe("migrate, csv, summary", () => {
     assert.equal(resolveWebsiteStatus(next), "Social Only");
   });
 
-  it("exports website status and reason", () => {
-    const csv = leadsToCsv([
-      lead({
-        businessName: "Wee Bakehouse",
-        town: "Crieff",
-        reviews: 47,
-        rating: 4.8,
-        websiteStatus: "No Website Found",
-      }),
-    ]);
-    assert.match(csv, /Website Status/);
-    assert.match(csv, /No Website Found/);
-    assert.match(csv, /HOT/);
-    assert.match(csv, /Website Quality/);
-    assert.match(csv, /Website Opportunity/);
-    assert.match(csv, /Email Source/);
-    assert.match(csv, /Email Confidence/);
-  });
-
-  it("counts follow-up due as callbacks", () => {
-    const summary = summarise([
-      lead({
-        called: "Callback",
-        callResult: "Callback",
-        followUpDate: "2020-01-01",
-      }),
-      lead({ called: "Callback", callResult: "Callback", followUpDate: "2099-01-01" }),
-    ]);
-    assert.equal(summary.callbacks, 1);
-  });
-
-  it("counts an interested lead whose follow-up has arrived", () => {
-    const summary = summarise([
-      lead({ called: "Interested", callResult: "Interested", followUpDate: "2020-01-01" }),
-    ]);
-    assert.equal(summary.callbacks, 1, "an interested lead due today is still something to chase");
-  });
-
-  it("does not chase a lead that is already booked or dead", () => {
-    const summary = summarise([
-      lead({ called: "Called", callResult: "Booked", followUpDate: "2020-01-01" }),
-      lead({ called: "Not Interested", callResult: "Not Interested", followUpDate: "2020-01-01" }),
-      lead({ called: "Called", callResult: "Wrong Number", followUpDate: "2020-01-01" }),
-    ]);
-    assert.equal(summary.callbacks, 0);
-  });
-
-  it("sorts HOT before COLD by default", () => {
-    const hot = lead({ reviews: 40, rating: 4.8, websiteStatus: "No Website Found" });
-    const cold = lead({ reviews: 40, rating: 4.8, websiteStatus: "Proper Website", website: "https://x.co" });
-    assert.ok(compareLeads(hot, cold, "priority", "asc") < 0);
-  });
 });
 
 describe("phone normalize", () => {

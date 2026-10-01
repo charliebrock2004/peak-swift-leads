@@ -4,7 +4,7 @@ import { BarChart3, Home, Inbox, KanbanSquare, Loader2, Phone, Search, Send, Set
 
 import { callQueue } from "@/lib/outreach/call-queue";
 import { sendQueue } from "@/components/app/send-queue";
-import { useLeadsStore } from "@/store/leads-store";
+import type { Lead } from "@/lib/leads";
 import { liveLeads } from "@/lib/leads";
 import { cn } from "@/lib/utils";
 import { useAppData } from "@/components/app/app-data";
@@ -18,7 +18,7 @@ type NavItem = { to: string; label: string; icon: typeof Home; count?: number; t
  */
 function useNavItems(): { main: NavItem[]; queues: NavItem[] } {
   const { state } = useAppData();
-  const leads = useLeadsStore((store) => store.leads);
+  const leads = useMemo(() => (state?.leads ?? []) as unknown as Lead[], [state]);
   return useMemo(() => {
     const emails = state?.emails ?? [];
     const queue = state ? sendQueue(state) : null;
@@ -201,9 +201,8 @@ function RunPill({ pathname }: { pathname: string }) {
 }
 
 /**
- * The frame around every screen. The lead sheet brings its own full-height
- * layout, so pages decide their own padding; the shell only reserves room for
- * the sidebar and the phone's tab bar.
+ * The frame around every screen. Pages decide their own padding; the shell
+ * only reserves room for the sidebar and the phone's tab bar.
  */
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = useRouterState({ select: (router) => router.location.pathname });
@@ -217,7 +216,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   );
 }
 
-/** Standard page padding and width for everything except the lead sheet. */
+/** Standard page padding and width. */
 export function Page({ children, wide = false }: { children: ReactNode; wide?: boolean }) {
   return (
     <main

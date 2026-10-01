@@ -457,4 +457,27 @@ describe("the Find job", () => {
     assert.equal(none.status, "failed");
     assert.match((none.progress as FindProgress).detail, /No roofer businesses found around Crieff/);
   });
+
+  it("enrich mode checks businesses you already have — no search, no drafts", async () => {
+    const calls = newCalls();
+    const mine = [
+      createLead({ id: "own-1", businessName: "Strathearn Roofing", trade: "Roofer", town: "Crieff", website: "https://strathearnroofing.co.uk", websiteStatus: "Proper Website", phone: "01764 111111" }),
+      createLead({ id: "own-2", businessName: "Comrie Roof Repairs", trade: "Roofer", town: "Comrie", phone: "07700 900222" }),
+    ];
+    const { text, params } = buildLeadUpsert(USER, mine);
+    await db.sql.query(text, params);
+    const input = sanitizeFindInput({ mode: "enrich", leadIds: ["own-1", "own-2", "own-1"] }, 20);
+    assert.deepEqual(input.leadIds, ["own-1", "own-2"]);
+    assert.equal(findInputProblem(input), "");
+    assert.equal(findInputProblem(sanitizeFindInput({ mode: "enrich", leadIds: [] })), "Choose some businesses to check.");
+    const { job } = await jobs.createJob(db.sql, USER, { type: "find", input });
+    const done = await runToEnd(fakeDeps(calls), job.id);
+    assert.equal(done.status, "done", done.error);
+    assert.equal(calls.research, 0);
+    assert.deepEqual([...calls.findEmail].sort(), ["Comrie Roof Repairs", "Strathearn Roofing"]);
+    assert.equal(calls.generate.length, 0, "no drafts are written for businesses you already have");
+    const progress = done.progress as FindProgress;
+    assert.match(progress.detail, /^Checked 2 businesses/);
+    assert.equal((await outreach.loadLead(db.sql, USER, "own-1"))?.email, "info@strathearnroofing.co.uk");
+  });
 });

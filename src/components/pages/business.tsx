@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "@tanstack/react-router";
+import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { toast } from "sonner";
-import { ArrowLeft, ExternalLink, Globe, Mail, MapPin, Phone, PhoneCall, Send } from "lucide-react";
+import { ArrowLeft, ExternalLink, Globe, Mail, MapPin, Pencil, Phone, PhoneCall, Send, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Page } from "@/components/app/app-shell";
 import { Badge, Card, Notice, SectionTitle, Skeleton } from "@/components/app/ui";
@@ -9,6 +9,8 @@ import { CallStatusBadge, LegalFormPanel } from "@/components/app/contactability
 import { WhyThisProspect } from "@/components/app/prospect-facts";
 import { CallBriefView, CallOutcomePicker, StageEditor, TaskList, Timeline } from "@/components/app/sales";
 import { runSalesAction } from "@/lib/sales/client";
+import { BusinessForm } from "@/components/app/business-form";
+import { businessAction } from "@/lib/businesses/server";
 import { relativeTime } from "@/components/app/format";
 import { OPPORTUNITY_LABEL, dateLabel } from "@/lib/audit/findings";
 import { websitePhrase, websiteVerificationOf } from "@/lib/audit/website-state";
@@ -24,7 +26,6 @@ import { getBusiness } from "@/lib/sales/server";
 import type { TimelineEvent } from "@/lib/sales/timeline";
 import { STAGE_LABEL, type Opportunity, type Stage, type Task } from "@/lib/sales/types";
 import { friendlyServerError } from "@/lib/server-errors";
-import { useLeadsStore } from "@/store/leads-store";
 import { cn } from "@/lib/utils";
 
 type BusinessView = {
@@ -55,7 +56,8 @@ export function BusinessPage() {
   const [view, setView] = useState<BusinessView | null>(null);
   const [error, setError] = useState("");
   const [note, setNote] = useState("");
-  const updateLead = useLeadsStore((store) => store.updateLead);
+  const [editing, setEditing] = useState(false);
+  const navigate = useNavigate();
 
   const load = useCallback(async () => {
     try {
@@ -102,6 +104,14 @@ export function BusinessPage() {
           : score
             ? `${ACTION_LABEL[score.action]} — ${score.actionReason}`
             : "";
+
+  const remove = async () => {
+    if (!window.confirm(`Remove ${lead.businessName} from your businesses? Its history is kept, and an opted-out address stays suppressed.`)) return;
+    const reply = await businessAction({ data: { action: "remove", id: lead.id } }).catch((error: unknown) => ({ ok: false as const, error: friendlyServerError(error) }));
+    if (!reply.ok) return void toast(reply.error);
+    toast(`${lead.businessName} removed.`);
+    void navigate({ to: "/prospects" });
+  };
 
   const addNote = async () => {
     const reply = await runSalesAction({ action: "add_note", leadId: lead.id, note });
@@ -180,10 +190,7 @@ export function BusinessPage() {
                 <div className="mt-3">
                   <CallOutcomePicker
                     leadId={lead.id}
-                    onLogged={({ leadPatch }) => {
-                      updateLead(lead.id, leadPatch);
-                      void load();
-                    }}
+                    onLogged={() => void load()}
                   />
                 </div>
               </details>
@@ -198,7 +205,33 @@ export function BusinessPage() {
 
         <div className="flex min-w-0 flex-col gap-6">
           <section className="flex flex-col gap-2">
-            <SectionTitle>Contact</SectionTitle>
+            <SectionTitle
+              action={
+                <span className="flex gap-3">
+                  <button type="button" className="inline-flex items-center gap-1 text-xs text-muted hover:text-fg" onClick={() => setEditing((open) => !open)}>
+                    <Pencil className="size-3" /> Edit
+                  </button>
+                  <button type="button" className="inline-flex items-center gap-1 text-xs text-muted hover:text-bad" onClick={() => void remove()}>
+                    <Trash2 className="size-3" /> Remove
+                  </button>
+                </span>
+              }
+            >
+              Contact
+            </SectionTitle>
+            {editing ? (
+              <Card className="px-4 py-4">
+                <BusinessForm
+                  id={lead.id}
+                  initial={{ businessName: lead.businessName, trade: lead.trade, town: lead.town, phone: lead.phone, email: lead.email, website: lead.website, address: lead.address }}
+                  onSaved={() => {
+                    setEditing(false);
+                    void load();
+                  }}
+                  onCancel={() => setEditing(false)}
+                />
+              </Card>
+            ) : null}
             <Card className="flex flex-col gap-3 px-4 py-3 text-sm">
               <div className="flex items-start gap-2">
                 <Phone className="mt-0.5 size-4 shrink-0 text-muted" />

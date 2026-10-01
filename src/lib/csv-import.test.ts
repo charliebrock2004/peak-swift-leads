@@ -224,3 +224,12 @@ describe("import planning", () => {
     assert.equal(second.entries[0].action, "skip");
   });
 });
+
+describe("several new rows with no Maps column", () => {
+  it("plans every row, and still catches a business listed twice in the same file", () => {
+    const rows = parseDelimited("Business Name\tTown\tTrade\tPhone\nGlen Lednock Builders\tComrie\tBuilder\t01764 670001\nTay Valley Roofing\tAberfeldy\tRoofer\t01887 820002\nGlen Lednock Builders\tComrie\tBuilder\t01764 670001");
+    const map = guessColumnMap(rows[0]!);
+    const plan = planImport(rows.slice(1), map, []);
+    assert.deepEqual(plan.entries.map((entry) => entry.action), ["add", "add", "skip"]);
+  });
+});

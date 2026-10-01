@@ -130,6 +130,10 @@ export function sanitizeFindInput(raw: unknown, accountDailyLimit = 50): FindInp
   const trades = Array.isArray(source.trades)
     ? [...new Set(source.trades.map((trade) => text(trade, 60)).filter((trade) => trade.length >= 2))].slice(0, 4)
     : [];
+  if (source.mode === "enrich") {
+    const leadIds = Array.isArray(source.leadIds) ? [...new Set(source.leadIds.filter((id): id is string => typeof id === "string").map((id) => id.slice(0, 64)))].slice(0, 500) : [];
+    return { location: "Your businesses", trades: [], target: leadIds.length, dailyLimit: num(source.dailyLimit, 10, 1, Math.max(1, accountDailyLimit)), radiusMiles: 0, campaignId: "", campaignName: "", mode: "enrich", leadIds };
+  }
   return {
     location: text(source.location, 80),
     trades,
@@ -142,6 +146,7 @@ export function sanitizeFindInput(raw: unknown, accountDailyLimit = 50): FindInp
 }
 
 export function findInputProblem(input: FindInput): string {
+  if (input.mode === "enrich") return input.leadIds?.length ? "" : "Choose some businesses to check.";
   if (input.location.length < 2) return "Choose an area.";
   if (input.trades.length === 0) return "Choose at least one trade.";
   if (!input.campaignId && input.campaignName.length < 2) return "Name the campaign.";
@@ -601,8 +606,11 @@ async function qualify(ctx: StepContext, snap: Snapshot): Promise<Snapshot> {
     `${summary.strong} strong · ${summary.good} good · ${summary.weak} weak · ${summary.rejected} not worth contacting. ${funnel.eligible} can be emailed · ${summary.callReady} to call · ${summary.review} need a check from you.`,
     funnel.eligible || summary.callReady ? "good" : "warn",
   );
-  const state: FindState = { ...snap.state, step: "draft", cursor: 0, draftIds: plan.leadIds, callLeadIds: plan.ringing.map((entry) => entry.id), summary, top };
-  const next = { ...snap, state, progress: at(progress, "draft", `Writing ${plan.leadIds.length} personalised drafts…`, 0, plan.leadIds.length) };
+  // Checking businesses you already have writes no drafts: that is a decision
+  // for the Businesses page, one business or a selection at a time.
+  const draftIds = snap.input.mode === "enrich" ? [] : plan.leadIds;
+  const state: FindState = { ...snap.state, step: "draft", cursor: 0, draftIds, callLeadIds: plan.ringing.map((entry) => entry.id), summary, top };
+  const next = { ...snap, state, progress: at(progress, "draft", draftIds.length ? `Writing ${draftIds.length} personalised drafts…` : "Wrapping up…", 0, draftIds.length) };
   await persistRun(ctx.sql, ctx.userId, next, "running");
   return next;
 }
@@ -652,7 +660,12 @@ async function finishStep(ctx: StepContext, snap: Snapshot) {
   funnel.heldForTomorrow = funnel.prepared - funnel.readyToday;
   const progress = { ...snap.progress, funnel };
   const done = { ...snap, progress };
-  return end(ctx, done, "done", finishLine(funnel, snap.state.summary?.callReady ?? 0), resultOf(snap.state, progress));
+  const summary = snap.state.summary;
+  const line =
+    snap.input.mode === "enrich"
+      ? `Checked ${snap.state.leadIds.length} businesses — ${summary?.strong ?? 0} strong, ${funnel.eligible} can be emailed, ${summary?.callReady ?? 0} to call.`
+      : finishLine(funnel, summary?.callReady ?? 0);
+  return end(ctx, done, "done", line, resultOf(snap.state, progress));
 }
 
 /** Stopped by a person: say how far it got, keep everything it made. */
@@ -677,9 +690,11 @@ export function findHandler(deps: FindDeps): JobHandler<FindInput, FindState, Fi
   return {
     init: (input) => {
       const runId = newLeadId();
+      const enrich = input.mode === "enrich";
+      const progress = initialProgress(input, runId, new Date());
       return {
         state: {
-          step: "setup",
+          step: enrich ? "verify" : "setup",
           runId,
           campaignId: "",
           activateWhenFilled: false,
@@ -689,7 +704,7 @@ export function findHandler(deps: FindDeps): JobHandler<FindInput, FindState, Fi
           seen: [],
           errors: [],
           save: null,
-          leadIds: [],
+          leadIds: enrich ? (input.leadIds ?? []) : [],
           cursor: 0,
           verified: [],
           whyNoEmail: {},
@@ -702,7 +717,7 @@ export function findHandler(deps: FindDeps): JobHandler<FindInput, FindState, Fi
           summary: null,
           top: [],
         },
-        progress: initialProgress(input, runId, new Date()),
+        progress: enrich ? at(progress, "verify", `Checking ${input.leadIds?.length ?? 0} businesses…`, 0, input.leadIds?.length ?? 0) : progress,
       };
     },
     needs: (state) => NEEDS[state.step] ?? 30_000,

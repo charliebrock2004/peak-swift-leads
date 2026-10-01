@@ -1,6 +1,6 @@
 /**
- * What every screen shares: the outreach state from the server, the lead sheet
- * from the local-first store, and the one prospecting run that may be going.
+ * What every screen shares: the account's data from the server (businesses,
+ * emails, settings), and the one prospecting run that may be going.
  *
  * Held at the shell, so a run keeps going while you look at other screens, and
  * so every screen shows the same numbers from the same load.
@@ -9,8 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { getOutreachState, type OutreachState } from "@/lib/outreach/server";
 import { classifySetupError, type SetupReason } from "@/lib/outreach/setup-state";
 import { autoContext } from "@/lib/outreach/auto-run";
-import { useLeadSync } from "@/lib/use-lead-sync";
-import { useLeadsStore } from "@/store/leads-store";
+import { useLegacyLeadMigration } from "./use-legacy-leads";
 import { useProspectRun } from "./use-prospect-run";
 import { useReplyPolling } from "./use-reply-polling";
 import { AppDataContext } from "./app-data";
@@ -26,7 +25,6 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
   const loadedAt = useRef(0);
   const inFlight = useRef<Promise<void> | null>(null);
 
-  useLeadSync();
 
   const reload = useCallback(async () => {
     if (inFlight.current) return inFlight.current;
@@ -68,8 +66,9 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
 
   const prospecting = useProspectRun(() => {
     void reload();
-    void useLeadsStore.getState().sync();
   });
+
+  useLegacyLeadMigration(() => void reload());
 
   const context = useMemo(
     () => (state ? autoContext(state.emails, state.suppression.map((entry) => entry.email), state.settings) : null),

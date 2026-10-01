@@ -391,17 +391,24 @@ function RunView({
   }, [run.status]);
   const { funnel } = run;
   const finished = !running;
-  const problems = useMemo(() => (finished ? reconcileFunnel(funnel) : []), [finished, funnel]);
+  const enrich = run.config?.mode === "enrich";
+  // Checking existing businesses skips discovery and drafting; do not show those steps.
+  const stages = enrich ? FIND_STAGES.filter((stage) => stage !== "discovering" && stage !== "deduplicating" && stage !== "personalising") : FIND_STAGES;
+  const problems = useMemo(() => (finished && !enrich ? reconcileFunnel(funnel) : []), [finished, funnel, enrich]);
 
   return (
     <>
       <PageHeader
-        eyebrow={run.config ? `${run.config.trades.join(", ")} · ${run.config.location}` : "Find & reach"}
+        eyebrow={enrich ? "Checking your businesses" : run.config ? `${run.config.trades.join(", ")} · ${run.config.location}` : "Find & reach"}
         title={
           running
-            ? "Finding prospects…"
+            ? enrich
+              ? "Checking your businesses…"
+              : "Finding prospects…"
             : run.status === "done"
-              ? "Your prospects are ready"
+              ? enrich
+                ? "Your businesses are checked"
+                : "Your prospects are ready"
               : run.status === "stopped"
                 ? "Run stopped"
                 : "The run could not finish"
@@ -432,7 +439,7 @@ function RunView({
 
       <Card className="p-5 md:p-6">
         <ol className="flex flex-col gap-0.5">
-          {FIND_STAGES.map((stage) => {
+          {stages.map((stage) => {
             const done = run.completed.includes(stage) || (finished && run.status === "done");
             const current = running && run.stage === stage;
             const endedHere = finished && run.status !== "done" && run.stage === stage;
@@ -481,7 +488,7 @@ function RunView({
         </Notice>
       ) : null}
 
-      {funnel.rawFound > 0 ? <FunnelDetail funnel={funnel} /> : null}
+      {funnel.rawFound > 0 && !enrich ? <FunnelDetail funnel={funnel} /> : null}
 
       <section className="flex flex-col gap-2">
         <button type="button" onClick={() => setShowLog((open) => !open)} className="flex items-center gap-1 self-start text-sm text-muted hover:text-fg">

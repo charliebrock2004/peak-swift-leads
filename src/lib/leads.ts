@@ -39,13 +39,6 @@ export type WebsiteQuality = (typeof WEBSITE_QUALITY_OPTIONS)[number] | "";
 export const EMAIL_CONFIDENCE_OPTIONS = ["HIGH", "MEDIUM", "LOW"] as const;
 export type EmailConfidence = (typeof EMAIL_CONFIDENCE_OPTIONS)[number] | "";
 
-export const WEBSITE_QUALITY_LABEL: Record<Exclude<WebsiteQuality, "">, string> = {
-  good: "Good website",
-  improve: "Could improve",
-  poor: "Poor website",
-  unable: "Unable to analyse",
-};
-
 export type Lead = {
   id: string;
   businessName: string;
@@ -127,50 +120,11 @@ export const TRADE_SUGGESTIONS = [
   "Tradesperson",
 ] as const;
 
-export const TOWN_SUGGESTIONS = [
-  "Aberfeldy",
-  "Alloa",
-  "Auchterarder",
-  "Bridge of Allan",
-  "Callander",
-  "Comrie",
-  "Crieff",
-  "Dunblane",
-  "Dunkeld",
-  "Kinross",
-  "Perth",
-  "Pitlochry",
-  "Stirling",
-] as const;
-
 export const RESULT_LIMITS = [6, 8, 12, 25, 50, 100] as const;
 export type ResultLimit = (typeof RESULT_LIMITS)[number];
 
 export const RADIUS_MILES = [10, 25, 50] as const;
 export type RadiusMiles = (typeof RADIUS_MILES)[number];
-
-export type SortKey =
-  | "businessName"
-  | "trade"
-  | "town"
-  | "phone"
-  | "rating"
-  | "reviews"
-  | "website"
-  | "websiteStatus"
-  | "websiteQuality"
-  | "websiteScore"
-  | "websiteAnalysis"
-  | "email"
-  | "emailSource"
-  | "emailConfidence"
-  | "opportunityScore"
-  | "priority"
-  | "called"
-  | "callResult"
-  | "followUpDate";
-
-export type SortDir = "asc" | "desc";
 
 const NO_SITE = new Set([
   "",
@@ -331,79 +285,6 @@ export function mergeWebsiteEvidence(
 export function resolveWebsiteStatus(lead: Pick<Lead, "website" | "websiteStatus">): WebsiteStatus {
   if (lead.websiteStatus) return lead.websiteStatus;
   return classifyWebsiteUrl(lead.website);
-}
-
-export type WebsiteSignal = "green" | "yellow" | "red" | "unclear";
-
-export const WEBSITE_SIGNAL_OPTIONS = [
-  { id: "ALL" as const, label: "All websites" },
-  { id: "red" as const, label: "No website" },
-  { id: "yellow" as const, label: "Needs work" },
-  { id: "green" as const, label: "Has website" },
-];
-
-export const WEBSITE_SIGNAL_LABEL: Record<WebsiteSignal, string> = {
-  green: "Has website",
-  yellow: "Needs work",
-  red: "No website",
-  unclear: "Unclear",
-};
-
-/** Phase 1 traffic-light: green = proper site, yellow = weak/social/directory, red = listing had no site. Unclear is not red. */
-export function websiteSignal(status: WebsiteStatus | ""): WebsiteSignal {
-  if (status === "Proper Website") return "green";
-  if (status === "Basic Website" || status === "Social Only" || status === "Directory Only") return "yellow";
-  if (status === "No Website Found") return "red";
-  return "unclear";
-}
-
-export function lacksProperWebsite(lead: Pick<Lead, "website" | "websiteStatus">): boolean {
-  const status = resolveWebsiteStatus(lead);
-  return (
-    status === "Social Only" ||
-    status === "Directory Only" ||
-    status === "No Website Found" ||
-    status === "Basic Website"
-  );
-}
-
-export function computePriority(
-  lead: Pick<Lead, "website" | "reviews" | "rating" | "websiteStatus" | "phone">,
-): Priority {
-  const reviews = typeof lead.reviews === "number" ? lead.reviews : 0;
-  const rating = typeof lead.rating === "number" ? lead.rating : 0;
-  const status = resolveWebsiteStatus(lead);
-  const prospect = lacksProperWebsite(lead);
-  const phoneDigits = (lead.phone ?? "").replace(/\D/g, "");
-  const hasPhone = phoneDigits.length >= 10;
-
-  if (prospect && reviews >= 20 && rating >= 4.5) return "HOT";
-  if (status === "No Website Found" && hasPhone) return "HOT";
-  if (status === "No Website Found") return "WARM";
-  if (status === "Basic Website") return "WARM";
-  if (prospect && reviews > 0) return "WARM";
-  if (prospect && (status === "Social Only" || status === "Directory Only")) return "WARM";
-  if (status === "Unclear" && !hasWebsite(lead.website)) return "WARM";
-  return "COLD";
-}
-
-
-export function priorityReason(
-  lead: Pick<Lead, "website" | "reviews" | "rating" | "websiteStatus" | "phone">,
-): string {
-  const priority = computePriority(lead);
-  const status = resolveWebsiteStatus(lead);
-  const bits: string[] = [];
-  if (typeof lead.reviews === "number") bits.push(`${lead.reviews} review${lead.reviews === 1 ? "" : "s"}`);
-  if (typeof lead.rating === "number") bits.push(`${formatRating(lead.rating)} rating`);
-  if (status === "No Website Found") bits.push("no proper website found");
-  else if (status === "Social Only") bits.push("social profile only");
-  else if (status === "Directory Only") bits.push("directory listing only");
-  else if (status === "Basic Website") bits.push("website looks basic");
-  else if (status === "Proper Website") bits.push("already has a proper website");
-  else bits.push("website presence unclear");
-  if (!lead.phone?.trim() && priority !== "COLD") bits.push("no phone listed");
-  return `${priority} — ${bits.join(", ")}.`;
 }
 
 export function websiteHref(website: string): string | null {
@@ -575,160 +456,12 @@ export function liveLeads(leads: Lead[]): Lead[] {
   return leads.filter((lead) => !lead.deletedAt);
 }
 
-function csvCell(value: string | number): string {
-  const text = String(value ?? "");
-  if (/[",\n]/.test(text)) return `"${text.replace(/"/g, '""')}"`;
-  return text;
-}
-
-export function leadsToCsv(leads: Lead[]): string {
-  const header = [
-    "Business Name",
-    "Trade",
-    "Town",
-    "Address",
-    "Phone Number",
-    "Email",
-    "Google Rating",
-    "Number of Reviews",
-    "Website",
-    "Website Status",
-    "Website Signal",
-    "Website Quality",
-    "Website Score",
-    "Website Analysis",
-    "Place ID",
-    "Date Found",
-    "Business Status",
-    "Google Maps Link",
-    "Priority",
-    "Website Opportunity",
-    "Reason",
-    "Called?",
-    "Call Result",
-    "Follow-Up Date",
-    "Demo URL",
-    "Email Source",
-    "Email Confidence",
-    "Email Found",
-    "Source",
-    "Notes",
-  ];
-  const rows = leads.map((lead) =>
-    [
-      lead.businessName,
-      lead.trade,
-      lead.town,
-      lead.address ?? "",
-      lead.phone,
-      lead.email,
-      lead.rating,
-      lead.reviews,
-      lead.website,
-      resolveWebsiteStatus(lead),
-      WEBSITE_SIGNAL_LABEL[websiteSignal(resolveWebsiteStatus(lead))],
-      lead.websiteQuality ? WEBSITE_QUALITY_LABEL[lead.websiteQuality] : "",
-      lead.websiteScore,
-      lead.websiteAnalysis ?? "",
-      lead.placeId ?? "",
-      lead.foundAt ?? "",
-      lead.businessStatus ?? "",
-      lead.mapsLink,
-      computePriority(lead),
-      lead.opportunityScore,
-      priorityReason(lead),
-      lead.called,
-      lead.callResult,
-      lead.followUpDate,
-      lead.demoUrl,
-      lead.emailSource ?? "",
-      lead.emailConfidence ?? "",
-      lead.emailFoundAt ?? "",
-      lead.source,
-      lead.notes,
-    ]
-      .map(csvCell)
-      .join(","),
-  );
-  return [header.join(","), ...rows].join("\n");
-}
-
-export function downloadCsv(leads: Lead[]): void {
-  const blob = new Blob([leadsToCsv(leads)], { type: "text/csv;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  const stamp = new Date().toISOString().slice(0, 10);
-  anchor.href = url;
-  anchor.download = `peak-swift-leads-${stamp}.csv`;
-  anchor.rel = "noopener";
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  URL.revokeObjectURL(url);
-}
-
-export type LeadSummary = {
-  total: number;
-  hot: number;
-  notCalled: number;
-  interested: number;
-  callbacks: number;
-  booked: number;
-};
-
-export function summarise(leads: Lead[]): LeadSummary {
-  let hot = 0;
-  let notCalled = 0;
-  let interested = 0;
-  let callbacks = 0;
-  let booked = 0;
-
-  for (const lead of leads) {
-    if (computePriority(lead) === "HOT") hot += 1;
-    if (lead.called === "Not Called") notCalled += 1;
-    if (lead.callResult === "Booked") booked += 1;
-    if (lead.called === "Interested" || lead.callResult === "Interested") interested += 1;
-    if (isFollowUpDue(lead)) callbacks += 1;
-  }
-
-  return { total: leads.length, hot, notCalled, interested, callbacks, booked };
-}
-
-const PRIORITY_RANK: Record<Priority, number> = { HOT: 0, WARM: 1, COLD: 2 };
-
-function sortValue(lead: Lead, key: SortKey): string | number {
-  if (key === "priority") return PRIORITY_RANK[computePriority(lead)];
-  if (key === "rating") return typeof lead.rating === "number" ? lead.rating : -1;
-  if (key === "reviews") return typeof lead.reviews === "number" ? lead.reviews : -1;
-  if (key === "websiteScore") return typeof lead.websiteScore === "number" ? lead.websiteScore : -1;
-  if (key === "opportunityScore") return typeof lead.opportunityScore === "number" ? lead.opportunityScore : -1;
-  if (key === "website") return hasWebsite(lead.website) ? lead.website.toLowerCase() : "";
-  if (key === "websiteStatus") return resolveWebsiteStatus(lead);
-  if (key === "websiteQuality") return lead.websiteQuality || "";
-  if (key === "emailSource") return lead.emailSource || "";
-  if (key === "emailConfidence") return lead.emailConfidence || "";
-  return String(lead[key] ?? "").toLowerCase();
-}
-
-export function compareLeads(a: Lead, b: Lead, key: SortKey, dir: SortDir): number {
-  const mul = dir === "asc" ? 1 : -1;
-  const av = sortValue(a, key);
-  const bv = sortValue(b, key);
-  if (typeof av === "number" && typeof bv === "number") return (av - bv) * mul;
-  return String(av).localeCompare(String(bv), "en-GB", { sensitivity: "base" }) * mul;
-}
-
 export function parseNumberInput(value: string, decimals = 0): number | "" {
   if (value.trim() === "") return "";
   const next = Number(value);
   if (!Number.isFinite(next)) return "";
   const factor = 10 ** decimals;
   return Math.round(next * factor) / factor;
-}
-
-export function formatRating(value: number | ""): string {
-  if (value === "") return "";
-  return (Math.round(value * 10) / 10).toFixed(1);
 }
 
 export function normalizeName(value: string): string {
@@ -785,9 +518,9 @@ export function findDuplicate<T extends LeadIdentity>(
 ): DuplicateMatch<T> | null {
   const placeId = candidate.placeId?.trim() ?? "";
   const phone = normalizePhone(candidate.phone);
-  const maps = candidate.mapsLink.trim() ? normalizeMaps(candidate.mapsLink) : "";
+  const maps = (candidate.mapsLink ?? "").trim() ? normalizeMaps(candidate.mapsLink) : "";
   const name = normalizeName(candidate.businessName);
-  const town = candidate.town.trim().toLowerCase();
+  const town = (candidate.town ?? "").trim().toLowerCase();
   const email = normalizeEmailAddress(candidate.email);
   const host = independentHost(candidate.website);
 
@@ -802,10 +535,10 @@ export function findDuplicate<T extends LeadIdentity>(
     if (email && leadEmail && email === leadEmail) return { lead, via: "email" };
     const leadHost = independentHost(lead.website);
     if (host && leadHost && host === leadHost) return { lead, via: "website" };
-    const leadMaps = lead.mapsLink.trim() ? normalizeMaps(lead.mapsLink) : "";
+    const leadMaps = (lead.mapsLink ?? "").trim() ? normalizeMaps(lead.mapsLink) : "";
     if (maps && leadMaps && maps === leadMaps) return { lead, via: "maps" };
     const sameName = name.length >= 3 && name === normalizeName(lead.businessName);
-    const sameTown = town && lead.town.trim().toLowerCase() === town;
+    const sameTown = town && (lead.town ?? "").trim().toLowerCase() === town;
     if (sameName && sameTown) return { lead, via: "name+town" };
   }
 
@@ -851,193 +584,3 @@ export function fillMissingLead(existing: Lead, incoming: Partial<Lead>): Partia
   }
   return Object.keys(patch).length > 0 ? patch : null;
 }
-
-export const SAMPLE_LEADS: Lead[] = [
-  createLead({
-    id: "lead-01",
-    businessName: "The Wee Bakehouse",
-    trade: "Bakery",
-    town: "Crieff",
-    phone: "01764 652184",
-    rating: 4.8,
-    reviews: 47,
-    website: "",
-    websiteStatus: "No Website Found",
-    mapsLink: "https://www.google.com/maps/search/?api=1&query=The+Wee+Bakehouse+Crieff",
-    called: "Not Called",
-    notes: "Busy Saturday queue. Maps listing only — no site.",
-  }),
-  createLead({
-    id: "lead-02",
-    businessName: "Strathearn Auto",
-    trade: "Garage",
-    town: "Auchterarder",
-    phone: "01764 663901",
-    rating: 4.6,
-    reviews: 61,
-    website: "https://www.facebook.com/strathearnauto",
-    websiteStatus: "Social Only",
-    called: "Not Called",
-    notes: "Strong reviews, Facebook page only.",
-  }),
-  createLead({
-    id: "lead-03",
-    businessName: "Highland Handyman",
-    trade: "Handyman",
-    town: "Perth",
-    phone: "01738 441276",
-    rating: 4.9,
-    reviews: 32,
-    website: "",
-    websiteStatus: "No Website Found",
-    called: "Callback",
-    callResult: "Callback",
-    followUpDate: "2026-09-02",
-    notes: "Asked to call back Tuesday after 4pm.",
-  }),
-  createLead({
-    id: "lead-04",
-    businessName: "Comrie Cut",
-    trade: "Hairdresser",
-    town: "Comrie",
-    phone: "01764 670553",
-    rating: 4.7,
-    reviews: 28,
-    website: "",
-    websiteStatus: "No Website Found",
-    called: "Interested",
-    callResult: "Interested",
-    notes: "Owner wants a simple booking page. Send a sample this week.",
-  }),
-  createLead({
-    id: "lead-05",
-    businessName: "Pitlochry Chippy",
-    trade: "Takeaway",
-    town: "Pitlochry",
-    phone: "01796 472810",
-    rating: 4.2,
-    reviews: 34,
-    website: "",
-    websiteStatus: "No Website Found",
-    called: "Not Called",
-    notes: "No site. Rating just under the hot threshold.",
-  }),
-  createLead({
-    id: "lead-06",
-    businessName: "Glen Almond Plumbing",
-    trade: "Plumber",
-    town: "Aberfeldy",
-    phone: "01887 820441",
-    rating: 4.3,
-    reviews: 15,
-    website: "",
-    websiteStatus: "No Website Found",
-    called: "No Answer",
-    callResult: "No Answer",
-    followUpDate: "2026-09-01",
-  }),
-  createLead({
-    id: "lead-07",
-    businessName: "Dunkeld Flowers",
-    trade: "Florist",
-    town: "Dunkeld",
-    phone: "01350 727604",
-    rating: 5,
-    reviews: 8,
-    website: "",
-    websiteStatus: "No Website Found",
-    called: "Not Called",
-  }),
-  createLead({
-    id: "lead-08",
-    businessName: "Callander Joinery",
-    trade: "Joiner",
-    town: "Callander",
-    phone: "01877 331092",
-    rating: 4.8,
-    reviews: 6,
-    website: "",
-    websiteStatus: "No Website Found",
-    called: "Not Called",
-    notes: "New-ish listing. Worth a warm call.",
-  }),
-  createLead({
-    id: "lead-09",
-    businessName: "Kinross Electrics",
-    trade: "Electrician",
-    town: "Kinross",
-    phone: "01577 863220",
-    rating: 4.1,
-    reviews: 11,
-    website: "",
-    websiteStatus: "No Website Found",
-    called: "Not Called",
-  }),
-  createLead({
-    id: "lead-10",
-    businessName: "Bridge of Allan Dental",
-    trade: "Dentist",
-    town: "Bridge of Allan",
-    phone: "01786 832445",
-    rating: 4.9,
-    reviews: 120,
-    website: "https://bridgeofallandental.co.uk",
-    websiteStatus: "Proper Website",
-    called: "Not Interested",
-    callResult: "Not Interested",
-    notes: "Already has a proper site.",
-  }),
-  createLead({
-    id: "lead-11",
-    businessName: "Alloa Roofing",
-    trade: "Roofer",
-    town: "Alloa",
-    phone: "01259 214880",
-    rating: 4.6,
-    reviews: 22,
-    website: "https://alloaroofing.com",
-    websiteStatus: "Proper Website",
-    called: "Called",
-    callResult: "Not Interested",
-  }),
-  createLead({
-    id: "lead-12",
-    businessName: "The Strath Pub",
-    trade: "Pub",
-    town: "Crieff",
-    phone: "01764 652900",
-    rating: 4.4,
-    reviews: 89,
-    website: "https://thestrathpub.co.uk",
-    websiteStatus: "Proper Website",
-    called: "Not Called",
-  }),
-  createLead({
-    id: "lead-13",
-    businessName: "Stirling Tiles",
-    trade: "Tiler",
-    town: "Stirling",
-    phone: "01786 451003",
-    rating: "",
-    reviews: "",
-    website: "",
-    websiteStatus: "Unclear",
-    called: "Not Called",
-    notes: "Bare Maps pin. No reviews yet.",
-  }),
-  createLead({
-    id: "lead-14",
-    businessName: "Dunblane Pets",
-    trade: "Pet Shop",
-    town: "Dunblane",
-    phone: "01786 823611",
-    rating: "",
-    reviews: 0,
-    website: "",
-    websiteStatus: "No Website Found",
-    called: "Called",
-    callResult: "Booked",
-    followUpDate: "2026-09-04",
-    notes: "Booked a 30-min discovery call Thursday.",
-  }),
-];
