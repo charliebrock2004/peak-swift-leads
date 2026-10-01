@@ -371,6 +371,8 @@ export type FindEmailInput = {
   phone: string;
   address: string;
   leadId: string;
+  /** Domains you marked as not this business's website: never probed, never adopted. */
+  rejectedDomains?: string[];
 };
 
 /**
@@ -378,6 +380,17 @@ export type FindEmailInput = {
  * background job as well as the server function above. Owner-scoped by `auth`.
  */
 export async function findLeadEmailCore(data: FindEmailInput, auth: { userId: string }): Promise<FindEmailResult> {
+    const rejectedDomains = new Set((data.rejectedDomains ?? []).map((domain) => domain.trim().toLowerCase().replace(/^www\./, "")).filter(Boolean));
+    const rejectedDomain = (url: string): boolean => {
+      if (!rejectedDomains.size) return false;
+      let host = "";
+      try {
+        host = new URL(/^https?:\/\//i.test(url) ? url : `https://${url}`).hostname.toLowerCase().replace(/^www\./, "");
+      } catch {
+        return false;
+      }
+      return [...rejectedDomains].some((domain) => host === domain || host.endsWith(`.${domain}`));
+    };
     // Every paid search spends one credit of today's budget, checked atomically
     // in the database before the call is made. A budget of 0 turns search off.
     const { getSql, dbSource } = await import("@/lib/db");
@@ -616,6 +629,11 @@ export async function findLeadEmailCore(data: FindEmailInput, auth: { userId: st
       const probeCandidate = async (lead: WebsiteLead): Promise<boolean> => {
         if (websiteProbes >= MAX_WEBSITE_PROBES) return false;
         if (probedOrigins.has(lead.origin)) return false;
+        if (rejectedDomain(lead.origin)) {
+          probedOrigins.add(lead.origin);
+          rejected.push({ url: lead.origin, why: "you marked this site as not theirs" });
+          return false;
+        }
         probedOrigins.add(lead.origin);
         websiteProbes += 1;
         attempts += 1;
@@ -772,7 +790,7 @@ export async function findLeadEmailCore(data: FindEmailInput, auth: { userId: st
       // lead that has no website — which is most of them. Skip when search
       // already gave us something to crawl.
       if (!discoveredSite && !possibleSite) {
-      const probes = candidateDomains(data.businessName, data.town, data.trade, WEBSITE_PROBES);
+      const probes = candidateDomains(data.businessName, data.town, data.trade, WEBSITE_PROBES).filter((host) => !rejectedDomain(host));
       sourcesChecked.push(...probes.map((host) => `https://${host}`));
       const settled = await Promise.all(
         probes.map(async (host): Promise<{ match: WebsiteMatch; html: string; finalUrl: string } | null> => {

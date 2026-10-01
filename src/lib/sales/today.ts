@@ -53,6 +53,8 @@ export type TodayInput = {
   followUpEmailsDue: number;
   /** Today's call list (callbacks due, then good prospects to ring), already filtered to callable numbers. */
   calls: readonly { leadId: string; reason: string }[];
+  /** Your next search, from the workspace profile ("Joiners, Roofers around Perth"), or "". */
+  searchHint?: string;
 };
 
 /** Quotes go quiet after this many days without a chase. */
@@ -208,7 +210,7 @@ export function buildToday(input: TodayInput): TodayPlan {
     group: 7,
     kind: "prospect",
     title: prospectsLeft < 10 ? "Find 20 new prospects" : "Find more prospects",
-    detail: prospectsLeft === 0 ? "No strong or good prospects are waiting." : `${prospectsLeft} strong or good ${prospectsLeft === 1 ? "prospect is" : "prospects are"} still waiting for a first contact.`,
+    detail: `${prospectsLeft === 0 ? "No strong or good prospects are waiting." : `${prospectsLeft} strong or good ${prospectsLeft === 1 ? "prospect is" : "prospects are"} still waiting for a first contact.`}${input.searchHint ? ` Next: ${input.searchHint}.` : ""}`,
     leadId: "",
     link: { to: "/find" },
   });

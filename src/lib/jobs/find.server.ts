@@ -28,6 +28,9 @@ import type { CompanyCheckOutcome } from "../contactability/company-check.server
 import { autoContext, planTargets, searchBreadth, tradeBreadth } from "../outreach/auto-run.ts";
 import { clampCampaign, campaignProblem, newCampaign } from "../outreach/campaigns.ts";
 import { allowance } from "../outreach/limits.ts";
+import { effectiveProfile, scoringProfile } from "../outreach/profile.ts";
+import { sourceWeights } from "../feedback/quality.ts";
+import { domainOf } from "../feedback/verdicts.ts";
 import { emptyFunnel, reconcileFunnel, tallyOutcomes, type RunFunnel } from "../outreach/run-funnel.ts";
 import type { GeneratedRow, GenerateInput } from "../outreach/server.ts";
 import type { LeadWithFacts } from "../outreach/types.ts";
@@ -329,7 +332,14 @@ async function discover(ctx: StepContext, snap: Snapshot, deps: FindDeps): Promi
   const { input } = snap;
   const trade = input.trades[snap.state.tradeIndex]!;
   const sheet = await loadSheet(ctx.sql, ctx.userId);
-  const known = sheet;
+  // Businesses you rejected stay out, even after you removed them; and the
+  // sources whose results you keep rejecting rank lower (feedback/quality.ts).
+  const feedback = await import("../feedback/store.server.ts");
+  const [rejected, marks] = await Promise.all([
+    feedback.rejectedIdentities(ctx.sql, ctx.userId).catch(() => []),
+    feedback.loadFeedback(ctx.sql, ctx.userId).catch(() => []),
+  ]);
+  const known = [...sheet, ...rejected];
   const suppressed = sheet.filter((lead) => lead.unsubscribed.trim());
   const contacted = sheet.filter((lead) => lead.lastEmailedAt.trim());
   const funnel: RunFunnel = { ...snap.progress.funnel };
@@ -342,6 +352,7 @@ async function discover(ctx: StepContext, snap: Snapshot, deps: FindDeps): Promi
     known: [...known, ...snap.state.prospects],
     suppressed,
     contacted,
+    sourceWeights: sourceWeights(marks),
     concurrency: 2,
     shouldCancel: () => Date.now() - started > DISCOVERY_STEP_MAX_MS,
     research: (query) => deps.research({ location: query.location, businessType: query.businessType, limit: query.limit, radiusMiles: input.radiusMiles }, ctx.userId),
@@ -407,6 +418,13 @@ async function write(ctx: StepContext, snap: Snapshot): Promise<Snapshot> {
 async function verify(ctx: StepContext, snap: Snapshot, deps: FindDeps): Promise<Snapshot> {
   const ids = snap.state.leadIds.slice(snap.state.cursor, snap.state.cursor + CHECK_BATCH);
   const leads = await loadSheetLeads(ctx.sql, ctx.userId, ids);
+  // Sites you said were not theirs are never attached to them again.
+  const marks = await (await import("../feedback/store.server.ts")).loadFeedback(ctx.sql, ctx.userId).catch(() => []);
+  const wrongSites = new Map<string, string[]>();
+  for (const mark of marks) {
+    const domain = mark.verdict === "wrong_website" ? domainOf(mark.website ?? "") : "";
+    if (domain) wrongSites.set(mark.leadId, [...(wrongSites.get(mark.leadId) ?? []), domain]);
+  }
   const funnel: RunFunnel = { ...snap.progress.funnel };
   const verified = new Set(snap.state.verified);
   const whyNoEmail = { ...snap.state.whyNoEmail };
@@ -436,6 +454,7 @@ async function verify(ctx: StepContext, snap: Snapshot, deps: FindDeps): Promise
             trade: working.trade,
             phone: working.phone,
             address: working.address,
+            rejectedDomains: wrongSites.get(lead.id),
           },
           ctx.userId,
         );
@@ -566,12 +585,13 @@ async function enrich(ctx: StepContext, snap: Snapshot, deps: FindDeps): Promise
 
 async function qualify(ctx: StepContext, snap: Snapshot): Promise<Snapshot> {
   const { store, contacts } = await stores();
-  const [settings, emails, suppression, screenings, doNotCall] = await Promise.all([
+  const [settings, emails, suppression, screenings, doNotCall, profile] = await Promise.all([
     store.loadSettings(ctx.sql, ctx.userId),
     store.loadEmails(ctx.sql, ctx.userId),
     store.suppressedSet(ctx.sql, ctx.userId),
     contacts.loadScreenings(ctx.sql, ctx.userId).catch(() => new Map()),
     contacts.loadDoNotCall(ctx.sql, ctx.userId).catch(() => new Map()),
+    store.loadProfile(ctx.sql, ctx.userId).catch(() => null),
   ]);
   const ids = new Set(snap.state.leadIds);
   const leads = (await Promise.all([...ids].map((id) => store.loadLead(ctx.sql, ctx.userId, id)))).filter((lead): lead is LeadWithFacts => Boolean(lead));
@@ -598,6 +618,7 @@ async function qualify(ctx: StepContext, snap: Snapshot): Promise<Snapshot> {
     suppressed: suppression,
     contacted: new Set(emails.filter((email) => email.kind === "initial" && live.has(email.status)).map((email) => email.leadId)),
     rules: settings.contactRules,
+    profile: scoringProfile(effectiveProfile(profile)),
   });
   const { summary, top } = summarise(leads, scores, 0);
   let progress = { ...snap.progress, funnel };

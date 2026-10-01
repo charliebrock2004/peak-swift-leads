@@ -8,6 +8,7 @@ import { Badge, Card, Notice, SectionTitle, Skeleton } from "@/components/app/ui
 import { CallStatusBadge, LegalFormPanel } from "@/components/app/contactability";
 import { WhyThisProspect } from "@/components/app/prospect-facts";
 import { CallBriefView, CallOutcomePicker, StageEditor, TaskList, Timeline } from "@/components/app/sales";
+import { FeedbackControl } from "@/components/app/feedback";
 import { runSalesAction } from "@/lib/sales/client";
 import { BusinessForm } from "@/components/app/business-form";
 import { businessAction } from "@/lib/businesses/server";
@@ -210,6 +211,13 @@ export function BusinessPage() {
           <section className="flex flex-col gap-2">
             <SectionTitle>Why this prospect</SectionTitle>
             <Card className="px-4 py-3">{score ? <WhyThisProspect lead={lead} score={score} limit={8} /> : <p className="text-sm text-muted">Not scored.</p>}</Card>
+          </section>
+
+          <section className="flex flex-col gap-2">
+            <SectionTitle>Your verdict</SectionTitle>
+            <Card className="px-4 py-3">
+              <FeedbackControl leadId={lead.id} verdicts={lead.facts?.feedback ?? []} onChanged={() => void load()} />
+            </Card>
           </section>
         </div>
 

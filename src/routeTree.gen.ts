@@ -23,6 +23,7 @@ import { Route as AppProspectsRouteImport } from './routes/_app.prospects'
 import { Route as AppRepliesRouteImport } from './routes/_app.replies'
 import { Route as AppSendRouteImport } from './routes/_app.send'
 import { Route as AppSettingsRouteImport } from './routes/_app.settings'
+import { Route as AppWelcomeRouteImport } from './routes/_app.welcome'
 import { Route as AdminOwnerEmailRouteImport } from './routes/admin.owner-email'
 import { Route as OauthGmailRouteImport } from './routes/oauth.gmail'
 import { Route as AppRunsIndexRouteImport } from './routes/_app.runs.index'
@@ -101,6 +102,11 @@ const AppSettingsRoute = AppSettingsRouteImport.update({
   path: '/settings',
   getParentRoute: () => AppRoute,
 } as any)
+const AppWelcomeRoute = AppWelcomeRouteImport.update({
+  id: '/welcome',
+  path: '/welcome',
+  getParentRoute: () => AppRoute,
+} as any)
 const AdminOwnerEmailRoute = AdminOwnerEmailRouteImport.update({
   id: '/admin/owner-email',
   path: '/admin/owner-email',
@@ -158,6 +164,7 @@ export interface FileRoutesByFullPath {
   '/replies': typeof AppRepliesRoute
   '/send': typeof AppSendRoute
   '/settings': typeof AppSettingsRoute
+  '/welcome': typeof AppWelcomeRoute
   '/admin/owner-email': typeof AdminOwnerEmailRoute
   '/oauth/gmail': typeof OauthGmailRoute
   '/runs/$runId': typeof AppRunsRunIdRoute
@@ -180,6 +187,7 @@ export interface FileRoutesByTo {
   '/replies': typeof AppRepliesRoute
   '/send': typeof AppSendRoute
   '/settings': typeof AppSettingsRoute
+  '/welcome': typeof AppWelcomeRoute
   '/admin/owner-email': typeof AdminOwnerEmailRoute
   '/oauth/gmail': typeof OauthGmailRoute
   '/': typeof AppIndexRoute
@@ -205,6 +213,7 @@ export interface FileRoutesById {
   '/_app/replies': typeof AppRepliesRoute
   '/_app/send': typeof AppSendRoute
   '/_app/settings': typeof AppSettingsRoute
+  '/_app/welcome': typeof AppWelcomeRoute
   '/admin/owner-email': typeof AdminOwnerEmailRoute
   '/oauth/gmail': typeof OauthGmailRoute
   '/_app/': typeof AppIndexRoute
@@ -231,6 +240,7 @@ export interface FileRouteTypes {
     | '/replies'
     | '/send'
     | '/settings'
+    | '/welcome'
     | '/admin/owner-email'
     | '/oauth/gmail'
     | '/runs/$runId'
@@ -253,6 +263,7 @@ export interface FileRouteTypes {
     | '/replies'
     | '/send'
     | '/settings'
+    | '/welcome'
     | '/admin/owner-email'
     | '/oauth/gmail'
     | '/'
@@ -277,6 +288,7 @@ export interface FileRouteTypes {
     | '/_app/replies'
     | '/_app/send'
     | '/_app/settings'
+    | '/_app/welcome'
     | '/admin/owner-email'
     | '/oauth/gmail'
     | '/_app/'
@@ -398,6 +410,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppSettingsRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/welcome': {
+      id: '/_app/welcome'
+      path: '/welcome'
+      fullPath: '/welcome'
+      preLoaderRoute: typeof AppWelcomeRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/admin/owner-email': {
       id: '/admin/owner-email'
       path: '/admin/owner-email'
@@ -468,6 +487,7 @@ interface AppRouteChildren {
   AppRepliesRoute: typeof AppRepliesRoute
   AppSendRoute: typeof AppSendRoute
   AppSettingsRoute: typeof AppSettingsRoute
+  AppWelcomeRoute: typeof AppWelcomeRoute
   AppIndexRoute: typeof AppIndexRoute
   AppRunsRunIdRoute: typeof AppRunsRunIdRoute
   AppRunsIndexRoute: typeof AppRunsIndexRoute
@@ -486,6 +506,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppRepliesRoute: AppRepliesRoute,
   AppSendRoute: AppSendRoute,
   AppSettingsRoute: AppSettingsRoute,
+  AppWelcomeRoute: AppWelcomeRoute,
   AppIndexRoute: AppIndexRoute,
   AppRunsRunIdRoute: AppRunsRunIdRoute,
   AppRunsIndexRoute: AppRunsIndexRoute,

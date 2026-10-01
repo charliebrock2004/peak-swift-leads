@@ -118,6 +118,11 @@ export type ProspectPoolOptions = {
   tradeTerms?: readonly string[];
   /** Towns the run planned, used for ranking only — never to exclude. */
   townTerms?: readonly string[];
+  /**
+   * Priority points per source from your prospect-quality marks
+   * (feedback/quality.ts `sourceWeights`). Ranking only — never excludes.
+   */
+  sourceWeights?: Partial<Record<SourceKey, number>>;
   /** Overrides for tests. Production uses DISCOVERY_SAFETY. */
   ceiling?: number;
 };
@@ -183,13 +188,16 @@ export function searchRelevance(
  */
 export function rankProspects(
   prospects: readonly Prospect[],
-  context: { tradeTerms?: readonly string[]; townTerms?: readonly string[] } = {},
+  context: { tradeTerms?: readonly string[]; townTerms?: readonly string[]; sourceWeights?: Partial<Record<SourceKey, number>> } = {},
 ): Prospect[] {
   return [...prospects]
     .map((prospect, index) => ({
       prospect,
       index,
-      key: scoreProspect(createLead({ ...prospect, id: `candidate-${index}` }) as OutreachLead).priority + searchRelevance(prospect, context) * 5,
+      key:
+        scoreProspect(createLead({ ...prospect, id: `candidate-${index}` }) as OutreachLead).priority +
+        searchRelevance(prospect, context) * 5 +
+        (context.sourceWeights?.[sourceKeyOf(prospect.source)] ?? 0),
     }))
     .sort((a, b) => (b.key !== a.key ? b.key - a.key : a.index - b.index))
     .map((item) => item.prospect);
@@ -286,7 +294,7 @@ export function createProspectPool(options: ProspectPoolOptions): ProspectPool {
       return kept.length >= ceiling;
     },
     result() {
-      const ranked = rankProspects(kept, { tradeTerms, townTerms });
+      const ranked = rankProspects(kept, { tradeTerms, townTerms, sourceWeights: options.sourceWeights });
       const prospects = ranked.slice(0, target);
       return {
         prospects,

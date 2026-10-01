@@ -25,6 +25,7 @@ import { callContactability, type CallStatus, type DoNotCall, type PhoneScreenin
 import { dateLabel, freshness, OPPORTUNITY_LABEL, type Freshness } from "../audit/findings.ts";
 import { websiteVerificationOf } from "../audit/website-state.ts";
 import type { OutreachLead } from "../outreach/types.ts";
+import { domainOf, emailOnDomain, POSITIVE, rejection, VERDICT_LABEL } from "../feedback/verdicts.ts";
 import { tradeTier, TRADE_TIER_LABEL } from "./trade-value.ts";
 
 export type Axis = "need" | "value" | "reach";
@@ -91,8 +92,30 @@ export type ScoreContext = {
   suppressed?: boolean;
   /** A live email of the initial kind already exists for this business. */
   contacted?: boolean;
-  profile?: { preferredTrades?: readonly string[]; excludedTrades?: readonly string[] };
+  /** The workspace profile's say (outreach/profile.ts `scoringProfile`). */
+  profile?: {
+    preferredTrades?: readonly string[];
+    excludedTrades?: readonly string[];
+    /** How you make first contact. "email" never suggests a cold call; "phone" never an email. */
+    contactMethods?: "email" | "phone" | "both";
+    /** The smallest job you take, in pounds. */
+    minimumProjectPounds?: number | null;
+  };
 };
+
+/** The website on record is the one you marked as not theirs. */
+export function websiteMarkedWrong(lead: OutreachLead): boolean {
+  if (!lead.facts?.feedback?.includes("wrong_website")) return false;
+  const marked = domainOf(lead.facts.wrongWebsite ?? "");
+  return !marked || marked === domainOf(lead.website);
+}
+
+/** The email is on the domain of a website you marked as not theirs — it was found on someone else's site. */
+export function emailOnWrongSite(lead: OutreachLead): boolean {
+  if (!lead.facts?.feedback?.includes("wrong_website") || !lead.email.trim()) return false;
+  const domain = domainOf(lead.facts.wrongWebsite ?? "") || (websiteMarkedWrong(lead) ? domainOf(lead.website) : "");
+  return emailOnDomain(lead.email, domain);
+}
 
 function level(score: number, known: boolean): AxisScore["level"] {
   if (!known) return "unknown";
@@ -106,6 +129,22 @@ function reason(axis: Axis, text: string, source: string, points: number, at = "
 // ── NEED ─────────────────────────────────────────────────────────────────────
 
 function needOf(lead: OutreachLead, now: Date): AxisScore & { freshness: Freshness | "unknown"; measured: boolean; needsAudit: boolean; needsSearch: boolean } {
+  // What you said outranks what was measured: you have seen the business.
+  const feedback = lead.facts?.feedback ?? [];
+  if (feedback.includes("good_website")) {
+    return { score: 5, level: "low", reasons: [reason("need", "You said their website is already good", "your feedback", 5)], freshness: "unknown", measured: true, needsAudit: false, needsSearch: false };
+  }
+  if (websiteMarkedWrong(lead)) {
+    return {
+      score: 45,
+      level: "unknown",
+      reasons: [reason("need", "You marked the website on record as not theirs — find the right one", "your feedback", 0)],
+      freshness: "unknown",
+      measured: false,
+      needsAudit: false,
+      needsSearch: true,
+    };
+  }
   const verified = websiteVerificationOf(lead, now);
   const audit = lead.facts?.audit ?? null;
   const reasons: Reason[] = [];
@@ -198,6 +237,16 @@ function valueOf(lead: OutreachLead, context: ScoreContext, now: Date): AxisScor
     reasons.push(reason("value", `${lead.trade}: ${TRADE_TIER_LABEL[tier]}`, context.profile?.preferredTrades?.length ? "your profile" : "trade", tierPoints));
   }
 
+  const minimum = context.profile?.minimumProjectPounds ?? null;
+  if (tier === "low" && minimum !== null && minimum >= 1500) {
+    score -= 10;
+    reasons.push(reason("value", `Rarely buys a £${minimum.toLocaleString("en-GB")}+ job (your minimum)`, "your profile", -10));
+  }
+  if (lead.facts?.feedback?.some((verdict) => POSITIVE.includes(verdict))) {
+    score += 10;
+    reasons.push(reason("value", "You marked it a good prospect", "your feedback", 10));
+  }
+
   const reviews = typeof lead.reviews === "number" ? lead.reviews : 0;
   const rating = typeof lead.rating === "number" ? lead.rating : 0;
   if (reviews >= 20) {
@@ -229,7 +278,13 @@ function reachOf(lead: OutreachLead, context: ScoreContext, now: Date): Prospect
   const legal = legalFormOf(lead, context.rules ?? DEFAULT_CONTACT_RULES, now);
   const usableEmail =
     lead.email.trim() && (lead.emailConfidence === "HIGH" || lead.emailConfidence === "MEDIUM") && !/guess/i.test(lead.emailSource);
-  const email = usableEmail ? emailContactability({ email: lead.email, website: lead.website, legal }) : null;
+  // Contact details you marked wrong, or an address on the website you said
+  // is not theirs, are not used until the record is corrected.
+  const contactWrong = Boolean(lead.facts?.feedback?.includes("wrong_contact"));
+  const onWrongSite = emailOnWrongSite(lead);
+  if (contactWrong) reasons.push(reason("reach", "You marked the contact details wrong — correct them to use them", "your feedback", 0));
+  else if (usableEmail && onWrongSite) reasons.push(reason("reach", `${lead.email} is on the website you marked as not theirs`, "your feedback", 0));
+  const email = usableEmail && !contactWrong && !onWrongSite ? emailContactability({ email: lead.email, website: lead.website, legal }) : null;
   let emailStatus: EmailStatus | "NONE" = email ? email.status : "NONE";
   if (context.suppressed && emailStatus !== "NONE") emailStatus = "BLOCKED";
 
@@ -245,6 +300,7 @@ function reachOf(lead: OutreachLead, context: ScoreContext, now: Date): Prospect
     },
     now,
   );
+  if (contactWrong && call.status !== "BLOCKED") call.status = "BLOCKED";
 
   let score = 0;
   if (emailStatus === "ELIGIBLE") {
@@ -263,7 +319,12 @@ function reachOf(lead: OutreachLead, context: ScoreContext, now: Date): Prospect
     score = Math.max(score, 45);
     reasons.push(reason("reach", `Phone ${call.phone?.national ?? lead.phone} — screen against TPS/CTPS first`, "listing", 45));
   }
-  const channel = emailStatus === "ELIGIBLE" && call.status !== "BLOCKED" ? "both" : emailStatus === "ELIGIBLE" ? "email" : call.status !== "BLOCKED" ? "call" : "none";
+  // The channels you actually use (your profile): a legal phone number is no
+  // way in for someone who does not cold call.
+  const methods = context.profile?.contactMethods ?? "both";
+  const canEmail = emailStatus === "ELIGIBLE" && methods !== "phone";
+  const canCall = call.status !== "BLOCKED" && methods !== "email";
+  const channel = canEmail && canCall ? "both" : canEmail ? "email" : canCall ? "call" : "none";
   return { score: Math.min(100, score), level: level(score, true), reasons, email: emailStatus, call: call.status, channel };
 }
 
@@ -286,6 +347,11 @@ export function scoreProspect(lead: OutreachLead, context: ScoreContext = {}): P
   let action: Action;
   let actionReason: string;
   const outreach = lead.outreachStatus.trim().toLowerCase();
+  const rejected = rejection(lead.facts?.feedback);
+  const methods = context.profile?.contactMethods ?? "both";
+  // The statuses the action is chosen from: a channel you do not use is not on offer.
+  const callStatus = methods === "email" ? "BLOCKED" : reach.call;
+  const emailStatus = methods === "phone" ? "NONE" : reach.email;
 
   if (lead.unsubscribed.trim() || outreach === "unsubscribed" || context.suppressed) {
     action = "SKIP";
@@ -294,6 +360,10 @@ export function scoreProspect(lead: OutreachLead, context: ScoreContext = {}): P
   } else if (CLOSED_RESULTS.has(lead.callResult) || lead.called === "Not Interested") {
     action = lead.callResult === "Booked" || lead.callResult === "Won" ? "WAIT" : "SKIP";
     actionReason = lead.callResult === "Booked" || lead.callResult === "Won" ? `Already ${lead.callResult.toLowerCase()}` : `Marked ${(lead.callResult || lead.called).toLowerCase()}`;
+  } else if (rejected) {
+    action = "SKIP";
+    actionReason = `You marked it: ${VERDICT_LABEL[rejected].toLowerCase()}`;
+    band = "NONE";
   } else if (outreach === "replied") {
     action = "WAIT";
     actionReason = "They replied — the conversation is under way";
@@ -309,28 +379,38 @@ export function scoreProspect(lead: OutreachLead, context: ScoreContext = {}): P
   } else if (need.score <= 10) {
     action = "SKIP";
     actionReason = "No measured website opportunity";
+  } else if (websiteMarkedWrong(lead)) {
+    action = "REVIEW";
+    actionReason = "You marked the website on record as not theirs";
+    blockers.push("Find their real website");
   } else if (need.needsAudit) {
     action = "REVIEW";
     actionReason = "Audit the website before contacting them";
     blockers.push("Audit the website");
   } else if (reach.channel === "none") {
-    if (reach.email === "HOLD") {
+    if (emailStatus === "HOLD") {
       action = "REVIEW";
       actionReason = "Confirm whether it is a company before emailing";
       blockers.push("Confirm the legal form (Companies House)");
+    } else if (methods === "email" && reach.call !== "BLOCKED") {
+      action = "SKIP";
+      actionReason = "No usable email, and you don't make first contact by phone";
+    } else if (methods === "phone" && reach.email === "ELIGIBLE") {
+      action = "SKIP";
+      actionReason = "No callable number, and you don't make first contact by email";
     } else {
       action = "SKIP";
       actionReason = "No usable email or phone number";
     }
-  } else if (reach.call === "ELIGIBLE" && (reach.email !== "ELIGIBLE" || lead.callResult === "Callback" || lead.callResult === "Interested")) {
+  } else if (callStatus === "ELIGIBLE" && (emailStatus !== "ELIGIBLE" || lead.callResult === "Callback" || lead.callResult === "Interested")) {
     action = "CALL";
-    actionReason = lead.callResult === "Callback" ? "They asked you to call back" : reach.email === "ELIGIBLE" ? "A call starts the conversation fastest" : "No usable email — a call is the way in";
-  } else if (reach.email === "ELIGIBLE") {
+    actionReason = lead.callResult === "Callback" ? "They asked you to call back" : emailStatus === "ELIGIBLE" ? "A call starts the conversation fastest" : "No usable email — a call is the way in";
+  } else if (emailStatus === "ELIGIBLE") {
     action = "EMAIL";
     actionReason = "A company with a business email address";
   } else {
     action = "CALL";
-    actionReason = reach.email === "HOLD" ? "Not confirmed as a company — ring instead of emailing" : "No usable email — a call is the way in";
+    actionReason = emailStatus === "HOLD" ? "Not confirmed as a company — ring instead of emailing" : "No usable email — a call is the way in";
     blockers.push("Screen the number against TPS and CTPS");
   }
   if (need.needsSearch && (action === "CALL" || action === "EMAIL")) {

@@ -5,6 +5,7 @@
  * functions stay about policy. Every statement is scoped by `user_id`, which is
  * always the verified id from `authMiddleware` — never anything a client sent.
  */
+import { domainOf, parseVerdicts } from "../feedback/verdicts.ts";
 import type { Sql } from "@/lib/db";
 import { leadFromRow, type LeadRow } from "../leads-row.ts";
 import { openSecret, sealSecret } from "../crypto/secrets.server.ts";
@@ -885,19 +886,44 @@ const QUALIFIED_LEAD_COLUMNS = LEAD_COLUMNS.split(",").map((column) => `l.${colu
  * Leads with their server-held facts: the synced columns, the website search
  * evidence, and a summary of the latest website audit — one query, no N+1.
  */
-const LEADS_WITH_FACTS = `select ${QUALIFIED_LEAD_COLUMNS},
+function leadsWithFacts(feedback: boolean): string {
+  return `select ${QUALIFIED_LEAD_COLUMNS},
     e.data as website_evidence,
     a.id as audit_id, a.status as audit_status, a.http_status as audit_http_status, a.url as audit_url,
     a.finished_at as audit_finished_at, a.opportunity as audit_opportunity, a.points as audit_points,
-    a.key_findings as audit_key_findings
+    a.key_findings as audit_key_findings${feedback ? ",\n    fb.verdicts as feedback_verdicts, fb.wrong_site as feedback_wrong_site" : ""}
   from leads l
-  left join lead_evidence e on e.user_id = l.user_id and e.lead_id = l.id and e.kind = 'website'
+  left join lead_evidence e on e.user_id = l.user_id and e.lead_id = l.id and e.kind = 'website'${
+    feedback
+      ? `
+  left join lateral (
+    select string_agg(verdict, ',' order by verdict) as verdicts,
+           max(case when verdict = 'wrong_website' then website end) as wrong_site
+      from prospect_feedback f
+     where f.user_id = l.user_id and f.lead_id = l.id
+  ) fb on true`
+      : ""
+  }
   left join lateral (
     select id, status, http_status, url, finished_at, opportunity, points, key_findings
       from website_audits w
      where w.user_id = l.user_id and w.lead_id = l.id
      order by finished_at desc limit 1
   ) a on true`;
+}
+const LEADS_WITH_FACTS = leadsWithFacts(true);
+/** Before 0016: the same, without your feedback marks. */
+const LEADS_WITH_FACTS_0011 = leadsWithFacts(false);
+
+/** Run a facts query, falling back to the pre-0016 shape on a deploy mid-migration. */
+async function queryLeadsWithFacts(sql: Sql, tail: string, params: unknown[]): Promise<LeadWithFactsRow[]> {
+  try {
+    return await sql.query<LeadWithFactsRow>(`${LEADS_WITH_FACTS} ${tail}`, params);
+  } catch (error) {
+    if (!/relation "prospect_feedback" does not exist/i.test(error instanceof Error ? error.message : String(error))) throw error;
+    return sql.query<LeadWithFactsRow>(`${LEADS_WITH_FACTS_0011} ${tail}`, params);
+  }
+}
 
 type LeadWithFactsRow = LeadRow & {
   website_evidence?: string | null;
@@ -916,11 +942,20 @@ type LeadWithFactsRow = LeadRow & {
   legal_form_override?: string | null;
   legal_form_note?: string | null;
   legal_form_set_at?: string | null;
+  feedback_verdicts?: string | null;
+  feedback_wrong_site?: string | null;
 };
 
 /** The server-owned identity facts (0010) beside the synced lead fields. */
 export function factsFromRow(row: LeadWithFactsRow): BusinessFacts {
   const override = text(row.legal_form_override);
+  // An audit, or a "confirmed site" record, about a different site than the
+  // one on record (the site changed, or you said it was not theirs) describes
+  // someone else's website: it must not reach a score or an email.
+  const site = domainOf(text(row.website));
+  const audit = row.audit_id ? auditSummaryFromRow(row) : null;
+  const evidence = row.website_evidence ? (parseEvidenceRows([{ leadId: "x", kind: "website", json: String(row.website_evidence) }]).get("x")?.website ?? null) : null;
+  const sameSite = (url: string) => Boolean(site) && domainOf(url) === site;
   return {
     companyNumber: text(row.company_number),
     companyType: text(row.company_type),
@@ -929,8 +964,10 @@ export function factsFromRow(row: LeadWithFactsRow): BusinessFacts {
     legalFormOverride: (["CORPORATE", "INDIVIDUAL", "UNKNOWN", "REVIEW_REQUIRED"].includes(override) ? override : "") as BusinessFacts["legalFormOverride"],
     legalFormNote: text(row.legal_form_note),
     legalFormSetAt: text(row.legal_form_set_at),
-    websiteEvidence: row.website_evidence ? (parseEvidenceRows([{ leadId: "x", kind: "website", json: String(row.website_evidence) }]).get("x")?.website ?? null) : null,
-    audit: row.audit_id ? auditSummaryFromRow(row) : null,
+    websiteEvidence: evidence && evidence.verified && evidence.url && !sameSite(evidence.url) ? null : evidence,
+    audit: audit && sameSite(audit.url) ? audit : null,
+    feedback: parseVerdicts(row.feedback_verdicts),
+    wrongWebsite: text(row.feedback_wrong_site),
   };
 }
 
@@ -974,20 +1011,12 @@ function leadWithFacts(row: LeadWithFactsRow): LeadWithFacts {
  * from the row the server holds.
  */
 export async function loadLeads(sql: Sql, userId: string, limit = 20000): Promise<LeadWithFacts[]> {
-  const rows = await sql.query<LeadWithFactsRow>(
-    `${LEADS_WITH_FACTS}
-      where l.user_id = $1 and l.deleted_at is null
-      order by l.updated_at desc limit $2`,
-    [userId, limit],
-  );
+  const rows = await queryLeadsWithFacts(sql, `where l.user_id = $1 and l.deleted_at is null order by l.updated_at desc limit $2`, [userId, limit]);
   return rows.map(leadWithFacts);
 }
 
 export async function loadLead(sql: Sql, userId: string, id: string): Promise<LeadWithFacts | null> {
-  const rows = await sql.query<LeadWithFactsRow>(
-    `${LEADS_WITH_FACTS} where l.user_id = $1 and l.id = $2 and l.deleted_at is null`,
-    [userId, id],
-  );
+  const rows = await queryLeadsWithFacts(sql, `where l.user_id = $1 and l.id = $2 and l.deleted_at is null`, [userId, id]);
   return rows[0] ? leadWithFacts(rows[0]) : null;
 }
 
@@ -1490,31 +1519,60 @@ const PROFILE_COLUMNS: [keyof BusinessProfile, string][] = [
   ["portfolioUrl", "portfolio_url"],
   ["signature", "signature"],
   ["optOutLine", "opt_out_line"],
+  ["targetAreas", "target_areas"],
+  ["targetTrades", "target_trades"],
+  ["preferredTrades", "preferred_trades"],
+  ["excludedTrades", "excluded_trades"],
+  ["typicalProject", "typical_project"],
+  ["minimumProject", "minimum_project"],
+  ["contactMethods", "contact_methods"],
+  ["examples", "examples"],
+  ["businessAddress", "business_address"],
 ];
+
+/** The columns 0009 created — what a deploy that has not run 0016 yet has. */
+const PROFILE_COLUMNS_0009 = PROFILE_COLUMNS.slice(0, 12);
+
+const missingColumn = (error: unknown) => /column .* does not exist/i.test(error instanceof Error ? error.message : String(error));
 
 /** The stored profile, exactly as saved — empty fields stay empty. */
 export async function loadProfile(sql: Sql, userId: string): Promise<Partial<BusinessProfile> | null> {
-  const rows = await sql.query<Record<string, unknown>>(
-    `select ${PROFILE_COLUMNS.map(([, column]) => column).join(", ")} from business_profile where user_id = $1`,
-    [userId],
-  );
+  const read = (columns: typeof PROFILE_COLUMNS) =>
+    sql.query<Record<string, unknown>>(`select ${columns.map(([, column]) => column).join(", ")} from business_profile where user_id = $1`, [userId]);
+  // Mid-migration (0016 not yet applied) the older columns still load.
+  let columns = PROFILE_COLUMNS;
+  const rows = await read(columns).catch((error: unknown) => {
+    if (!missingColumn(error)) throw error;
+    columns = PROFILE_COLUMNS_0009;
+    return read(columns);
+  });
   const row = rows[0];
   if (!row) return null;
   const out: Partial<BusinessProfile> = {};
-  for (const [key, column] of PROFILE_COLUMNS) out[key] = text(row[column]);
+  for (const [key, column] of columns) out[key] = text(row[column]);
   return out;
 }
 
-export async function saveProfile(sql: Sql, userId: string, profile: BusinessProfile): Promise<void> {
+export async function saveProfile(sql: Sql, userId: string, profile: BusinessProfile, options: { onboarded?: boolean } = {}): Promise<void> {
   const columns = PROFILE_COLUMNS.map(([, column]) => column);
   await sql.query(
-    `insert into business_profile (user_id, ${columns.join(", ")}, updated_at)
-     values ($1, ${columns.map((_, i) => `$${i + 2}`).join(", ")}, now())
+    `insert into business_profile (user_id, ${columns.join(", ")}, onboarded_at, updated_at)
+     values ($1, ${columns.map((_, i) => `$${i + 2}`).join(", ")}, case when $${columns.length + 2}::boolean then now() end, now())
      on conflict (user_id) do update set
        ${columns.map((column) => `${column} = excluded.${column}`).join(",\n       ")},
+       onboarded_at = coalesce(business_profile.onboarded_at, excluded.onboarded_at),
        updated_at = now()`,
-    [userId, ...PROFILE_COLUMNS.map(([key]) => profile[key])],
+    [userId, ...PROFILE_COLUMNS.map(([key]) => profile[key]), Boolean(options.onboarded)],
   );
+}
+
+/** When the welcome was finished, or "" — before 0016, always "". */
+export async function loadOnboardedAt(sql: Sql, userId: string): Promise<string> {
+  const rows = await sql
+    .query<{ onboarded_at: unknown }>(`select onboarded_at from business_profile where user_id = $1`, [userId])
+    .catch(() => [] as { onboarded_at: unknown }[]);
+  const at = rows[0]?.onboarded_at;
+  return at instanceof Date ? at.toISOString() : at ? String(at) : "";
 }
 
 // ── Budgets for paid calls (0009) ────────────────────────────────────────────

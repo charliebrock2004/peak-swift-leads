@@ -37,7 +37,27 @@ export type BusinessProfile = {
   signature: string;
   /** The opt-out sentence. Must actually give a way out, or the default is used. */
   optOutLine: string;
+  // ── Who you sell to (0016) ──────────────────────────────────────────────
+  /** Towns or regions Find searches by default, comma-separated. */
+  targetAreas: string;
+  /** Trades Find searches by default, comma-separated. */
+  targetTrades: string;
+  /** Trades scored as high value whatever the general table says. */
+  preferredTrades: string;
+  /** Trades never worth contacting: scored out, never queued. */
+  excludedTrades: string;
+  /** Whole pounds: a typical job, and the smallest job you take. */
+  typicalProject: string;
+  minimumProject: string;
+  /** "email", "phone" or "both" — how you are willing to make first contact. */
+  contactMethods: string;
+  /** Past work you are happy to mention, one per line. */
+  examples: string;
+  /** Your business postal address, for your signature and your records. */
+  businessAddress: string;
 };
+
+export type ContactMethods = "email" | "phone" | "both";
 
 export const DEFAULT_PROFILE: BusinessProfile = {
   businessName: SENDER_STUDIO,
@@ -52,6 +72,15 @@ export const DEFAULT_PROFILE: BusinessProfile = {
   portfolioUrl: "",
   signature: "",
   optOutLine: OPT_OUT_LINE,
+  targetAreas: "",
+  targetTrades: "",
+  preferredTrades: "",
+  excludedTrades: "",
+  typicalProject: "",
+  minimumProject: "",
+  contactMethods: "both",
+  examples: "",
+  businessAddress: "",
 };
 
 export const PROFILE_LIMITS: Record<keyof BusinessProfile, number> = {
@@ -67,6 +96,15 @@ export const PROFILE_LIMITS: Record<keyof BusinessProfile, number> = {
   portfolioUrl: 200,
   signature: 400,
   optOutLine: 200,
+  targetAreas: 200,
+  targetTrades: 200,
+  preferredTrades: 200,
+  excludedTrades: 200,
+  typicalProject: 12,
+  minimumProject: 12,
+  contactMethods: 10,
+  examples: 600,
+  businessAddress: 200,
 };
 
 function clean(value: unknown, max: number): string {
@@ -119,7 +157,19 @@ export function sanitizeProfile(input: Partial<Record<keyof BusinessProfile, unk
     portfolioUrl: cleanUrl(input.portfolioUrl),
     signature: text("signature").replace(/\r\n/g, "\n"),
     optOutLine: line("optOutLine"),
+    targetAreas: listText(text("targetAreas")),
+    targetTrades: listText(text("targetTrades")),
+    preferredTrades: listText(text("preferredTrades")),
+    excludedTrades: listText(text("excludedTrades")),
+    typicalProject: poundsText(line("typicalProject")),
+    minimumProject: poundsText(line("minimumProject")),
+    contactMethods: (["email", "phone", "both"] as const).find((value) => value === line("contactMethods").toLowerCase()) ?? "",
+    examples: text("examples").replace(/\r\n/g, "\n"),
+    businessAddress: line("businessAddress"),
   };
+  for (const key of ["typicalProject", "minimumProject"] as const) {
+    if (clean(input[key], 12) && !profile[key]) problems.push({ field: key, message: "Give a price in whole pounds, like 2500." });
+  }
   if (senderEmail && !profile.senderEmail) problems.push({ field: "senderEmail", message: "That is not an email address." });
   if (clean(input.website, 200) && !profile.website) problems.push({ field: "website", message: "That is not a web address." });
   if (clean(input.portfolioUrl, 200) && !profile.portfolioUrl) {
@@ -133,6 +183,55 @@ export function sanitizeProfile(input: Partial<Record<keyof BusinessProfile, unk
     profile.optOutLine = "";
   }
   return { profile, problems };
+}
+
+/** "Perth, Crieff,, crieff" → "Perth, Crieff": trimmed, de-duplicated, at most 12. */
+function listText(value: string): string {
+  return profileList(value).join(", ");
+}
+
+/** "£2,500" or "2.5k" → "2500"; anything else → "". */
+function poundsText(value: string): string {
+  const clean = value.toLowerCase().replace(/[£,\s]/g, "");
+  const match = /^(\d+(?:\.\d+)?)(k)?$/.exec(clean);
+  if (!match) return "";
+  const pounds = Math.round(Number(match[1]) * (match[2] ? 1000 : 1));
+  return pounds > 0 && pounds <= 1_000_000 ? String(pounds) : "";
+}
+
+/** A comma- or line-separated profile list as items. */
+export function profileList(value: string | undefined): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of (value ?? "").split(/[,\n;]+/)) {
+    const trimmed = item.trim();
+    if (!trimmed || seen.has(trimmed.toLowerCase())) continue;
+    seen.add(trimmed.toLowerCase());
+    out.push(trimmed);
+    if (out.length >= 12) break;
+  }
+  return out;
+}
+
+/** Whole pounds from a profile price, or null. */
+export function profilePounds(value: string | undefined): number | null {
+  const pounds = Number(value ?? "");
+  return Number.isFinite(pounds) && pounds > 0 ? pounds : null;
+}
+
+export function contactMethodsOf(profile: Pick<BusinessProfile, "contactMethods"> | null | undefined): ContactMethods {
+  const value = profile?.contactMethods;
+  return value === "email" || value === "phone" ? value : "both";
+}
+
+/** What scoring needs from the workspace: the trades you want, how you make contact, the smallest job you take. */
+export function scoringProfile(profile: BusinessProfile | null | undefined) {
+  return {
+    preferredTrades: profileList(profile?.preferredTrades),
+    excludedTrades: profileList(profile?.excludedTrades),
+    contactMethods: contactMethodsOf(profile),
+    minimumProjectPounds: profilePounds(profile?.minimumProject),
+  };
 }
 
 /** The profile with every empty field filled from the defaults. */

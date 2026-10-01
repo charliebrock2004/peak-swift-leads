@@ -44,6 +44,7 @@ async function world(userId: string) {
     sales.loadOpportunities(sql, userId),
   ]);
   const { scoreAll } = await import("@/lib/scoring/records");
+  const { effectiveProfile, scoringProfile } = await import("@/lib/outreach/profile");
   const live = new Set(["approved", "queued", "sending", "sent", "replied"]);
   const scores = scoreAll(leads, {
     screenings,
@@ -51,6 +52,7 @@ async function world(userId: string) {
     suppressed: suppression,
     contacted: new Set(emails.filter((email) => email.kind === "initial" && live.has(email.status)).map((email) => email.leadId)),
     rules: settings.contactRules,
+    profile: scoringProfile(effectiveProfile(profile)),
   });
   return { sql, store, sales, leads, emails, settings, suppression, profile, screenings, doNotCall, tasks, opportunities, scores };
 }
@@ -66,8 +68,14 @@ export const getToday = createServerFn({ method: "GET" })
       const { followUpsDue } = await import("@/lib/outreach/follow-ups");
       const { callQueue } = await import("@/lib/outreach/call-queue");
       const { callContactability, normalizeUkPhone } = await import("@/lib/contactability/phone");
-      const { effectiveProfile } = await import("@/lib/outreach/profile");
+      const { contactMethodsOf, effectiveProfile, profileList } = await import("@/lib/outreach/profile");
       const { buildToday } = await import("./today.ts");
+      const profile = effectiveProfile(w.profile);
+      // Email-only: a cold call is never on the day's list (callbacks they asked for still are).
+      const phones = contactMethodsOf(profile) !== "email";
+      const trades = profileList(profile.targetTrades);
+      const areas = profileList(profile.targetAreas);
+      const searchHint = trades.length && areas.length ? `${trades.slice(0, 3).join(", ")} around ${areas.slice(0, 2).join(" and ")}` : "";
 
       const state = {
         leads: w.leads,
@@ -94,7 +102,7 @@ export const getToday = createServerFn({ method: "GET" })
             unsubscribed: item.lead.unsubscribed,
             outreachStatus: item.lead.outreachStatus,
           });
-          return verdict.status !== "BLOCKED";
+          return verdict.status !== "BLOCKED" && (phones || item.kind === "follow-up");
         })
         .map((item) => ({ leadId: item.lead.id, reason: item.reason }));
 
@@ -109,6 +117,7 @@ export const getToday = createServerFn({ method: "GET" })
         draftsToReview: drafts,
         followUpEmailsDue: followUps,
         calls,
+        searchHint,
       });
       return { ok: true, json: JSON.stringify(plan) };
     } catch (error) {

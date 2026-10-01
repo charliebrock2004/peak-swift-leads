@@ -5,6 +5,7 @@
  * means a screened, permitted call) and builds the same context the server
  * uses. Until those load, numbers count as unscreened — never as safe.
  */
+import { scoringProfile } from "@/lib/outreach/profile";
 import { useEffect, useMemo, useState } from "react";
 import type { OutreachState } from "@/lib/outreach/server";
 import type { OutreachLead } from "@/lib/outreach/types";
@@ -39,6 +40,7 @@ export function useScores(state: OutreachState | null): Map<string, ProspectScor
       suppressed: new Set(state.suppression.map((entry) => entry.email.trim().toLowerCase())),
       contacted: new Set(state.emails.filter((email) => email.kind === "initial" && live.has(email.status)).map((email) => email.leadId)),
       rules: state.settings.contactRules,
+      profile: scoringProfile(state.profile),
     });
   }, [state, contact]);
 }

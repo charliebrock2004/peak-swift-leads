@@ -67,7 +67,9 @@ function blockers(state: OutreachState): Blocker[] {
   } else if (connection.status !== "connected") {
     out.push({ key: "gmail", tone: "warn", title: "Connect Gmail to send", detail: "Emails go out from your own Gmail account.", to: "/settings", search: { section: "gmail" }, cta: "Connect" });
   }
-  if (!state.profileSaved) {
+  if (!state.onboardedAt && (!state.profileSaved || !state.profile.targetTrades.trim())) {
+    out.push({ key: "profile", tone: "warn", title: "Tell PeakSwift what you sell", detail: "Seven quick questions — then it finds your first 20 prospects.", to: "/welcome", cta: "Start" });
+  } else if (!state.profileSaved) {
     out.push({ key: "profile", tone: "warn", title: "Set up your business profile", detail: `Emails are signed "${state.profile.senderName} · ${state.profile.businessName}" until you do.`, to: "/settings", search: { section: "profile" }, cta: "Set up" });
   }
   const queue = sendQueue(state);

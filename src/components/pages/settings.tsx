@@ -440,6 +440,18 @@ const PROFILE_FIELDS: { key: keyof BusinessProfile; label: string; hint?: string
   { key: "cta", label: "Call to action", hint: "The low-pressure next step every email ends on." },
   { key: "signature", label: "Signature", multiline: true, hint: "Leave empty for your name, business and website." },
   { key: "optOutLine", label: "Opt-out sentence", wide: true, hint: "Must give people a way to stop hearing from you, or the standard one is used." },
+  { key: "businessAddress", label: "Business address", wide: true, hint: "Optional. For your records and your signature if you add it there." },
+];
+
+/** Who you sell to: what Find searches, how prospects are scored, which channels you use. */
+const ICP_FIELDS: typeof PROFILE_FIELDS = [
+  { key: "targetAreas", label: "Where you look for work", hint: "Towns or regions, comma-separated. Find starts here.", placeholder: "Perth, Crieff, Pitlochry" },
+  { key: "targetTrades", label: "Businesses you want", hint: "Trades Find searches by default.", placeholder: "Joiner, Roofer, Builder" },
+  { key: "preferredTrades", label: "Best-fit trades", hint: "Scored as high value.", placeholder: "Roofer, Kitchen fitter" },
+  { key: "excludedTrades", label: "Never these", hint: "Scored out and never queued.", placeholder: "Takeaway, Pub" },
+  { key: "typicalProject", label: "Typical job (£)", hint: "Compared with your won jobs in Insights.", placeholder: "2500" },
+  { key: "minimumProject", label: "Smallest job you take (£)", hint: "Trades that rarely spend this much score lower.", placeholder: "1000" },
+  { key: "examples", label: "Past work you can mention", multiline: true, hint: "One per line. The AI may mention one, exactly as written.", placeholder: "Booking site for a Perth roofer — enquiries up in the first month" },
 ];
 
 function ProfileSection({ state }: { state: OutreachState }) {
@@ -470,26 +482,52 @@ function ProfileSection({ state }: { state: OutreachState }) {
       title="Business profile"
       description="Who the emails come from and what you offer. The AI, the templates, the sign-off and the From name all use it, and the quality gate checks each email names your business."
     >
-      <div className="grid gap-4 sm:grid-cols-2">
-        {PROFILE_FIELDS.map((field) => (
-          <div key={field.key} className={field.multiline || field.wide ? "sm:col-span-2" : ""}>
-            <Field label={field.label} hint={problems[field.key] ? <span className="text-warn">{problems[field.key]}</span> : field.hint} htmlFor={`p-${field.key}`}>
-              {field.multiline ? (
-                <textarea
-                  id={`p-${field.key}`}
-                  value={profile[field.key]}
-                  rows={3}
-                  onChange={(event) => setProfile({ ...profile, [field.key]: event.target.value })}
-                  placeholder={field.placeholder}
-                  className="w-full rounded-md bg-surface px-3 py-2 text-sm shadow-(--shadow-border) outline-none focus-visible:shadow-(--shadow-focus)"
-                />
-              ) : (
-                <Input id={`p-${field.key}`} value={profile[field.key]} placeholder={field.placeholder} onChange={(event) => setProfile({ ...profile, [field.key]: event.target.value })} />
-              )}
-            </Field>
+      {[PROFILE_FIELDS, ICP_FIELDS].map((fields, index) => (
+        <div key={index} className="flex flex-col gap-3">
+          {index === 1 ? (
+            <div>
+              <p className="text-sm font-medium">Who you sell to</p>
+              <p className="text-xs text-muted">Find, scoring, Today and Insights all read this.</p>
+            </div>
+          ) : null}
+          <div className="grid gap-4 sm:grid-cols-2">
+            {fields.map((field) => (
+              <div key={field.key} className={field.multiline || field.wide ? "sm:col-span-2" : ""}>
+                <Field label={field.label} hint={problems[field.key] ? <span className="text-warn">{problems[field.key]}</span> : field.hint} htmlFor={`p-${field.key}`}>
+                  {field.multiline ? (
+                    <textarea
+                      id={`p-${field.key}`}
+                      value={profile[field.key]}
+                      rows={3}
+                      onChange={(event) => setProfile({ ...profile, [field.key]: event.target.value })}
+                      placeholder={field.placeholder}
+                      className="w-full rounded-md bg-surface px-3 py-2 text-sm shadow-(--shadow-border) outline-none focus-visible:shadow-(--shadow-focus)"
+                    />
+                  ) : (
+                    <Input id={`p-${field.key}`} value={profile[field.key]} placeholder={field.placeholder} onChange={(event) => setProfile({ ...profile, [field.key]: event.target.value })} />
+                  )}
+                </Field>
+              </div>
+            ))}
+            {index === 1 ? (
+              <div className="sm:col-span-2">
+                <Field label="How you make first contact" hint="A channel you don't use is never suggested. Callbacks people ask for are always kept." htmlFor="p-contactMethods">
+                  <Segmented
+                    label="How you make first contact"
+                    value={(profile.contactMethods || "both") as "email" | "phone" | "both"}
+                    onChange={(value) => setProfile({ ...profile, contactMethods: value })}
+                    options={[
+                      { id: "both", label: "Email and phone" },
+                      { id: "email", label: "Email only" },
+                      { id: "phone", label: "Phone only" },
+                    ]}
+                  />
+                </Field>
+              </div>
+            ) : null}
           </div>
-        ))}
-      </div>
+        </div>
+      ))}
       <div className="rounded-lg bg-surface-2 px-4 py-3 text-sm">
         <p className="text-xs text-subtle">Emails arrive as</p>
         <p className="mt-0.5 font-medium">

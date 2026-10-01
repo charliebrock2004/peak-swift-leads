@@ -188,13 +188,16 @@ async function scoringWorld(userId: string, settings: OutreachSettings, suppress
   const { getSql } = await import("@/lib/db");
   const contacts = await import("@/lib/contactability/store.server");
   const sql = await getSql();
-  const [screenings, doNotCall] = await Promise.all([
+  const store = await import("./store.server.ts");
+  const { effectiveProfile, scoringProfile } = await import("./profile.ts");
+  const [screenings, doNotCall, profile] = await Promise.all([
     contacts.loadScreenings(sql, userId).catch(() => new Map()),
     contacts.loadDoNotCall(sql, userId).catch(() => new Map()),
+    store.loadProfile(sql, userId).catch(() => null),
   ]);
   const live = new Set(["approved", "queued", "sending", "sent", "replied"]);
   const contacted = new Set(emails.filter((email) => email.kind === "initial" && live.has(email.status)).map((email) => email.leadId));
-  return { screenings, doNotCall, suppressed, contacted, rules: settings.contactRules };
+  return { screenings, doNotCall, suppressed, contacted, rules: settings.contactRules, profile: scoringProfile(effectiveProfile(profile)) };
 }
 
 // ── AI ───────────────────────────────────────────────────────────────────────
@@ -311,6 +314,8 @@ export type OutreachState = {
   profile: BusinessProfile;
   /** True once the owner has saved their own profile. */
   profileSaved: boolean;
+  /** When the short welcome was finished, or "" (0016). */
+  onboardedAt: string;
   /** Paid calls spent today, against their budgets. */
   usage: { search: number; ai: number; searchBudget: number; aiBudget: number };
   /** Which web-search provider discovery will use, or "" when none is configured. */
@@ -379,11 +384,13 @@ export const getOutreachState = createServerFn({ method: "GET" })
       // 0009 may not be applied on a deploy that is mid-migration: a missing
       // table reads as "nothing saved yet", never as an outage.
       const storedProfile = await store.loadProfile(sql, context.userId).catch(() => null);
+      const onboardedAt = await store.loadOnboardedAt(sql, context.userId);
       const used = await store.budgetUsed(sql, context.userId).catch(() => ({ search: 0, ai: 0 }));
       return {
         ok: true,
         profile: effectiveProfile(storedProfile),
         profileSaved: profileIsSetUp(storedProfile),
+        onboardedAt,
         usage: {
           ...used,
           searchBudget: settings.searchDailyBudget ?? 300,
@@ -1976,7 +1983,7 @@ export const saveBusinessProfile = createServerFn({ method: "POST" })
       const { getSql } = await import("@/lib/db");
       const store = await import("./store.server.ts");
       const { profile, problems } = sanitizeProfile(data as never);
-      await store.saveProfile(await getSql(), context.userId, profile);
+      await store.saveProfile(await getSql(), context.userId, profile, { onboarded: data.onboarded === true });
       return { ok: true as const, profile: effectiveProfile(profile), problems };
     } catch (error) {
       console.error("[outreach] profile save failed:", error);

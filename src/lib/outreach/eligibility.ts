@@ -10,7 +10,8 @@
  * The rules are deliberately conservative. Every "no" is a named reason the UI
  * can show, so nothing is ever silently dropped.
  */
-import { scoreProspect } from "../scoring/prospect-score.ts";
+import { emailOnWrongSite, scoreProspect, websiteMarkedWrong } from "../scoring/prospect-score.ts";
+import { rejection } from "../feedback/verdicts.ts";
 import { emailContactability, type EmailContactability, type VerificationResult } from "../contactability/email.ts";
 import { DEFAULT_CONTACT_RULES, type ContactRules, type LegalFormResult } from "../contactability/legal-form.ts";
 import { legalFormOf } from "../contactability/lead.ts";
@@ -41,6 +42,12 @@ export const INELIGIBLE_REASONS = [
   "personal-mailbox",
   /** An email verifier says the mailbox does not exist. */
   "undeliverable",
+  /** You marked the business bad, irrelevant, a duplicate, the wrong business or not in the trade. */
+  "rejected-by-you",
+  /** You marked the contact details wrong and have not corrected them. */
+  "wrong-contact",
+  /** You marked the website on record as not theirs and have not corrected it. */
+  "wrong-website",
 ] as const;
 export type IneligibleReason = (typeof INELIGIBLE_REASONS)[number];
 
@@ -63,6 +70,9 @@ export const REASON_LABELS: Record<IneligibleReason, string> = {
   "individual-subscriber": "Sole trader or partnership — call instead",
   "personal-mailbox": "Personal mailbox — call instead",
   undeliverable: "Email address does not exist",
+  "rejected-by-you": "You marked it as not a prospect",
+  "wrong-contact": "You marked the contact details wrong",
+  "wrong-website": "You marked the website as not theirs",
 };
 
 export type Eligibility = (
@@ -190,6 +200,13 @@ export function checkEligibility(
       Boolean(lead.lastEmailedAt.trim());
     if (contacted) reasons.push("already-contacted");
   }
+
+  // What you said about the business stands until you change it — for
+  // follow-ups as much as first emails.
+  const feedback = lead.facts?.feedback ?? [];
+  if (rejection(feedback)) reasons.push("rejected-by-you");
+  if (feedback.includes("wrong_contact")) reasons.push("wrong-contact");
+  if (websiteMarkedWrong(lead) || emailOnWrongSite(lead)) reasons.push("wrong-website");
 
   const result = lead.callResult;
   if (result === "Not Interested" || lead.called === "Not Interested") reasons.push("not-interested");

@@ -69,6 +69,19 @@ const KIND_BRIEF: Record<EmailKind, string> = {
  * Everything about the sender comes from the business profile, so the studio,
  * the area, what is on offer and how the email ends are the owner's words.
  */
+/**
+ * The owner's own past work, in their words: at most three short lines, to be
+ * mentioned once at most and only as written — never embellished.
+ */
+function pastWork(examples: string): string {
+  const lines = examples
+    .split(/\n+/)
+    .map((line) => line.replace(/\s+/g, " ").trim().slice(0, 160))
+    .filter(Boolean)
+    .slice(0, 3);
+  return lines.length ? `Past work you may mention once, exactly as described, if it fits (optional): ${lines.join("; ")}` : "";
+}
+
 export function buildPrompt(lead: OutreachLead, kind: EmailKind = "initial", stored?: Partial<BusinessProfile>, choice: AngleChoice = selectAngle(lead)): string {
   const profile = effectiveProfile(stored);
   const about = [
@@ -78,6 +91,7 @@ export function buildPrompt(lead: OutreachLead, kind: EmailKind = "initial", sto
     profile.areasServed ? `Works across: ${profile.areasServed}` : "",
     profile.services ? `What the studio offers: ${profile.services}` : "",
     profile.portfolioUrl ? `Examples of past work (may be linked once, optional): ${profile.portfolioUrl}` : "",
+    pastWork(profile.examples),
     `The next step to offer: ${profile.cta}`,
   ]
     .filter(Boolean)

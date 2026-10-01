@@ -5,6 +5,7 @@
  * functions can import it, and so the rules modules stay unit-testable without a
  * database or a network.
  */
+import type { Verdict } from "../feedback/verdicts.ts";
 import { DEFAULT_CONTACT_RULES, type ContactRules } from "../contactability/legal-form.ts";
 import type { Lead } from "../leads.ts";
 import type { OAuthSetup } from "./oauth-setup.ts";
@@ -287,6 +288,10 @@ export type BusinessFacts = {
   websiteEvidence?: WebsiteEvidenceRecord | null;
   /** The latest website audit, summarised (website_audits, 0011). */
   audit?: AuditSummary | null;
+  /** What you said about this business (prospect_feedback, 0016). */
+  feedback?: Verdict[];
+  /** The website you marked as not theirs, when you did. */
+  wrongWebsite?: string;
 };
 
 export type AuditSummary = {

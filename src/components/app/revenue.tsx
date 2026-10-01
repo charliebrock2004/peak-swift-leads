@@ -7,6 +7,7 @@ import { Info } from "lucide-react";
 import { Card, SectionTitle, Skeleton, Stat } from "@/components/app/ui";
 import { RATE_MIN_SENT, type Rate } from "@/lib/outreach/analytics";
 import { ANGLE_LABEL, type Angle } from "@/lib/outreach/angles";
+import { FEEDBACK_MIN, SOURCE_LABEL, type QualityRow } from "@/lib/feedback/quality";
 import { formatPence } from "@/lib/sales/pipeline";
 import {
   formatDays,
@@ -32,7 +33,7 @@ function sinceText(day: string): string {
   return new Date(`${day}T12:00:00Z`).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
 }
 
-export function MoneySection({ revenue, error }: { revenue: Revenue | null; error: string }) {
+export function MoneySection({ revenue, error, typicalPounds = null }: { revenue: Revenue | null; error: string; typicalPounds?: number | null }) {
   if (error) return <Card className="px-4 py-4 text-sm text-muted">Revenue figures could not load: {error}</Card>;
   if (!revenue) {
     return (
@@ -63,7 +64,13 @@ export function MoneySection({ revenue, error }: { revenue: Revenue | null; erro
         <Stat
           label="Average job"
           value={money.averageWonPence === null ? "—" : formatPence(money.averageWonPence)}
-          sub={money.averageWonPence === null ? `Needs ${PER_CUSTOMER_MIN} won with a value` : "Across won jobs with a value"}
+          sub={
+            money.averageWonPence === null
+              ? `Needs ${PER_CUSTOMER_MIN} won with a value${typicalPounds ? ` · you said £${typicalPounds.toLocaleString("en-GB")} is typical` : ""}`
+              : typicalPounds
+                ? `You said £${typicalPounds.toLocaleString("en-GB")} is typical`
+                : "Across won jobs with a value"
+          }
         />
       </div>
       <NorthStar revenue={revenue} />
@@ -278,5 +285,39 @@ function SegmentRows({ rows }: { rows: Segment[] }) {
         ))}
       </div>
     </>
+  );
+}
+
+/** How often each source and trade search gave you a business you kept, from your own marks. */
+export function ProspectQuality({ bySource, byTrade }: { bySource: QualityRow[]; byTrade: QualityRow[] }) {
+  if (!bySource.length) {
+    return (
+      <Card className="px-4 py-4 text-sm text-muted">
+        Mark businesses as good or not on their page — "not actually in this trade", "wrong business" and so on. Once a source or a trade search has{" "}
+        {FEEDBACK_MIN} marks, Find ranks it by what you said.
+      </Card>
+    );
+  }
+  const rows = (items: QualityRow[], label: (key: string) => string) =>
+    items.slice(0, 8).map((row) => (
+      <div key={row.key} className="flex items-baseline justify-between gap-3 px-4 py-2.5">
+        <span className="min-w-0 truncate text-sm text-fg">{label(row.key)}</span>
+        <span className="shrink-0 text-xs text-muted tabular">
+          {row.good} good · {row.rejected} rejected
+          {row.rejectedRate.value !== null ? <span className={row.rejectedRate.value >= 60 ? "text-warn" : ""}> · {Math.round(row.rejectedRate.value)}% rejected</span> : <span className="text-subtle"> · needs {FEEDBACK_MIN}</span>}
+        </span>
+      </div>
+    ));
+  return (
+    <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+      <Card className="divide-y divide-border">
+        <p className="px-4 py-2.5 text-xs font-medium text-subtle">By source</p>
+        {rows(bySource, (key) => SOURCE_LABEL[key as keyof typeof SOURCE_LABEL] ?? key)}
+      </Card>
+      <Card className="divide-y divide-border">
+        <p className="px-4 py-2.5 text-xs font-medium text-subtle">By trade searched</p>
+        {rows(byTrade, (key) => key)}
+      </Card>
+    </div>
   );
 }

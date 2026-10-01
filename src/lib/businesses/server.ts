@@ -30,13 +30,16 @@ export const businessAction = createServerFn({ method: "POST" })
   .validator((input: unknown) => {
     const source = (input ?? {}) as Record<string, unknown>;
     const action = typeof source.action === "string" ? source.action : "";
-    if (!["create", "update", "remove", "import"].includes(action)) throw new Error("Unknown action.");
+    if (!["create", "update", "remove", "import", "feedback"].includes(action)) throw new Error("Unknown action.");
     return {
-      action: action as "create" | "update" | "remove" | "import",
+      action: action as "create" | "update" | "remove" | "import" | "feedback",
       id: typeof source.id === "string" ? source.id.slice(0, 64) : "",
       fields: pick(source.fields),
       adds: Array.isArray(source.adds) ? source.adds.slice(0, 2000) : [],
       merges: Array.isArray(source.merges) ? source.merges.slice(0, 2000) : [],
+      verdict: typeof source.verdict === "string" ? source.verdict.slice(0, 30) : "",
+      on: source.on !== false,
+      note: typeof source.note === "string" ? source.note.trim().slice(0, 500) : "",
     };
   })
   .handler(async ({ data, context }): Promise<Reply> => {
@@ -77,7 +80,31 @@ export const businessAction = createServerFn({ method: "POST" })
         if (!current) return { ok: false, error: "That business no longer exists." };
         if (data.fields.businessName !== undefined && data.fields.businessName.length < 2) return { ok: false, error: "Give the business a name." };
         await writes.patchLead(sql, context.userId, data.id, { ...data.fields, ...implied(data.fields, current) });
+        // Correcting the record answers the mark that said it was wrong.
+        const feedback = await import("@/lib/feedback/store.server");
+        await feedback
+          .clearCorrected(sql, context.userId, data.id, {
+            website: data.fields.website !== undefined && data.fields.website !== current.website,
+            contact: (data.fields.email !== undefined && data.fields.email !== current.email) || (data.fields.phone !== undefined && data.fields.phone !== current.phone),
+          })
+          .catch(() => undefined);
         return { ok: true, json: JSON.stringify({ id: data.id }) };
+      }
+
+      if (data.action === "feedback") {
+        const { isVerdict } = await import("@/lib/feedback/verdicts");
+        if (!isVerdict(data.verdict)) return { ok: false, error: "Unknown mark." };
+        const feedback = await import("@/lib/feedback/store.server");
+        const [current] = await writes.loadSheetLeads(sql, context.userId, [data.id]);
+        if (!current) return { ok: false, error: "That business no longer exists." };
+        const result = await feedback.setFeedback(sql, context.userId, { leadId: data.id, verdict: data.verdict, on: data.on, note: data.note });
+        // "Not their website": the site comes off the record (the mark keeps
+        // it, so it is never attached again) and the next check looks afresh.
+        if (data.verdict === "wrong_website" && data.on && current.website.trim()) {
+          await writes.patchLead(sql, context.userId, data.id, { website: "", websiteStatus: "", websiteQuality: "", websiteScore: "", websiteAnalysis: "", websiteCheckedAt: "" } as never);
+        }
+        log.info("prospect_feedback", { userId: context.userId, leadId: data.id, verdict: data.verdict, on: data.on });
+        return { ok: true, json: JSON.stringify(result) };
       }
 
       if (data.action === "remove") {

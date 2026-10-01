@@ -1,3 +1,5 @@
+import { rowsFromLeads, tradeAdvice } from "@/lib/feedback/quality";
+import { profileList } from "@/lib/outreach/profile";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearch } from "@tanstack/react-router";
 import {
@@ -61,10 +63,19 @@ function Find({ state }: { state: OutreachState }) {
   const campaigns = state.campaigns.filter((campaign) => campaign.status === "ACTIVE" || campaign.status === "DRAFT");
   const chosen = state.campaigns.find((campaign) => campaign.id === search.campaign) ?? null;
 
-  const [area, setArea] = useState(chosen?.locations || "Perthshire");
+  // A campaign's own search, else your profile's, else a sensible start.
+  const profileAreas = profileList(state.profile.targetAreas);
+  const profileTrades = profileList(state.profile.targetTrades);
+  const [area, setArea] = useState(chosen?.locations || profileAreas.join(", ") || "Perthshire");
   const [trades, setTrades] = useState<string[]>(
-    chosen ? chosen.trades.split(",").map((item) => item.trim()).filter(Boolean).slice(0, MAX_TRADES) : ["Joiner", "Builder", "Roofer", "Plumber"],
+    chosen
+      ? chosen.trades.split(",").map((item) => item.trim()).filter(Boolean).slice(0, MAX_TRADES)
+      : profileTrades.length
+        ? profileTrades.slice(0, MAX_TRADES)
+        : ["Joiner", "Builder", "Roofer", "Plumber"],
   );
+  const marks = useMemo(() => rowsFromLeads(state.leads), [state.leads]);
+  const advice = trades.map((trade) => tradeAdvice(marks, trade)).filter(Boolean);
   const [customTrade, setCustomTrade] = useState("");
   const [target, setTarget] = useState(chosen?.targetProspects ?? 50);
   const [dailyLimit, setDailyLimit] = useState(Math.min(chosen?.dailyTarget ?? 10, state.settings.dailyLimit));
@@ -225,6 +236,12 @@ function Find({ state }: { state: OutreachState }) {
             </Button>
           </div>
           <p className="text-xs text-subtle">Up to {MAX_TRADES} per run, so one run's cost stays predictable.</p>
+          {advice.map((line) => (
+            <p key={line} className="flex items-start gap-1.5 text-xs text-warn">
+              <TriangleAlert className="mt-px size-3.5 shrink-0" />
+              {line}
+            </p>
+          ))}
         </div>
 
         <div className="grid gap-5 sm:grid-cols-2">

@@ -2,7 +2,9 @@ import { useMemo, useState } from "react";
 import { Info } from "lucide-react";
 import { Page } from "@/components/app/app-shell";
 import { WithState } from "@/components/app/setup-gate";
-import { MoneySection, RevenueSegments, SalesCycle, SalesFunnel } from "@/components/app/revenue";
+import { MoneySection, ProspectQuality, RevenueSegments, SalesCycle, SalesFunnel } from "@/components/app/revenue";
+import { qualityBySource, qualityByTrade, rowsFromLeads } from "@/lib/feedback/quality";
+import { profilePounds } from "@/lib/outreach/profile";
 import { useRevenue } from "@/components/app/use-revenue";
 import { whatWorksLine } from "@/lib/sales/revenue";
 import { Card, InsightsTabs, PageHeader, SectionTitle, Segmented, Stat } from "@/components/app/ui";
@@ -41,6 +43,10 @@ function Analytics({ state }: { state: OutreachState }) {
   const next = useMemo(() => (revenue ? whatWorksLine(revenue.trades, revenue.towns) : ""), [revenue]);
   const sentLeads = new Set(state.emails.filter((email) => ["sent", "replied", "bounced"].includes(email.status)).map((email) => email.leadId)).size;
   const small = overview.replyRate.smallSample;
+  const quality = useMemo(() => {
+    const marks = rowsFromLeads(state.leads);
+    return { bySource: qualityBySource(marks), byTrade: qualityByTrade(marks) };
+  }, [state.leads]);
 
   return (
     <>
@@ -51,7 +57,7 @@ function Analytics({ state }: { state: OutreachState }) {
       />
       <InsightsTabs current="/analytics" />
 
-      <MoneySection revenue={revenue} error={error} />
+      <MoneySection revenue={revenue} error={error} typicalPounds={profilePounds(state.profile.typicalProject)} />
       {revenue ? (
         <>
           <SalesFunnel revenue={revenue} />
@@ -82,6 +88,11 @@ function Analytics({ state }: { state: OutreachState }) {
         ) : revenue ? (
           <RevenueSegments revenue={revenue} by={by} />
         ) : null}
+      </section>
+
+      <section className="flex flex-col gap-3">
+        <SectionTitle>Prospect quality</SectionTitle>
+        <ProspectQuality bySource={quality.bySource} byTrade={quality.byTrade} />
       </section>
 
       <section className="flex flex-col gap-3">

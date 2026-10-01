@@ -4,6 +4,7 @@ import {
   DISCOVERY_SAFETY,
   type PoolDiagnostics,
   type ProspectPool,
+  type ProspectPoolOptions,
 } from "./prospect-pool.ts";
 import { planSearch, type ResearchPlan } from "./scotland-places.ts";
 import type { Prospect, ResearchResult } from "./research.ts";
@@ -114,6 +115,8 @@ export async function runPlannedSearch(options: {
   known?: readonly LeadIdentity[];
   suppressed?: readonly LeadIdentity[];
   contacted?: readonly LeadIdentity[];
+  /** Ranking points per source, from your prospect-quality marks. */
+  sourceWeights?: ProspectPoolOptions["sourceWeights"];
   /** Test hook. Production uses DISCOVERY_SAFETY.poolCeiling. */
   ceiling?: number;
 }): Promise<PlannedSearchResult> {
@@ -130,6 +133,7 @@ export async function runPlannedSearch(options: {
     contacted: options.contacted,
     tradeTerms: [options.businessType],
     townTerms: areas.map((area) => area.name),
+    sourceWeights: options.sourceWeights,
     ceiling: options.ceiling,
   });
   /**
