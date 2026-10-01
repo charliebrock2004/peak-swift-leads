@@ -207,16 +207,22 @@ function Prospects({ state }: { state: OutreachState }) {
   return (
     <>
       <PageHeader
-        eyebrow="Prospects"
-        title={plural(rows.length, "prospect")}
-        description="Every business on your account, where it has got to, and whether it can be emailed — with the reason when it cannot."
+        eyebrow="Businesses"
+        title={plural(rows.length, "business", "businesses")}
+        description="Every business on your account, where it has got to, and whether it can be emailed — with the reason when it cannot. Open one for everything about it."
         actions={
           chosen.length ? (
             <Button disabled={Boolean(writing)} onClick={() => void write()}>
               {writing ? <Loader2 className="animate-spin" /> : <PenLine />}
               {writing || `Write ${plural(chosen.length, "email")}`}
             </Button>
-          ) : null
+          ) : (
+            <Link to="/find">
+              <Button>
+                <Search /> Find prospects
+              </Button>
+            </Link>
+          )
         }
       />
       {campaign ? (
@@ -311,7 +317,9 @@ function Prospects({ state }: { state: OutreachState }) {
                 />
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                    <span className="truncate font-medium">{row.lead.businessName || "Unnamed business"}</span>
+                    <Link to="/businesses/$leadId" params={{ leadId: row.lead.id }} className="truncate font-medium hover:underline">
+                      {row.lead.businessName || "Unnamed business"}
+                    </Link>
                     <Badge tone={["REPLIED", "INTERESTED", "BOOKED", "WON"].includes(row.stage) ? "good" : row.stage === "CALL" ? "info" : "neutral"}>
                       {STAGE_LABELS[row.stage]}
                     </Badge>

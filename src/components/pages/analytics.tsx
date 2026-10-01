@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { Info } from "lucide-react";
 import { Page } from "@/components/app/app-shell";
 import { WithState } from "@/components/app/setup-gate";
-import { Card, PageHeader, SectionTitle, Segmented, Stat } from "@/components/app/ui";
+import { Card, InsightsTabs, PageHeader, SectionTitle, Segmented, Stat } from "@/components/app/ui";
 import {
   formatRate,
   outreachOverview,
@@ -61,10 +61,11 @@ function Analytics({ state }: { state: OutreachState }) {
   return (
     <>
       <PageHeader
-        eyebrow="Analytics"
+        eyebrow="Insights"
         title="What is working"
         description="Every number is a count of prospects and emails that exist. Rates are only shown once there are enough emails for them to mean something."
       />
+      <InsightsTabs current="/analytics" />
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
         <Stat label="Emails sent" value={overview.emailsSent} sub={`${sentLeads} businesses`} />

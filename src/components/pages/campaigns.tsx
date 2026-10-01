@@ -8,7 +8,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Page } from "@/components/app/app-shell";
 
 import { WithState } from "@/components/app/setup-gate";
-import { Badge, Card, EmptyState, Field, PageHeader, ProgressBar, Segmented } from "@/components/app/ui";
+import { Badge, Card, EmptyState, Field, InsightsTabs, PageHeader, ProgressBar, Segmented } from "@/components/app/ui";
 import { campaignProgress, CAMPAIGN_STATUS_LABELS, type Campaign, type CampaignStatus } from "@/lib/outreach/campaigns";
 import { saveCampaign, type OutreachState } from "@/lib/outreach/server";
 import { friendlyServerError } from "@/lib/server-errors";
@@ -45,6 +45,7 @@ function Campaigns({ state }: { state: OutreachState }) {
         actions={
           <Button onClick={() => setCreating(true)}>
             <Plus />
+      <InsightsTabs current="/campaigns" />
             New campaign
           </Button>
         }

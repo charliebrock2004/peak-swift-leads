@@ -1,21 +1,6 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useMemo, type ReactNode } from "react";
 import { Link, useRouterState } from "@tanstack/react-router";
-import {
-  BarChart3,
-  Flag,
-  History,
-  Home,
-  Inbox,
-  Loader2,
-  Menu,
-  Phone,
-  Search,
-  Send,
-  Settings,
-  Table2,
-  Users,
-  X,
-} from "lucide-react";
+import { BarChart3, Home, Inbox, KanbanSquare, Loader2, Phone, Search, Send, Settings, Users } from "lucide-react";
 
 import { callQueue } from "@/lib/outreach/call-queue";
 import { sendQueue } from "@/components/app/send-queue";
@@ -24,9 +9,14 @@ import { liveLeads } from "@/lib/leads";
 import { cn } from "@/lib/utils";
 import { useAppData } from "@/components/app/app-data";
 
-type NavItem = { to: string; label: string; icon: typeof Home; count?: number; tone?: "attention" };
+type NavItem = { to: string; label: string; icon: typeof Home; count?: number; tone?: "attention"; matches: string[] };
 
-function useNavItems(): NavItem[] {
+/**
+ * Five places. Today is where the work is (replies, sending and calls are
+ * reached from it); Businesses holds every prospect and Find; Pipeline is the
+ * sale; Insights is what is working; Settings is setup.
+ */
+function useNavItems(): { main: NavItem[]; queues: NavItem[] } {
   const { state } = useAppData();
   const leads = useLeadsStore((store) => store.leads);
   return useMemo(() => {
@@ -36,27 +26,25 @@ function useNavItems(): NavItem[] {
     const failed = queue?.failed.length ?? 0;
     const newReplies = emails.filter((email) => email.status === "replied" && (email.replyStage || "new") === "new").length;
     const calls = callQueue(liveLeads(leads)).today.length;
-    return [
-      { to: "/", label: "Home", icon: Home },
-      { to: "/find", label: "Find prospects", icon: Search },
-      { to: "/send", label: "Ready to send", icon: Send, count: ready + failed, tone: failed ? "attention" : undefined },
-      { to: "/calls", label: "Call list", icon: Phone, count: calls },
-      { to: "/replies", label: "Replies", icon: Inbox, count: newReplies, tone: newReplies ? "attention" : undefined },
-      { to: "/prospects", label: "Prospects", icon: Users },
-      { to: "/campaigns", label: "Campaigns", icon: Flag },
-      { to: "/runs", label: "Run history", icon: History },
-      { to: "/analytics", label: "Analytics", icon: BarChart3 },
-      { to: "/leads", label: "Lead sheet", icon: Table2 },
-      { to: "/settings", label: "Settings", icon: Settings },
-    ];
+    return {
+      main: [
+        { to: "/", label: "Today", icon: Home, count: newReplies + failed, tone: newReplies + failed ? "attention" : undefined, matches: ["/", "/replies", "/send", "/calls"] },
+        { to: "/prospects", label: "Businesses", icon: Users, matches: ["/prospects", "/businesses", "/find", "/leads"] },
+        { to: "/pipeline", label: "Pipeline", icon: KanbanSquare, matches: ["/pipeline"] },
+        { to: "/analytics", label: "Insights", icon: BarChart3, matches: ["/analytics", "/runs", "/campaigns"] },
+        { to: "/settings", label: "Settings", icon: Settings, matches: ["/settings"] },
+      ],
+      queues: [
+        { to: "/replies", label: "Replies", icon: Inbox, count: newReplies, tone: newReplies ? "attention" : undefined, matches: ["/replies"] },
+        { to: "/send", label: "Ready to send", icon: Send, count: ready + failed, tone: failed ? "attention" : undefined, matches: ["/send"] },
+        { to: "/calls", label: "Call list", icon: Phone, count: calls, matches: ["/calls"] },
+      ],
+    };
   }, [state, leads]);
 }
 
-const MOBILE_PRIMARY = ["/", "/find", "/send", "/calls", "/replies"];
-
-function isActive(pathname: string, to: string): boolean {
-  if (to === "/") return pathname === "/";
-  return pathname === to || pathname.startsWith(`${to}/`);
+function isActive(pathname: string, item: Pick<NavItem, "matches">): boolean {
+  return item.matches.some((to) => (to === "/" ? pathname === "/" : pathname === to || pathname.startsWith(`${to}/`)));
 }
 
 function Count({ value, tone }: { value?: number; tone?: "attention" }) {
@@ -103,7 +91,7 @@ function GmailStatus({ compact = false }: { compact?: boolean }) {
 }
 
 function Sidebar({ pathname }: { pathname: string }) {
-  const items = useNavItems();
+  const { main, queues } = useNavItems();
   return (
     <aside className="fixed inset-y-0 left-0 z-30 hidden w-60 flex-col border-r border-border bg-bg md:flex">
       <div className="flex h-16 items-center gap-2.5 px-5">
@@ -114,22 +102,38 @@ function Sidebar({ pathname }: { pathname: string }) {
         </div>
       </div>
       <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto px-3 py-2" aria-label="Main">
-        {items.map((item, index) => (
-          <div key={item.to}>
-            {index === 5 || index === 9 ? <div className="my-2 h-px bg-border" /> : null}
-            <Link
-              to={item.to}
-              className={cn(
-                "flex h-9 items-center gap-2.5 rounded-md px-2.5 text-sm transition-colors duration-(--motion-quick)",
-                isActive(pathname, item.to) ? "bg-surface-2 text-fg" : "text-muted hover:bg-surface hover:text-fg",
-              )}
-              aria-current={isActive(pathname, item.to) ? "page" : undefined}
-            >
-              <item.icon className="size-4 shrink-0" />
-              {item.label}
-              <Count value={item.count} tone={item.tone} />
-            </Link>
-          </div>
+        {main.map((item) => (
+          <Link
+            key={item.to}
+            to={item.to}
+            className={cn(
+              "flex h-9 items-center gap-2.5 rounded-md px-2.5 text-sm transition-colors duration-(--motion-quick)",
+              isActive(pathname, item) ? "bg-surface-2 text-fg" : "text-muted hover:bg-surface hover:text-fg",
+            )}
+            aria-current={isActive(pathname, item) ? "page" : undefined}
+          >
+            <item.icon className="size-4 shrink-0" />
+            {item.label}
+            <Count value={item.count} tone={item.tone} />
+          </Link>
+        ))}
+        <Link to="/find" className="mt-3 flex h-9 items-center justify-center gap-2 rounded-md bg-accent px-2.5 text-sm font-medium text-accent-fg">
+          <Search className="size-4" /> Find prospects
+        </Link>
+        <p className="mt-5 px-2.5 text-[11px] font-medium tracking-wider text-subtle uppercase">Queues</p>
+        {queues.map((item) => (
+          <Link
+            key={item.to}
+            to={item.to}
+            className={cn(
+              "flex h-8 items-center gap-2.5 rounded-md px-2.5 text-[13px] transition-colors duration-(--motion-quick)",
+              pathname === item.to ? "bg-surface-2 text-fg" : "text-subtle hover:bg-surface hover:text-fg",
+            )}
+          >
+            <item.icon className="size-3.5 shrink-0" />
+            {item.label}
+            <Count value={item.count} tone={item.tone} />
+          </Link>
         ))}
       </nav>
       <div className="border-t border-border p-3">
@@ -148,27 +152,23 @@ function Mark() {
   );
 }
 
-function MobileBar({ pathname, onMore }: { pathname: string; onMore: () => void }) {
-  const items = useNavItems().filter((item) => MOBILE_PRIMARY.includes(item.to));
-  const short: Record<string, string> = { "/": "Home", "/find": "Find", "/send": "Send", "/calls": "Calls", "/replies": "Replies" };
+function MobileBar({ pathname }: { pathname: string }) {
+  const { main } = useNavItems();
   return (
     <nav
       className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-bg/95 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden"
       aria-label="Main"
     >
-      <div className="grid grid-cols-6">
-        {items.map((item) => (
+      <div className="grid grid-cols-5">
+        {main.map((item) => (
           <Link
             key={item.to}
             to={item.to}
-            className={cn(
-              "relative flex h-16 flex-col items-center justify-center gap-1 text-[11px]",
-              isActive(pathname, item.to) ? "text-fg" : "text-subtle",
-            )}
-            aria-current={isActive(pathname, item.to) ? "page" : undefined}
+            className={cn("relative flex h-16 flex-col items-center justify-center gap-1 text-[11px]", isActive(pathname, item) ? "text-fg" : "text-subtle")}
+            aria-current={isActive(pathname, item) ? "page" : undefined}
           >
             <item.icon className="size-5" />
-            {short[item.to]}
+            {item.label}
             {item.count ? (
               <span
                 className={cn(
@@ -181,58 +181,8 @@ function MobileBar({ pathname, onMore }: { pathname: string; onMore: () => void 
             ) : null}
           </Link>
         ))}
-        <button type="button" onClick={onMore} className="flex h-16 flex-col items-center justify-center gap-1 text-[11px] text-subtle">
-          <Menu className="size-5" />
-          More
-        </button>
       </div>
     </nav>
-  );
-}
-
-function MoreSheet({ open, onClose, pathname }: { open: boolean; onClose: () => void; pathname: string }) {
-  const items = useNavItems().filter((item) => !MOBILE_PRIMARY.includes(item.to));
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
-  if (!open) return null;
-  return (
-    <div className="fixed inset-0 z-50 md:hidden" role="dialog" aria-modal="true" aria-label="More">
-      <button type="button" className="absolute inset-0 bg-bg/70" aria-label="Close menu" onClick={onClose} />
-      <div className="rise-in absolute inset-x-0 bottom-0 rounded-t-2xl bg-surface p-3 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-(--shadow-overlay)">
-        <div className="flex items-center justify-between px-2 pb-2">
-          <p className="text-xs font-medium tracking-widest text-subtle uppercase">More</p>
-          <button type="button" onClick={onClose} className="flex size-10 items-center justify-center rounded-md text-muted" aria-label="Close">
-            <X className="size-4" />
-          </button>
-        </div>
-        <div className="grid gap-1">
-          {items.map((item) => (
-            <Link
-              key={item.to}
-              to={item.to}
-              onClick={onClose}
-              className={cn(
-                "flex h-12 items-center gap-3 rounded-lg px-3 text-sm",
-                isActive(pathname, item.to) ? "bg-surface-2 text-fg" : "text-muted",
-              )}
-            >
-              <item.icon className="size-5" />
-              {item.label}
-              <Count value={item.count} tone={item.tone} />
-            </Link>
-          ))}
-        </div>
-        <div className="mt-2 border-t border-border pt-2">
-          <GmailStatus compact />
-        </div>
-      </div>
-    </div>
   );
 }
 
@@ -257,13 +207,11 @@ function RunPill({ pathname }: { pathname: string }) {
  */
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = useRouterState({ select: (router) => router.location.pathname });
-  const [moreOpen, setMoreOpen] = useState(false);
   return (
     <div className="min-h-dvh bg-bg text-fg">
       <Sidebar pathname={pathname} />
       <div className="flex min-h-dvh min-w-0 flex-col pb-[calc(4rem+env(safe-area-inset-bottom))] md:pb-0 md:pl-60">{children}</div>
-      <MobileBar pathname={pathname} onMore={() => setMoreOpen(true)} />
-      <MoreSheet open={moreOpen} onClose={() => setMoreOpen(false)} pathname={pathname} />
+      <MobileBar pathname={pathname} />
       <RunPill pathname={pathname} />
     </div>
   );

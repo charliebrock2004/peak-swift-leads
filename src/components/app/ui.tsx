@@ -276,3 +276,26 @@ export function ScoreBadge({ score, className }: { score: number; className?: st
   );
 }
 
+
+/** Insights holds what is working, the run history and the campaigns: one place, three views. */
+export function InsightsTabs({ current }: { current: "/analytics" | "/runs" | "/campaigns" }) {
+  const tabs = [
+    { to: "/analytics", label: "What's working" },
+    { to: "/runs", label: "Runs" },
+    { to: "/campaigns", label: "Campaigns" },
+  ] as const;
+  return (
+    <nav aria-label="Insights" className="-mt-2 flex gap-1">
+      {tabs.map((tab) => (
+        <Link
+          key={tab.to}
+          to={tab.to}
+          className={cn("h-9 rounded-full px-3.5 text-sm leading-9", current === tab.to ? "bg-accent text-accent-fg" : "bg-surface-2 text-muted hover:text-fg")}
+          aria-current={current === tab.to ? "page" : undefined}
+        >
+          {tab.label}
+        </Link>
+      ))}
+    </nav>
+  );
+}

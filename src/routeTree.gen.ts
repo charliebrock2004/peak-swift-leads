@@ -18,6 +18,7 @@ import { Route as AppCallsRouteImport } from './routes/_app.calls'
 import { Route as AppCampaignsRouteImport } from './routes/_app.campaigns'
 import { Route as AppFindRouteImport } from './routes/_app.find'
 import { Route as AppLeadsRouteImport } from './routes/_app.leads'
+import { Route as AppPipelineRouteImport } from './routes/_app.pipeline'
 import { Route as AppProspectsRouteImport } from './routes/_app.prospects'
 import { Route as AppRepliesRouteImport } from './routes/_app.replies'
 import { Route as AppSendRouteImport } from './routes/_app.send'
@@ -28,6 +29,7 @@ import { Route as AppRunsIndexRouteImport } from './routes/_app.runs.index'
 import { Route as AppRunsRunIdRouteImport } from './routes/_app.runs.$runId'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as ApiJobsTickRouteImport } from './routes/api/jobs/tick'
+import { Route as AppBusinessesLeadIdIndexRouteImport } from './routes/_app.businesses.$leadId.index'
 import { Route as AppBusinessesLeadIdAuditRouteImport } from './routes/_app.businesses.$leadId.audit'
 
 const AppRoute = AppRouteImport.update({
@@ -72,6 +74,11 @@ const AppFindRoute = AppFindRouteImport.update({
 const AppLeadsRoute = AppLeadsRouteImport.update({
   id: '/leads',
   path: '/leads',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppPipelineRoute = AppPipelineRouteImport.update({
+  id: '/pipeline',
+  path: '/pipeline',
   getParentRoute: () => AppRoute,
 } as any)
 const AppProspectsRoute = AppProspectsRouteImport.update({
@@ -124,6 +131,12 @@ const ApiJobsTickRoute = ApiJobsTickRouteImport.update({
   path: '/api/jobs/tick',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AppBusinessesLeadIdIndexRoute =
+  AppBusinessesLeadIdIndexRouteImport.update({
+    id: '/businesses/$leadId/',
+    path: '/businesses/$leadId/',
+    getParentRoute: () => AppRoute,
+  } as any)
 const AppBusinessesLeadIdAuditRoute =
   AppBusinessesLeadIdAuditRouteImport.update({
     id: '/businesses/$leadId/audit',
@@ -140,6 +153,7 @@ export interface FileRoutesByFullPath {
   '/campaigns': typeof AppCampaignsRoute
   '/find': typeof AppFindRoute
   '/leads': typeof AppLeadsRoute
+  '/pipeline': typeof AppPipelineRoute
   '/prospects': typeof AppProspectsRoute
   '/replies': typeof AppRepliesRoute
   '/send': typeof AppSendRoute
@@ -151,6 +165,7 @@ export interface FileRoutesByFullPath {
   '/api/jobs/tick': typeof ApiJobsTickRoute
   '/runs/': typeof AppRunsIndexRoute
   '/businesses/$leadId/audit': typeof AppBusinessesLeadIdAuditRoute
+  '/businesses/$leadId/': typeof AppBusinessesLeadIdIndexRoute
 }
 export interface FileRoutesByTo {
   '/login': typeof LoginRoute
@@ -160,6 +175,7 @@ export interface FileRoutesByTo {
   '/campaigns': typeof AppCampaignsRoute
   '/find': typeof AppFindRoute
   '/leads': typeof AppLeadsRoute
+  '/pipeline': typeof AppPipelineRoute
   '/prospects': typeof AppProspectsRoute
   '/replies': typeof AppRepliesRoute
   '/send': typeof AppSendRoute
@@ -172,6 +188,7 @@ export interface FileRoutesByTo {
   '/api/jobs/tick': typeof ApiJobsTickRoute
   '/runs': typeof AppRunsIndexRoute
   '/businesses/$leadId/audit': typeof AppBusinessesLeadIdAuditRoute
+  '/businesses/$leadId': typeof AppBusinessesLeadIdIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -183,6 +200,7 @@ export interface FileRoutesById {
   '/_app/campaigns': typeof AppCampaignsRoute
   '/_app/find': typeof AppFindRoute
   '/_app/leads': typeof AppLeadsRoute
+  '/_app/pipeline': typeof AppPipelineRoute
   '/_app/prospects': typeof AppProspectsRoute
   '/_app/replies': typeof AppRepliesRoute
   '/_app/send': typeof AppSendRoute
@@ -195,6 +213,7 @@ export interface FileRoutesById {
   '/api/jobs/tick': typeof ApiJobsTickRoute
   '/_app/runs/': typeof AppRunsIndexRoute
   '/_app/businesses/$leadId/audit': typeof AppBusinessesLeadIdAuditRoute
+  '/_app/businesses/$leadId/': typeof AppBusinessesLeadIdIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -207,6 +226,7 @@ export interface FileRouteTypes {
     | '/campaigns'
     | '/find'
     | '/leads'
+    | '/pipeline'
     | '/prospects'
     | '/replies'
     | '/send'
@@ -218,6 +238,7 @@ export interface FileRouteTypes {
     | '/api/jobs/tick'
     | '/runs/'
     | '/businesses/$leadId/audit'
+    | '/businesses/$leadId/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/login'
@@ -227,6 +248,7 @@ export interface FileRouteTypes {
     | '/campaigns'
     | '/find'
     | '/leads'
+    | '/pipeline'
     | '/prospects'
     | '/replies'
     | '/send'
@@ -239,6 +261,7 @@ export interface FileRouteTypes {
     | '/api/jobs/tick'
     | '/runs'
     | '/businesses/$leadId/audit'
+    | '/businesses/$leadId'
   id:
     | '__root__'
     | '/_app'
@@ -249,6 +272,7 @@ export interface FileRouteTypes {
     | '/_app/campaigns'
     | '/_app/find'
     | '/_app/leads'
+    | '/_app/pipeline'
     | '/_app/prospects'
     | '/_app/replies'
     | '/_app/send'
@@ -261,6 +285,7 @@ export interface FileRouteTypes {
     | '/api/jobs/tick'
     | '/_app/runs/'
     | '/_app/businesses/$leadId/audit'
+    | '/_app/businesses/$leadId/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -338,6 +363,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppLeadsRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/pipeline': {
+      id: '/_app/pipeline'
+      path: '/pipeline'
+      fullPath: '/pipeline'
+      preLoaderRoute: typeof AppPipelineRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/prospects': {
       id: '/_app/prospects'
       path: '/prospects'
@@ -408,6 +440,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiJobsTickRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_app/businesses/$leadId/': {
+      id: '/_app/businesses/$leadId/'
+      path: '/businesses/$leadId'
+      fullPath: '/businesses/$leadId/'
+      preLoaderRoute: typeof AppBusinessesLeadIdIndexRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/businesses/$leadId/audit': {
       id: '/_app/businesses/$leadId/audit'
       path: '/businesses/$leadId/audit'
@@ -424,6 +463,7 @@ interface AppRouteChildren {
   AppCampaignsRoute: typeof AppCampaignsRoute
   AppFindRoute: typeof AppFindRoute
   AppLeadsRoute: typeof AppLeadsRoute
+  AppPipelineRoute: typeof AppPipelineRoute
   AppProspectsRoute: typeof AppProspectsRoute
   AppRepliesRoute: typeof AppRepliesRoute
   AppSendRoute: typeof AppSendRoute
@@ -432,6 +472,7 @@ interface AppRouteChildren {
   AppRunsRunIdRoute: typeof AppRunsRunIdRoute
   AppRunsIndexRoute: typeof AppRunsIndexRoute
   AppBusinessesLeadIdAuditRoute: typeof AppBusinessesLeadIdAuditRoute
+  AppBusinessesLeadIdIndexRoute: typeof AppBusinessesLeadIdIndexRoute
 }
 
 const AppRouteChildren: AppRouteChildren = {
@@ -440,6 +481,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppCampaignsRoute: AppCampaignsRoute,
   AppFindRoute: AppFindRoute,
   AppLeadsRoute: AppLeadsRoute,
+  AppPipelineRoute: AppPipelineRoute,
   AppProspectsRoute: AppProspectsRoute,
   AppRepliesRoute: AppRepliesRoute,
   AppSendRoute: AppSendRoute,
@@ -448,6 +490,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppRunsRunIdRoute: AppRunsRunIdRoute,
   AppRunsIndexRoute: AppRunsIndexRoute,
   AppBusinessesLeadIdAuditRoute: AppBusinessesLeadIdAuditRoute,
+  AppBusinessesLeadIdIndexRoute: AppBusinessesLeadIdIndexRoute,
 }
 
 const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)

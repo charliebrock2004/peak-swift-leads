@@ -4,7 +4,7 @@ import { ArrowRight, History, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Page } from "@/components/app/app-shell";
 import { WithState } from "@/components/app/setup-gate";
-import { Badge, Card, EmptyState, LoadingPage, Notice, PageHeader } from "@/components/app/ui";
+import { Badge, Card, EmptyState, InsightsTabs, LoadingPage, Notice, PageHeader } from "@/components/app/ui";
 import { funnelHeadline, parseFunnel } from "@/lib/outreach/run-funnel";
 import { runDuration } from "@/lib/outreach/runs";
 import { listRuns } from "@/lib/outreach/server";
@@ -38,6 +38,7 @@ function Runs() {
         title="Previous runs"
         description="Every Find run, what it asked for and where every business went. Open one to see its prospects and what has happened to them since."
       />
+      <InsightsTabs current="/runs" />
       {runs.length === 0 ? (
         <EmptyState
           icon={<History />}

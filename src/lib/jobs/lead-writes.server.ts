@@ -11,7 +11,7 @@ import type { Sql } from "@/lib/db";
 import { buildLeadUpsert, leadFromRow, type LeadRow } from "../leads-row.ts";
 import { createLead, type Lead } from "../leads.ts";
 
-/** The lead fields a job may set, and their columns. Outreach-owned columns are not here. */
+/** The lead fields a server-side write may set, and their columns. Outreach-owned columns are not here. */
 const PATCHABLE: Partial<Record<keyof Lead, string>> = {
   businessName: "business_name",
   trade: "trade",
@@ -37,6 +37,10 @@ const PATCHABLE: Partial<Record<keyof Lead, string>> = {
   emailConfidence: "email_confidence",
   emailFoundAt: "email_found_at",
   opportunityScore: "opportunity_score",
+  // Set by a person's own action (a logged call), never by a background job.
+  called: "called",
+  callResult: "call_result",
+  followUpDate: "follow_up_date",
 };
 
 const NUMERIC = new Set<keyof Lead>(["rating", "reviews", "websiteScore", "opportunityScore"]);

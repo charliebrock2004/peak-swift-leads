@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { Ban, CalendarClock, ClipboardCopy, Loader2, MapPin, Phone, PhoneCall, ShieldCheck } from "lucide-react";
+import { Link, useNavigate, useSearch } from "@tanstack/react-router";
+import { ArrowLeft, Ban, CalendarClock, ChevronRight, ClipboardCopy, Loader2, MapPin, Phone, PhoneCall, Play, ShieldCheck, SkipForward } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Page } from "@/components/app/app-shell";
 import { Card, EmptyState, Notice, PageHeader, ScoreBadge, Segmented } from "@/components/app/ui";
 import { CallStatusBadge } from "@/components/app/contactability";
@@ -10,26 +10,14 @@ import { callContactability, SCREENING_VALID_DAYS, type CallContactability } fro
 import { getContactContext, recordPhoneScreening, setDoNotCall, type ContactContext } from "@/lib/contactability/server";
 import { friendlyServerError } from "@/lib/server-errors";
 import { WhyThisProspect } from "@/components/app/prospect-facts";
-import { callOutcomePatch, liveLeads, mapsHref, phoneHref, type CallResult } from "@/lib/leads";
+import { liveLeads, mapsHref, phoneHref } from "@/lib/leads";
 import { callQueue, type CallItem } from "@/lib/outreach/call-queue";
 import type { OutreachLead } from "@/lib/outreach/types";
 import { useLeadsStore } from "@/store/leads-store";
 import { plural } from "@/components/app/format";
-
-const OUTCOMES: { result: CallResult; label: string; tone?: "good" | "bad" }[] = [
-  { result: "No Answer", label: "No answer" },
-  { result: "Callback", label: "Callback" },
-  { result: "Interested", label: "Interested", tone: "good" },
-  { result: "Not Interested", label: "Not interested", tone: "bad" },
-  { result: "Booked", label: "Booked", tone: "good" },
-];
-
-function describeOutcome(result: CallResult, followUp: string): string {
-  if (result === "Not Interested") return "Recorded: not interested. They won't be emailed or listed again.";
-  if (result === "Booked") return "Recorded: booked.";
-  const when = followUp ? new Date(`${followUp}T12:00:00`).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "short" }) : "";
-  return `Recorded: ${result.toLowerCase()}${when ? ` — back on your list ${when}` : ""}.`;
-}
+import { CallBriefView, CallOutcomePicker } from "@/components/app/sales";
+import type { CallBrief } from "@/lib/sales/call-brief";
+import { getBusiness } from "@/lib/sales/server";
 
 /**
  * The call list. Local-first like the lead sheet it reads: outcomes land on the
@@ -92,13 +80,8 @@ export function CallsPage() {
   const blocked = today.filter((row) => row.call.status === "BLOCKED").length;
   const later = useMemo(() => queue.later.map((item) => ({ item, call: statusOf(item) })).filter((row) => row.call.status !== "BLOCKED"), [queue.later, statusOf]);
 
-  const record = (item: CallItem, result: CallResult, note: string) => {
-    const patch = callOutcomePatch(result, item.lead);
-    const stamp = new Date().toLocaleDateString("en-GB", { day: "numeric", month: "short" });
-    const notes = note.trim() ? [item.lead.notes.trim(), `${stamp} call: ${note.trim()}`].filter(Boolean).join("\n") : item.lead.notes;
-    updateLead(item.lead.id, { ...patch, notes });
-    toast(describeOutcome(result, patch.followUpDate ?? ""));
-  };
+  /** The server logged the call; mirror its call fields here so the list moves on at once. */
+  const applied = (leadId: string, leadPatch: Record<string, string>) => updateLead(leadId, leadPatch);
 
   const doNotCall = async (item: CallItem, objection: boolean) => {
     try {
@@ -111,8 +94,12 @@ export function CallsPage() {
         },
       });
       if (!result.success) return void toast(result.error);
-      if (objection) record(item, "Not Interested", "Asked not to be called again");
-      else toast(`${item.lead.businessName}: added to your do-not-call list.`);
+      if (objection) {
+        const { runSalesAction } = await import("@/lib/sales/client");
+        const logged = await runSalesAction({ action: "log_call", leadId: item.lead.id, outcome: "not_interested", note: "Asked not to be called again" });
+        if (logged.ok) applied(item.lead.id, (JSON.parse(logged.json) as { leadPatch: Record<string, string> }).leadPatch);
+        toast(`${item.lead.businessName}: they won't be called again.`);
+      } else toast(`${item.lead.businessName}: added to your do-not-call list.`);
       await refresh();
     } catch (error) {
       toast(friendlyServerError(error));
@@ -120,6 +107,32 @@ export function CallsPage() {
   };
 
   const rows = view === "today" ? ready : view === "screen" ? toScreen : later;
+  const search = useSearch({ from: "/_app/calls" });
+  const navigate = useNavigate();
+  const [mode, setMode] = useState(false);
+
+  // Call mode: one business per screen. Opened for the day's ready list, or for
+  // one business from its page (?lead=).
+  const single = useMemo(() => {
+    if (!search.lead) return null;
+    const lead = liveLeads(leads).find((item) => item.id === search.lead);
+    if (!lead) return null;
+    const item: CallItem = { lead, kind: lead.followUpDate ? "follow-up" : "prospect", reason: "", score: 0, due: lead.followUpDate };
+    return { item, call: statusOf(item) };
+  }, [search.lead, leads, statusOf]);
+  if (single || mode) {
+    return (
+      <CallMode
+        rows={single ? [single] : ready}
+        onExit={() => {
+          setMode(false);
+          if (search.lead) void navigate({ to: "/calls", search: {} });
+        }}
+        onLogged={applied}
+        onDoNotCall={doNotCall}
+      />
+    );
+  }
 
   return (
     <Page>
@@ -128,6 +141,11 @@ export function CallsPage() {
         title={ready.length ? `${plural(ready.length, "call")} to make today` : "Call list"}
         description="Good prospects with no usable email, and follow-ups whose day has come. Every number is screened against TPS and CTPS before it is offered."
       />
+      {ready.length > 0 ? (
+        <Button className="h-12 w-full text-[15px] sm:w-auto sm:self-start" onClick={() => setMode(true)}>
+          <Play /> Start calling — one at a time
+        </Button>
+      ) : null}
       {contactError ? (
         <Notice tone="warn" title="Screening records could not be loaded">
           Until they load, every number is treated as unscreened. {contactError}
@@ -161,7 +179,7 @@ export function CallsPage() {
       ) : (
         <div className="flex flex-col gap-3">
           {rows.map(({ item, call }) => (
-            <CallCard key={item.lead.id} item={item} call={call} onRecord={record} onDoNotCall={doNotCall} />
+            <CallCard key={item.lead.id} item={item} call={call} onLogged={applied} onDoNotCall={doNotCall} />
           ))}
         </div>
       )}
@@ -278,15 +296,14 @@ function ScreeningList({ rows, onDone }: { rows: { item: CallItem; call: CallCon
 function CallCard({
   item,
   call,
-  onRecord,
+  onLogged,
   onDoNotCall,
 }: {
   item: CallItem;
   call: CallContactability;
-  onRecord: (item: CallItem, result: CallResult, note: string) => void;
+  onLogged: (leadId: string, leadPatch: Record<string, string>) => void;
   onDoNotCall: (item: CallItem, objection: boolean) => Promise<void>;
 }) {
-  const [note, setNote] = useState("");
   const { lead } = item;
   const tel = phoneHref(lead.phone);
   const maps = mapsHref(lead);
@@ -294,7 +311,9 @@ function CallCard({
     <Card as="article" className="p-4 md:p-5">
       <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1">
-          <h3 className="truncate text-[17px] font-medium">{lead.businessName || "Unnamed business"}</h3>
+          <Link to="/businesses/$leadId" params={{ leadId: lead.id }} className="block truncate text-[17px] font-medium hover:underline">
+            {lead.businessName || "Unnamed business"}
+          </Link>
           <p className="mt-0.5 text-sm text-muted">{[lead.trade, lead.town].filter(Boolean).join(" · ")}</p>
           <p className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-muted">
             <CallStatusBadge call={call} />
@@ -331,22 +350,12 @@ function CallCard({
         ) : null}
       </div>
 
-      <Input value={note} onChange={(event) => setNote(event.target.value)} placeholder="Note from the call (optional)" className="mt-3 h-11" />
-      <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-5">
-        {OUTCOMES.map((outcome) => (
-          <Button
-            key={outcome.result}
-            variant="secondary"
-            className={`h-11 ${outcome.tone === "good" ? "text-good" : outcome.tone === "bad" ? "text-bad" : ""}`}
-            onClick={() => {
-              onRecord(item, outcome.result, note);
-              setNote("");
-            }}
-          >
-            {outcome.label}
-          </Button>
-        ))}
-      </div>
+      <details className="mt-3">
+        <summary className="cursor-pointer text-sm text-muted hover:text-fg">Log what happened</summary>
+        <div className="mt-2">
+          <CallOutcomePicker leadId={lead.id} onLogged={({ leadPatch }) => onLogged(lead.id, leadPatch)} />
+        </div>
+      </details>
       <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs">
         <button type="button" className="inline-flex items-center gap-1 text-bad hover:underline" onClick={() => void onDoNotCall(item, true)}>
           <Ban className="size-3.5" /> They asked not to be called
@@ -356,5 +365,140 @@ function CallCard({
         </button>
       </div>
     </Card>
+  );
+}
+
+/**
+ * Call mode: one business per screen, built for a phone in one hand. The call
+ * button stays in reach; above it, why this business, the last thing that
+ * happened and a short brief; below, what happened — then the next business.
+ */
+function CallMode({
+  rows,
+  onExit,
+  onLogged,
+  onDoNotCall,
+}: {
+  rows: { item: CallItem; call: CallContactability }[];
+  onExit: () => void;
+  onLogged: (leadId: string, leadPatch: Record<string, string>) => void;
+  onDoNotCall: (item: CallItem, objection: boolean) => Promise<void>;
+}) {
+  // The list is fixed when call mode opens, so logging a call (which takes the
+  // business off today's list) moves on instead of reshuffling under you.
+  const [queue] = useState(rows);
+  const [index, setIndex] = useState(0);
+  const [brief, setBrief] = useState<{ leadId: string; brief: CallBrief; actionReason: string } | null>(null);
+  const current = queue[index];
+
+  useEffect(() => {
+    if (!current) return;
+    let live = true;
+    setBrief(null);
+    getBusiness({ data: { leadId: current.item.lead.id } })
+      .then((reply) => {
+        if (!live || !reply.ok) return;
+        const view = JSON.parse(reply.json) as { brief: CallBrief; score: { actionReason: string } | null };
+        setBrief({ leadId: current.item.lead.id, brief: view.brief, actionReason: view.score?.actionReason ?? "" });
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [current]);
+
+  if (!current) {
+    return (
+      <Page>
+        <EmptyState icon={<Phone />} title="That's the list done" action={<Button onClick={onExit}>Back to the call list</Button>}>
+          Every call you logged is on each business's timeline, and the next steps are on Today.
+        </EmptyState>
+      </Page>
+    );
+  }
+
+  const { item, call } = current;
+  const { lead } = item;
+  const tel = phoneHref(lead.phone);
+  const next = () => setIndex((value) => value + 1);
+
+  return (
+    <Page>
+      <div className="flex items-center justify-between">
+        <button type="button" onClick={onExit} className="flex items-center gap-1 text-sm text-muted hover:text-fg">
+          <ArrowLeft className="size-4" /> Call list
+        </button>
+        {queue.length > 1 ? (
+          <span className="text-sm text-muted tabular">
+            {index + 1} of {queue.length}
+          </span>
+        ) : null}
+      </div>
+
+      <header className="flex flex-col gap-1">
+        <Link to="/businesses/$leadId" params={{ leadId: lead.id }} className="font-display text-[1.75rem] leading-tight font-medium tracking-tight hover:underline">
+          {lead.businessName || "Unnamed business"}
+        </Link>
+        <p className="text-sm text-muted">{[lead.trade, lead.town].filter(Boolean).join(" · ")}</p>
+        <p className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted">
+          <CallStatusBadge call={call} />
+          {call.reasons[0]}
+        </p>
+        {item.reason ? (
+          <p className="flex items-center gap-1.5 text-sm text-warn">
+            <CalendarClock className="size-4" /> {item.reason}
+          </p>
+        ) : null}
+      </header>
+
+      <div className="sticky bottom-[calc(4.5rem+env(safe-area-inset-bottom))] z-30 -mx-1 flex gap-2 rounded-xl bg-bg/90 p-1 backdrop-blur md:static md:bg-transparent md:p-0">
+        {tel && call.status !== "BLOCKED" ? (
+          <a href={tel} className="flex-1">
+            <Button className="h-14 w-full text-base">
+              <PhoneCall /> Call {lead.phone}
+            </Button>
+          </a>
+        ) : (
+          <p className="flex-1 rounded-lg bg-surface-2 px-3 py-3 text-sm text-warn">Not callable: {call.reasons[0]}</p>
+        )}
+        <Button variant="secondary" className="h-14" onClick={next} aria-label="Skip to the next business">
+          <SkipForward />
+        </Button>
+      </div>
+
+      <Card className="px-4 py-3">
+        {brief && brief.leadId === lead.id ? (
+          <>
+            {brief.actionReason ? <p className="mb-3 text-sm"><span className="text-[11px] font-medium tracking-wider text-subtle uppercase">Next action </span>{brief.actionReason}</p> : null}
+            <CallBriefView brief={brief.brief} compact />
+          </>
+        ) : (
+          <div className="flex flex-col gap-2">
+            <WhyThisProspect lead={lead as OutreachLead} />
+            <p className="text-xs text-subtle">Loading the brief…</p>
+          </div>
+        )}
+      </Card>
+
+      <section className="flex flex-col gap-2">
+        <p className="text-sm font-medium">What happened?</p>
+        <CallOutcomePicker
+          leadId={lead.id}
+          onLogged={({ leadPatch }) => {
+            onLogged(lead.id, leadPatch);
+            next();
+          }}
+        />
+      </section>
+
+      <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+        <button type="button" className="inline-flex items-center gap-1 text-bad hover:underline" onClick={() => void onDoNotCall(item, true).then(next)}>
+          <Ban className="size-3.5" /> They asked not to be called
+        </button>
+        <Link to="/businesses/$leadId" params={{ leadId: lead.id }} className="inline-flex items-center gap-0.5 text-muted hover:text-fg">
+          Everything about them <ChevronRight className="size-3.5" />
+        </Link>
+      </div>
+    </Page>
   );
 }
