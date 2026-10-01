@@ -395,6 +395,11 @@ export const findLeadEmail = createServerFn({ method: "POST" })
           searchProvider: result.searchProvider ?? null,
           searchesRun: result.searchesRun ?? 0,
           checkedAt: result.foundAt,
+          // What was searched and why each candidate was turned down: the
+          // evidence behind any "no independent website found" statement.
+          queries: (result.queriesUsed ?? []).slice(0, 12),
+          rejections: (result.rejectedCandidates ?? []).slice(0, 10).map((entry) => ({ url: entry.url, why: entry.why })),
+          searchFailure: result.searchFailure ?? "",
         });
         const discovery = result.discovery;
         await budgetStore.saveLeadEvidence(budgetSql, auth.userId, data.leadId, "email", {

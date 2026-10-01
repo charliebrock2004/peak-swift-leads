@@ -13,8 +13,14 @@ import {
   identifiesSender,
 } from "./templates.ts";
 import type { OutreachLead } from "./types.ts";
+import { factsWith, searchedNoWebsite } from "../test-support/facts.ts";
 
+/** A prospect whose website a recent search looked for and did not find. */
 function lead(partial: Partial<Lead> = {}): OutreachLead {
+  return { ...bare(partial), facts: factsWith({ websiteEvidence: searchedNoWebsite() }) };
+}
+
+function bare(partial: Partial<Lead> = {}): OutreachLead {
   return createLead({
     businessName: "Strathearn Joinery Ltd",
     trade: "Joiner",
@@ -41,9 +47,13 @@ describe("template variables", () => {
 
   it("says the right thing about each website situation", () => {
     assert.match(variablesFor(lead()).website_status, /no website/);
+    assert.match(variablesFor(lead()).website_reason, /couldn't find an independent website/);
+    // Nobody searched: say what was seen, never that there is no website.
+    assert.doesNotMatch(variablesFor(bare()).website_status, /no website/);
+    assert.doesNotMatch(variablesFor(bare()).website_reason, /couldn't find/);
     assert.match(
       variablesFor(lead({ websiteStatus: "Social Only", website: "https://facebook.com/x" })).website_status,
-      /Facebook/,
+      /social media page but no website/,
     );
     assert.match(
       variablesFor(lead({ websiteStatus: "Basic Website", website: "https://x.co", websiteQuality: "poor" }))

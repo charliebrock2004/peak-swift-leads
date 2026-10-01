@@ -10,6 +10,7 @@ import { leadFromRow, type LeadRow } from "../leads-row.ts";
 import { openSecret, sealSecret } from "../crypto/secrets.server.ts";
 import {
   DEFAULT_SETTINGS,
+  type AuditSummary,
   type BusinessFacts,
   type LeadWithFacts,
   type EmailKind,
@@ -23,6 +24,7 @@ import {
   type TemplateKind,
 } from "./types.ts";
 import { DEFAULT_TEMPLATES } from "./templates.ts";
+import { parseEvidenceRows } from "./evidence-record.ts";
 import { sanitizeSettings } from "./limits.ts";
 import type { Campaign } from "./campaigns.ts";
 import type { BusinessProfile } from "./profile.ts";
@@ -869,7 +871,36 @@ const LEAD_COLUMNS = `id, business_name, trade, town, phone, email, address, rat
   company_number, company_type, company_status, company_checked_at,
   legal_form_override, legal_form_note, legal_form_set_at`;
 
+const QUALIFIED_LEAD_COLUMNS = LEAD_COLUMNS.split(",").map((column) => `l.${column.trim()}`).join(", ");
+
+/**
+ * Leads with their server-held facts: the synced columns, the website search
+ * evidence, and a summary of the latest website audit — one query, no N+1.
+ */
+const LEADS_WITH_FACTS = `select ${QUALIFIED_LEAD_COLUMNS},
+    e.data as website_evidence,
+    a.id as audit_id, a.status as audit_status, a.http_status as audit_http_status, a.url as audit_url,
+    a.finished_at as audit_finished_at, a.opportunity as audit_opportunity, a.points as audit_points,
+    a.key_findings as audit_key_findings
+  from leads l
+  left join lead_evidence e on e.user_id = l.user_id and e.lead_id = l.id and e.kind = 'website'
+  left join lateral (
+    select id, status, http_status, url, finished_at, opportunity, points, key_findings
+      from website_audits w
+     where w.user_id = l.user_id and w.lead_id = l.id
+     order by finished_at desc limit 1
+  ) a on true`;
+
 type LeadWithFactsRow = LeadRow & {
+  website_evidence?: string | null;
+  audit_id?: string | null;
+  audit_status?: string | null;
+  audit_http_status?: number | null;
+  audit_url?: string | null;
+  audit_finished_at?: unknown;
+  audit_opportunity?: string | null;
+  audit_points?: number | null;
+  audit_key_findings?: unknown;
   company_number?: string | null;
   company_type?: string | null;
   company_status?: string | null;
@@ -890,6 +921,36 @@ export function factsFromRow(row: LeadWithFactsRow): BusinessFacts {
     legalFormOverride: (["CORPORATE", "INDIVIDUAL", "UNKNOWN", "REVIEW_REQUIRED"].includes(override) ? override : "") as BusinessFacts["legalFormOverride"],
     legalFormNote: text(row.legal_form_note),
     legalFormSetAt: text(row.legal_form_set_at),
+    websiteEvidence: row.website_evidence ? (parseEvidenceRows([{ leadId: "x", kind: "website", json: String(row.website_evidence) }]).get("x")?.website ?? null) : null,
+    audit: row.audit_id ? auditSummaryFromRow(row) : null,
+  };
+}
+
+function auditSummaryFromRow(row: LeadWithFactsRow): AuditSummary {
+  const status = text(row.audit_status);
+  const opportunity = text(row.audit_opportunity);
+  const findings = parseJson(row.audit_key_findings);
+  return {
+    id: text(row.audit_id),
+    status: status === "unreachable" || status === "error" ? status : "ok",
+    httpStatus: Number(row.audit_http_status ?? 0),
+    url: text(row.audit_url),
+    finishedAt: row.audit_finished_at instanceof Date ? row.audit_finished_at.toISOString() : text(row.audit_finished_at) ? new Date(text(row.audit_finished_at)).toISOString() : "",
+    opportunity: (["strong", "moderate", "low", "none", "unmeasured"].includes(opportunity) ? opportunity : "unmeasured") as AuditSummary["opportunity"],
+    points: Number(row.audit_points ?? 0),
+    keyFindings: Array.isArray(findings)
+      ? findings.slice(0, 5).map((item) => {
+          const entry = (item ?? {}) as Record<string, unknown>;
+          return {
+            kind: text(entry.kind),
+            title: text(entry.title),
+            evidence: text(entry.evidence),
+            impact: Number(entry.impact ?? 0),
+            observedAt: text(entry.observedAt),
+            source: text(entry.source),
+          };
+        })
+      : [],
   };
 }
 
@@ -906,9 +967,9 @@ function leadWithFacts(row: LeadWithFactsRow): LeadWithFacts {
  */
 export async function loadLeads(sql: Sql, userId: string, limit = 20000): Promise<LeadWithFacts[]> {
   const rows = await sql.query<LeadWithFactsRow>(
-    `select ${LEAD_COLUMNS} from leads
-      where user_id = $1 and deleted_at is null
-      order by updated_at desc limit $2`,
+    `${LEADS_WITH_FACTS}
+      where l.user_id = $1 and l.deleted_at is null
+      order by l.updated_at desc limit $2`,
     [userId, limit],
   );
   return rows.map(leadWithFacts);
@@ -916,7 +977,7 @@ export async function loadLeads(sql: Sql, userId: string, limit = 20000): Promis
 
 export async function loadLead(sql: Sql, userId: string, id: string): Promise<LeadWithFacts | null> {
   const rows = await sql.query<LeadWithFactsRow>(
-    `select ${LEAD_COLUMNS} from leads where user_id = $1 and id = $2 and deleted_at is null`,
+    `${LEADS_WITH_FACTS} where l.user_id = $1 and l.id = $2 and l.deleted_at is null`,
     [userId, id],
   );
   return rows[0] ? leadWithFacts(rows[0]) : null;
@@ -1460,7 +1521,7 @@ export async function saveProfile(sql: Sql, userId: string, profile: BusinessPro
 export async function consumeBudget(
   sql: Sql,
   userId: string,
-  kind: "search" | "ai" | "companies-house",
+  kind: "search" | "ai" | "companies-house" | "audit",
   amount: number,
   limit: number,
   day: string = new Date().toISOString().slice(0, 10),

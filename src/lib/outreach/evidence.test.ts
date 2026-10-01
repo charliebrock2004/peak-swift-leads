@@ -12,24 +12,45 @@ import {
 import { buildPrompt } from "./compose.ts";
 import { DEFAULT_SIGNATURE, SENDER_STUDIO } from "./templates.ts";
 import type { OutreachLead } from "./types.ts";
+import { factsWith, searchedNoWebsite } from "../test-support/facts.ts";
 
-const lead = (over: Partial<Lead> = {}): OutreachLead =>
-  createLead({
+/** A lead whose website a recent search looked for and did not find. */
+const lead = (over: Partial<Lead> = {}): OutreachLead => ({
+  ...(createLead({
     businessName: "Strathearn Joinery Ltd", trade: "Joiner", town: "Crieff",
     businessStatus: "Active", ...over,
-  }) as OutreachLead;
+  }) as OutreachLead),
+  facts: factsWith({ websiteEvidence: searchedNoWebsite() }),
+});
+
+/** The same, with nothing searched: only the discovery listing. */
+const unsearched = (over: Partial<Lead> = {}): OutreachLead =>
+  createLead({ businessName: "Strathearn Joinery Ltd", trade: "Joiner", town: "Crieff", businessStatus: "Active", ...over }) as OutreachLead;
 
 describe("what we can honestly say about a prospect", () => {
-  it("says a business has no website when the listing confirms it", () => {
+  it("says a business has no website only when a recent search found none", () => {
     const found = gatherEvidence(lead({ websiteStatus: "No Website Found" }));
     assert.equal(found[0].kind, "NO_WEBSITE");
     assert.equal(found[0].strength, "STRONG");
-    assert.match(found[0].text, /Strathearn Joinery Ltd/);
+    assert.match(found[0].text, /independent website for Strathearn Joinery Ltd/);
+  });
+
+  it("NEVER claims no website from a listing that merely lacked one", () => {
+    const found = gatherEvidence(unsearched({ websiteStatus: "No Website Found" }));
+    assert.equal(found.some((item) => item.kind === "NO_WEBSITE"), false);
+    const stale = gatherEvidence({ ...unsearched({ websiteStatus: "No Website Found" }), facts: factsWith({ websiteEvidence: searchedNoWebsite({ checkedAt: "2025-01-01T00:00:00.000Z" }) }) });
+    assert.equal(stale.some((item) => item.kind === "NO_WEBSITE"), false, "a search from last year proves nothing today");
+    const failed = gatherEvidence({ ...unsearched({ websiteStatus: "No Website Found" }), facts: factsWith({ websiteEvidence: searchedNoWebsite({ searchFailure: "quota" }) }) });
+    assert.equal(failed.some((item) => item.kind === "NO_WEBSITE"), false, "a failed search proves nothing");
   });
 
   it("distinguishes social-only from no presence at all", () => {
-    assert.equal(gatherEvidence(lead({ websiteStatus: "Social Only" }))[0].kind, "SOCIAL_ONLY");
-    assert.equal(gatherEvidence(lead({ websiteStatus: "Directory Only" }))[0].kind, "DIRECTORY_ONLY");
+    assert.equal(gatherEvidence(lead({ websiteStatus: "Social Only", website: "https://facebook.com/strathearn" }))[0].kind, "SOCIAL_ONLY");
+    assert.equal(gatherEvidence(lead({ websiteStatus: "Directory Only", website: "https://www.yell.com/biz/strathearn" }))[0].kind, "DIRECTORY_ONLY");
+    const unconfirmed = gatherEvidence(unsearched({ websiteStatus: "Social Only", website: "https://facebook.com/strathearn" }))[0];
+    assert.equal(unconfirmed.kind, "SOCIAL_ONLY");
+    assert.equal(unconfirmed.strength, "USEFUL", "without a search, only that we found them there");
+    assert.doesNotMatch(unconfirmed.text, /only|no site|not on a site/i);
   });
 
   it("only comments on a site's content when a check recorded something", () => {
@@ -86,9 +107,10 @@ describe("choosing what to write about", () => {
 
   it("knows when there is nothing worth personalising from", () => {
     // Trade and town alone is a mail merge wearing a business's name.
-    const thin = gatherEvidence(lead({ websiteStatus: "Proper Website", websiteQuality: "good" }));
+    const thin = gatherEvidence(unsearched({ websiteStatus: "Proper Website", websiteQuality: "good", website: "https://strathearn.co.uk" }));
     assert.equal(hasRealPersonalisation(thin), false);
     assert.ok(hasRealPersonalisation(gatherEvidence(lead({ websiteStatus: "No Website Found" }))));
+    assert.equal(hasRealPersonalisation(gatherEvidence(unsearched({ websiteStatus: "No Website Found" }))), false, "absence nobody checked is not personalisation");
   });
 });
 
@@ -147,7 +169,7 @@ describe("PeakSwiftStudio branding", () => {
     // be absent is any strong or useful observation, because there is nothing
     // wrong with their web presence to write about — and eligibility refuses
     // such a lead anyway.
-    const found = gatherEvidence(lead({ websiteStatus: "Proper Website", websiteQuality: "good" }));
+    const found = gatherEvidence(unsearched({ websiteStatus: "Proper Website", websiteQuality: "good", website: "https://strathearn.co.uk" }));
     assert.equal(hasRealPersonalisation(found), false);
     assert.ok(found.every((item) => item.strength === "CONTEXT"));
   });

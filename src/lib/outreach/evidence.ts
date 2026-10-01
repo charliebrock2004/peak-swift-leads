@@ -12,6 +12,7 @@
  * flatter, guess, or invent a compliment, because there is nothing to invent
  * from.
  */
+import { websiteVerificationOf } from "../audit/website-state.ts";
 import { computeOpportunity, opportunityBand, type Lead } from "../leads.ts";
 import type { OutreachLead } from "./types.ts";
 
@@ -51,26 +52,33 @@ export function gatherEvidence(lead: OutreachLead): Evidence[] {
   const name = lead.businessName.trim();
 
   // ── The website situation: the whole reason for writing ──────────────────
-  if (lead.websiteStatus === "No Website Found") {
+  // Absence is only evidence when a search found nothing; a listing without a
+  // website field is not proof there is none (audit/website-state.ts).
+  const verified = websiteVerificationOf(lead);
+  if (verified.state === "VERIFIED_NO_WEBSITE") {
     out.push({
       kind: "NO_WEBSITE",
-      text: `I could not find a website for ${name || "them"}.`,
+      text: `I could not find an independent website for ${name || "them"}.`,
       strength: "STRONG",
-      source: "websiteStatus",
+      source: "websiteSearch",
     });
-  } else if (lead.websiteStatus === "Social Only") {
+  } else if (verified.state === "SOCIAL_ONLY") {
     out.push({
       kind: "SOCIAL_ONLY",
-      text: "Their only web presence I could find is a social page, not a site of their own.",
-      strength: "STRONG",
-      source: "websiteStatus",
+      text: verified.canClaimNoWebsite
+        ? "Their only web presence I could find is a social page, not a site of their own."
+        : "I found them through a social media page.",
+      strength: verified.canClaimNoWebsite ? "STRONG" : "USEFUL",
+      source: "websiteSearch",
     });
-  } else if (lead.websiteStatus === "Directory Only") {
+  } else if (verified.state === "DIRECTORY_ONLY") {
     out.push({
       kind: "DIRECTORY_ONLY",
-      text: "I could only find them on a directory listing, not on a site of their own.",
-      strength: "STRONG",
-      source: "websiteStatus",
+      text: verified.canClaimNoWebsite
+        ? "I could only find them on a directory listing, not on a site of their own."
+        : "I found them through a directory listing.",
+      strength: verified.canClaimNoWebsite ? "STRONG" : "USEFUL",
+      source: "websiteSearch",
     });
   } else if (lead.websiteStatus === "Basic Website" || lead.websiteQuality === "improve") {
     out.push({

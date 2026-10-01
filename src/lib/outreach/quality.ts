@@ -9,6 +9,7 @@
  *
  * A failure here is never a retry. It is a stop.
  */
+import { websiteVerificationOf } from "../audit/website-state.ts";
 import { looksLikeEmail } from "./eligibility.ts";
 import { identifiesSender, leftoverVariables, SENDER_STUDIO } from "./templates.ts";
 import type { OutreachLead } from "./types.ts";
@@ -128,7 +129,7 @@ export type QualityInput = {
   body: string;
   recipient: string;
   lead: Pick<OutreachLead, "businessName" | "emailConfidence" | "emailSource" | "unsubscribed"> &
-    Partial<Pick<OutreachLead, "reviews" | "rating" | "websiteStatus" | "called" | "callResult" | "town">>;
+    Partial<Pick<OutreachLead, "reviews" | "rating" | "websiteStatus" | "called" | "callResult" | "town" | "website" | "facts">>;
   /** Lowercased suppression list. */
   suppressed?: ReadonlySet<string>;
   /** The studio name the email must identify. Defaults to the built-in one. */
@@ -186,9 +187,25 @@ export function unsupportedClaims(text: string, lead: QualityInput["lead"]): Qua
     }
   }
 
-  // "No website" is only a fact when the record says so.
-  if ("websiteStatus" in lead) {
-    const noSite = /\b(?:couldn'?t|could not|can'?t|cannot|didn'?t|did not|unable to)\s+find\s+(?:a|any|your)?\s*(?:website|site)\b|\b(?:don'?t|do not|doesn'?t)\s+(?:seem to\s+)?have\s+(?:a|any)\s+(?:website|site)\b|\bno\s+website\b/i;
+  // "No website" is only a fact when a recent search found none. With the
+  // server's facts attached this is decided by the website verification
+  // (audit/website-state.ts); a bare lead falls back to its stored status.
+  const noSite =
+    /\b(?:couldn'?t|could not|can'?t|cannot|didn'?t|did not|unable to)\s+find\s+(?:a|any|your|an)?\s*(?:independent\s+|own\s+)?(?:website|site)\b|\b(?:don'?t|do not|doesn'?t)\s+(?:seem to\s+)?have\s+(?:a|any|an)\s+(?:independent\s+|own\s+)?(?:website|site)\b|\bno\s+(?:independent\s+)?website\b|\bwithout\s+a\s+website\b/i;
+  if ("facts" in lead && lead.facts) {
+    if (noSite.test(text)) {
+      const verified = websiteVerificationOf({ website: lead.website ?? "", websiteStatus: lead.websiteStatus, facts: lead.facts });
+      if (!verified.canClaimNoWebsite) {
+        add(
+          verified.state === "WEBSITE_FOUND" ||
+            verified.state === "WEBSITE_UNREACHABLE" ||
+            (verified.state === "WEBSITE_NOT_CONFIRMED" && Boolean(lead.website?.trim()))
+            ? "It says they have no website, but a website is on record for them. Rewrite that line."
+            : "It says they have no website, but no recent web search confirmed that. Search for their website first, or rewrite that line.",
+        );
+      }
+    }
+  } else if ("websiteStatus" in lead) {
     const status = lead.websiteStatus ?? "";
     const recordedMissing = status === "No Website Found" || status === "Social Only" || status === "Directory Only";
     if (noSite.test(text) && !recordedMissing) {

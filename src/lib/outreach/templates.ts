@@ -9,6 +9,7 @@
  * because we cannot know that from a page fetch, and because insulting someone
  * is a poor way to start a conversation about paying you.
  */
+import { websiteVerificationOf } from "../audit/website-state.ts";
 import type { OutreachLead, OutreachTemplate, TemplateKind } from "./types.ts";
 import type { BusinessProfile } from "./profile.ts";
 
@@ -91,11 +92,18 @@ export function identifiesSender(text: string, studio: string = SENDER_STUDIO): 
   return pattern.test(text);
 }
 
-/** Plain-English website state, safe to put in front of the business owner. */
+/**
+ * Plain-English website state, safe to put in front of the business owner.
+ *
+ * "No website" is only said when a recent search supports it (see
+ * audit/website-state.ts); otherwise the phrase describes what was seen, not
+ * what is absent.
+ */
 export function websiteStatusPhrase(lead: OutreachLead): string {
-  if (lead.websiteStatus === "No Website Found") return "no website";
-  if (lead.websiteStatus === "Social Only") return "a Facebook page but no website";
-  if (lead.websiteStatus === "Directory Only") return "a directory listing but no website";
+  const verified = websiteVerificationOf(lead);
+  if (verified.state === "VERIFIED_NO_WEBSITE") return "no website of your own";
+  if (verified.state === "SOCIAL_ONLY") return verified.canClaimNoWebsite ? "a social media page but no website of your own" : "a social media page";
+  if (verified.state === "DIRECTORY_ONLY") return verified.canClaimNoWebsite ? "a directory listing but no website of your own" : "a directory listing";
   if (lead.websiteQuality === "poor" || lead.websiteStatus === "Basic Website") return "a basic website";
   if (lead.websiteQuality === "improve") return "a website that could do more";
   if (lead.websiteQuality === "good") return "a good website";
@@ -105,19 +113,15 @@ export function websiteStatusPhrase(lead: OutreachLead): string {
 /**
  * One short, factual reason drawn from what was actually observed. Never a
  * judgement we cannot support — "unable to analyse" produces nothing rather
- * than a guess.
+ * than a guess, and absence is only claimed when a search found none.
  */
 export function websiteReasonPhrase(lead: OutreachLead): string {
   const analysis = lead.websiteAnalysis.trim();
-  if (lead.websiteStatus === "No Website Found") {
-    return "I couldn't find a website for you anywhere online";
-  }
-  if (lead.websiteStatus === "Social Only") {
-    return "I could only find you on social media";
-  }
-  if (lead.websiteStatus === "Directory Only") {
-    return "I could only find you on directory listings";
-  }
+  const verified = websiteVerificationOf(lead);
+  if (verified.state === "VERIFIED_NO_WEBSITE") return "I couldn't find an independent website for you";
+  if (verified.state === "SOCIAL_ONLY") return verified.canClaimNoWebsite ? "I could only find you on social media" : "I found you through your social media page";
+  if (verified.state === "DIRECTORY_ONLY") return verified.canClaimNoWebsite ? "I could only find you on directory listings" : "I found you through a directory listing";
+  if (!lead.website.trim()) return "I couldn't see a website on the listing where I found you";
   if (analysis && lead.websiteQuality !== "unable" && lead.websiteQuality !== "good") {
     return analysis.replace(/\.$/, "");
   }

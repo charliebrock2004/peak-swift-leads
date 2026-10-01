@@ -62,7 +62,8 @@ describe("upgrading a live database to 0010", () => {
       `select id, business_name, email, place_id, updated_at::text from leads where user_id = $1 order by id`,
       [USER],
     )).rows;
-    await apply([NEW]);
+    // 0010, then everything after it: the loaders below are today's code.
+    await apply(files.filter((name) => name >= NEW));
   });
 
   after(async () => {

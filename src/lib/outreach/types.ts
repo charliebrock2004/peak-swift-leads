@@ -8,6 +8,7 @@
 import { DEFAULT_CONTACT_RULES, type ContactRules } from "../contactability/legal-form.ts";
 import type { Lead } from "../leads.ts";
 import type { OAuthSetup } from "./oauth-setup.ts";
+import type { WebsiteEvidenceRecord } from "./evidence-record.ts";
 
 /** Where one email has got to. The queue and the history are the same list. */
 export const EMAIL_STATUSES = [
@@ -276,6 +277,22 @@ export type BusinessFacts = {
   legalFormOverride: "" | "CORPORATE" | "INDIVIDUAL" | "UNKNOWN" | "REVIEW_REQUIRED";
   legalFormNote: string;
   legalFormSetAt: string;
+  /** How the website was found or searched for (lead_evidence "website"). */
+  websiteEvidence?: WebsiteEvidenceRecord | null;
+  /** The latest website audit, summarised (website_audits, 0011). */
+  audit?: AuditSummary | null;
+};
+
+export type AuditSummary = {
+  id: string;
+  status: "ok" | "unreachable" | "error";
+  httpStatus: number;
+  url: string;
+  finishedAt: string;
+  opportunity: "strong" | "moderate" | "low" | "none" | "unmeasured";
+  points: number;
+  /** The findings worth leading with: kind, heading and the measured sentence. */
+  keyFindings: { kind: string; title: string; evidence: string; impact: number; observedAt: string; source: string }[];
 };
 
 /** A lead as the server reads it: the synced fields plus the server-held facts. */

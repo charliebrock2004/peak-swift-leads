@@ -17,6 +17,12 @@ export type WebsiteEvidenceRecord = {
   searchProvider: string | null;
   searchesRun: number;
   checkedAt: string;
+  /** The search queries actually sent (recorded from Phase C on; empty before). */
+  queries: string[];
+  /** Candidate sites rejected, and why (recorded from Phase C on). */
+  rejections: { url: string; why: string }[];
+  /** Set when the search itself failed (no key, quota, outage) — absence then proves nothing. */
+  searchFailure: string;
 };
 
 export type EmailEvidenceRecord = {
@@ -63,6 +69,9 @@ export function parseEvidenceRows(rows: readonly { leadId: string; kind: string;
         searchProvider: typeof data.searchProvider === "string" ? data.searchProvider : null,
         searchesRun: num(data.searchesRun),
         checkedAt: str(data.checkedAt),
+        queries: Array.isArray(data.queries) ? data.queries.map(String).slice(0, 12) : [],
+        rejections: list(data.rejections, (item) => ({ url: str(item.url), why: str(item.why) })).slice(0, 10),
+        searchFailure: str(data.searchFailure),
       };
     } else if (row.kind === "email") {
       entry.email = {
