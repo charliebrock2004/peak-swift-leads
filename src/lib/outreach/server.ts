@@ -622,7 +622,12 @@ export const generateEmails = createServerFn({ method: "POST" })
       runId: str(source.runId, 64),
     };
   })
-  .handler(async ({ data, context }): Promise<{ ok: true; rows: GeneratedRow[] } | Fail> => {
+  .handler(({ data, context }) => generateEmailsCore(data, context));
+
+export type GenerateInput = { leadIds: string[]; mode: string; kind: EmailKind; campaignId: string; runId: string };
+
+/** The drafting itself, callable from a background job as well as the UI. */
+export async function generateEmailsCore(data: GenerateInput, context: { userId: string }): Promise<{ ok: true; rows: GeneratedRow[] } | Fail> {
     if (data.leadIds.length === 0) return { ok: true, rows: [] };
     try {
       const { sql, store, settings, emails, suppression, templates } = await loadWorld(context.userId);
@@ -735,7 +740,7 @@ export const generateEmails = createServerFn({ method: "POST" })
       console.error("[outreach] generate failed:", error);
       return { ok: false, error: "Could not generate emails." };
     }
-  });
+}
 
 /** Edit a draft by hand. Anything edited is marked manual, not AI. */
 export const updateDraft = createServerFn({ method: "POST" })
@@ -987,9 +992,12 @@ export type ReplyReport = {
 
 export const checkReplies = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .handler(async ({ context }): Promise<ReplyReport | Fail> => {
+  .handler(({ context }) => checkRepliesCore(context.userId));
+
+/** One pass over the emails awaiting a reply. Also run by the reply-poll job. */
+export async function checkRepliesCore(userId: string): Promise<ReplyReport | Fail> {
     try {
-      const token = await usableToken(context.userId);
+      const token = await usableToken(userId);
       if (!token.ok) return token;
       const { getSql } = await import("@/lib/db");
       const store = await import("./store.server.ts");
@@ -1001,7 +1009,7 @@ export const checkReplies = createServerFn({ method: "POST" })
       // how long we spend on them, so the poll always returns an answer instead
       // of being killed mid-way and losing the replies it had already found.
       const deadline = Date.now() + REPLY_BUDGET_MS;
-      const waiting = await store.awaitingReply(sql, context.userId);
+      const waiting = await store.awaitingReply(sql, userId);
       const checkedIds: string[] = [];
       let replies = 0;
       let unsubscribes = 0;
@@ -1019,7 +1027,7 @@ export const checkReplies = createServerFn({ method: "POST" })
         const thread = await gmail.getThread(token.accessToken, email.gmailThreadId, token.email);
         if (!thread.ok) {
           if (thread.fatal) {
-            await store.markGmailProblem(sql, context.userId, thread.error);
+            await store.markGmailProblem(sql, userId, thread.error);
             return { ok: false, error: "Gmail connection needs attention.", needsAttention: true };
           }
           continue;
@@ -1038,15 +1046,15 @@ export const checkReplies = createServerFn({ method: "POST" })
         if (verdict.kind === "bounce") {
           // A delivery failure, not a reply: the address is dead. Suppress it so
           // nothing is ever sent there again, and say so.
-          await store.markBounced(sql, context.userId, email.id, { from: message.from, subject: message.subject, snippet: message.snippet });
-          await store.suppress(sql, context.userId, {
+          await store.markBounced(sql, userId, email.id, { from: message.from, subject: message.subject, snippet: message.snippet });
+          await store.suppress(sql, userId, {
             email: email.recipient,
             reason: "Bounced — the address does not accept email",
             leadId: email.leadId,
             businessName: email.businessName,
           });
-          await store.updateLeadOutreach(sql, context.userId, email.leadId, { outreachStatus: "Bounced" });
-          await store.recordActivity(sql, context.userId, {
+          await store.updateLeadOutreach(sql, userId, email.leadId, { outreachStatus: "Bounced" });
+          await store.recordActivity(sql, userId, {
             id: newLeadId(), type: "EMAIL_BOUNCED", leadId: email.leadId, leadName: email.businessName, result: email.recipient,
           });
           bounces += 1;
@@ -1055,12 +1063,12 @@ export const checkReplies = createServerFn({ method: "POST" })
         if (verdict.kind === "auto_reply") {
           // An out-of-office is not a conversation. Recorded, shown, and
           // follow-ups carry on as scheduled.
-          await store.markAutoReply(sql, context.userId, email.id, { from: message.from, subject: message.subject, snippet: message.snippet });
+          await store.markAutoReply(sql, userId, email.id, { from: message.from, subject: message.subject, snippet: message.snippet });
           autoReplies += 1;
           continue;
         }
 
-        await store.markReplied(sql, context.userId, email.id, {
+        await store.markReplied(sql, userId, email.id, {
           from: message.from,
           subject: message.subject,
           snippet: message.snippet,
@@ -1068,9 +1076,9 @@ export const checkReplies = createServerFn({ method: "POST" })
           suggestion: verdict.suggestion,
           at,
         });
-        await store.updateLeadOutreach(sql, context.userId, email.leadId, { outreachStatus: "Replied" });
+        await store.updateLeadOutreach(sql, userId, email.leadId, { outreachStatus: "Replied" });
         replies += 1;
-        await store.recordActivity(sql, context.userId, {
+        await store.recordActivity(sql, userId, {
           id: newLeadId(),
           type: "REPLY_RECEIVED",
           leadId: email.leadId,
@@ -1080,13 +1088,13 @@ export const checkReplies = createServerFn({ method: "POST" })
         });
 
         if (verdict.kind === "unsubscribe" || readsAsUnsubscribe(theirs.map((entry) => entry.snippet).join(" "))) {
-          await store.suppress(sql, context.userId, {
+          await store.suppress(sql, userId, {
             email: email.recipient,
             reason: "Asked to stop in a reply",
             leadId: email.leadId,
             businessName: email.businessName,
           });
-          await store.updateLeadOutreach(sql, context.userId, email.leadId, {
+          await store.updateLeadOutreach(sql, userId, email.leadId, {
             outreachStatus: "Unsubscribed",
             unsubscribed: new Date().toISOString(),
           });
@@ -1095,7 +1103,7 @@ export const checkReplies = createServerFn({ method: "POST" })
       }
       // Rotate what was looked at to the back of the queue, so the next pass
       // picks up where this one stopped rather than repeating it.
-      await store.markRepliesChecked(sql, context.userId, checkedIds);
+      await store.markRepliesChecked(sql, userId, checkedIds);
       return {
         ok: true,
         replies,
@@ -1109,7 +1117,7 @@ export const checkReplies = createServerFn({ method: "POST" })
       console.error("[outreach] reply check failed:", error);
       return { ok: false, error: "Could not check for replies." };
     }
-  });
+}
 
 // ── Suppression ──────────────────────────────────────────────────────────────
 

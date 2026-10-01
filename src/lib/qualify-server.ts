@@ -163,7 +163,10 @@ export const checkLeadWebsite = createServerFn({ method: "POST" })
     if (!hasWebsite(website)) throw new Error("No website to check");
     return { website, businessName };
   })
-  .handler(async ({ data }): Promise<CheckWebsiteResult> => {
+  .handler(async ({ data }): Promise<CheckWebsiteResult> => checkLeadWebsiteCore(data));
+
+/** The website check for one business, callable from a background job too. */
+export async function checkLeadWebsiteCore(data: { website: string; businessName: string }): Promise<CheckWebsiteResult> {
     const href = websiteHref(data.website) ?? data.website;
     const classified = classifyWebsiteUrl(href);
     if (classified === "Social Only" || classified === "Directory Only") {
@@ -197,7 +200,7 @@ export const checkLeadWebsite = createServerFn({ method: "POST" })
         checkedAt: new Date().toISOString(),
       };
     }
-  });
+}
 
 /**
  * One page fetch, tolerant of the ways a small business site is set up wrong.
@@ -356,7 +359,25 @@ export const findLeadEmail = createServerFn({ method: "POST" })
       leadId: asString(source.leadId, 64),
     };
   })
-  .handler(async ({ data, context: auth }): Promise<FindEmailResult> => {
+  .handler(async ({ data, context: auth }): Promise<FindEmailResult> => findLeadEmailCore(data, auth));
+
+export type FindEmailInput = {
+  website: string;
+  existingEmail: string;
+  existingSource: string;
+  businessName: string;
+  town: string;
+  trade: string;
+  phone: string;
+  address: string;
+  leadId: string;
+};
+
+/**
+ * The email (and website) discovery for one business, callable from a
+ * background job as well as the server function above. Owner-scoped by `auth`.
+ */
+export async function findLeadEmailCore(data: FindEmailInput, auth: { userId: string }): Promise<FindEmailResult> {
     // Every paid search spends one credit of today's budget, checked atomically
     // in the database before the call is made. A budget of 0 turns search off.
     const { getSql, dbSource } = await import("@/lib/db");
@@ -987,7 +1008,7 @@ export const findLeadEmail = createServerFn({ method: "POST" })
       providerExtracts,
       rejectedCandidates: rejected,
     });
-  });
+}
 
 /**
  * The old shape, kept so every existing caller works untouched.

@@ -27,6 +27,7 @@ import { Route as OauthGmailRouteImport } from './routes/oauth.gmail'
 import { Route as AppRunsIndexRouteImport } from './routes/_app.runs.index'
 import { Route as AppRunsRunIdRouteImport } from './routes/_app.runs.$runId'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
+import { Route as ApiJobsTickRouteImport } from './routes/api/jobs/tick'
 import { Route as AppBusinessesLeadIdAuditRouteImport } from './routes/_app.businesses.$leadId.audit'
 
 const AppRoute = AppRouteImport.update({
@@ -118,6 +119,11 @@ const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   path: '/api/auth/$',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiJobsTickRoute = ApiJobsTickRouteImport.update({
+  id: '/api/jobs/tick',
+  path: '/api/jobs/tick',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AppBusinessesLeadIdAuditRoute =
   AppBusinessesLeadIdAuditRouteImport.update({
     id: '/businesses/$leadId/audit',
@@ -142,6 +148,7 @@ export interface FileRoutesByFullPath {
   '/oauth/gmail': typeof OauthGmailRoute
   '/runs/$runId': typeof AppRunsRunIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/jobs/tick': typeof ApiJobsTickRoute
   '/runs/': typeof AppRunsIndexRoute
   '/businesses/$leadId/audit': typeof AppBusinessesLeadIdAuditRoute
 }
@@ -162,6 +169,7 @@ export interface FileRoutesByTo {
   '/': typeof AppIndexRoute
   '/runs/$runId': typeof AppRunsRunIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/jobs/tick': typeof ApiJobsTickRoute
   '/runs': typeof AppRunsIndexRoute
   '/businesses/$leadId/audit': typeof AppBusinessesLeadIdAuditRoute
 }
@@ -184,6 +192,7 @@ export interface FileRoutesById {
   '/_app/': typeof AppIndexRoute
   '/_app/runs/$runId': typeof AppRunsRunIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/jobs/tick': typeof ApiJobsTickRoute
   '/_app/runs/': typeof AppRunsIndexRoute
   '/_app/businesses/$leadId/audit': typeof AppBusinessesLeadIdAuditRoute
 }
@@ -206,6 +215,7 @@ export interface FileRouteTypes {
     | '/oauth/gmail'
     | '/runs/$runId'
     | '/api/auth/$'
+    | '/api/jobs/tick'
     | '/runs/'
     | '/businesses/$leadId/audit'
   fileRoutesByTo: FileRoutesByTo
@@ -226,6 +236,7 @@ export interface FileRouteTypes {
     | '/'
     | '/runs/$runId'
     | '/api/auth/$'
+    | '/api/jobs/tick'
     | '/runs'
     | '/businesses/$leadId/audit'
   id:
@@ -247,6 +258,7 @@ export interface FileRouteTypes {
     | '/_app/'
     | '/_app/runs/$runId'
     | '/api/auth/$'
+    | '/api/jobs/tick'
     | '/_app/runs/'
     | '/_app/businesses/$leadId/audit'
   fileRoutesById: FileRoutesById
@@ -258,6 +270,7 @@ export interface RootRouteChildren {
   AdminOwnerEmailRoute: typeof AdminOwnerEmailRoute
   OauthGmailRoute: typeof OauthGmailRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
+  ApiJobsTickRoute: typeof ApiJobsTickRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -388,6 +401,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAuthSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/jobs/tick': {
+      id: '/api/jobs/tick'
+      path: '/api/jobs/tick'
+      fullPath: '/api/jobs/tick'
+      preLoaderRoute: typeof ApiJobsTickRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/_app/businesses/$leadId/audit': {
       id: '/_app/businesses/$leadId/audit'
       path: '/businesses/$leadId/audit'
@@ -439,6 +459,7 @@ const rootRouteChildren: RootRouteChildren = {
   AdminOwnerEmailRoute: AdminOwnerEmailRoute,
   OauthGmailRoute: OauthGmailRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
+  ApiJobsTickRoute: ApiJobsTickRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

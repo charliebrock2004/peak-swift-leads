@@ -8,8 +8,8 @@
  */
 import { createServerFn } from "@tanstack/react-start";
 import { authMiddleware } from "@/lib/auth/middleware";
+import { AUDITS_PER_DAY } from "./findings.ts";
 
-const AUDITS_PER_DAY = 150;
 const REAUDIT_AFTER_MS = 10 * 60 * 1000;
 
 type Fail = { success: false; error: string };

@@ -14,6 +14,9 @@
  * Client-safe and pure.
  */
 
+/** Website audits one account may run per day (each one loads the site and asks Google PageSpeed). */
+export const AUDITS_PER_DAY = 150;
+
 export const AUDIT_CATEGORIES = ["performance", "conversion", "trust", "seo", "technical", "technology"] as const;
 export type AuditCategory = (typeof AUDIT_CATEGORIES)[number];
 

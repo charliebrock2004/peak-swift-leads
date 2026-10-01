@@ -221,6 +221,14 @@ export default defineConfig(({ command, isPreview }) => ({
                 // finishes. 300s is the Pro ceiling.
                 maxDuration: 300,
               },
+              // The background-job heartbeat (src/routes/api/jobs/tick.ts):
+              // once a day — the most a Hobby plan allows — to schedule reply
+              // polling and retention and pick up any job left waiting. Jobs
+              // otherwise run from the request that started them and chain
+              // themselves; this is the safety net, not the engine.
+              config: {
+                crons: [{ path: "/api/jobs/tick", schedule: "17 6 * * *" }],
+              },
             },
           }),
         ]

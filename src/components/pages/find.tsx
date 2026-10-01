@@ -20,7 +20,9 @@ import { Page } from "@/components/app/app-shell";
 
 import { WithState } from "@/components/app/setup-gate";
 import { Card, Field, Notice, PageHeader, ProgressBar, SectionTitle } from "@/components/app/ui";
-import { RUN_STAGES, STAGE_TITLES, type ProspectRunState, type RunConfig } from "@/components/app/use-prospect-run";
+import type { ProspectRunState, RunConfig } from "@/components/app/use-prospect-run";
+import { FIND_STAGES, FIND_STAGE_TITLES, type FindStage } from "@/lib/jobs/types";
+import { ACTION_LABEL, type Band } from "@/lib/scoring/prospect-score";
 import { TRADE_SUGGESTIONS } from "@/lib/leads";
 import { MAX_TRADES } from "@/lib/outreach/auto-run";
 import { reconcileFunnel, type RunFunnel } from "@/lib/outreach/run-funnel";
@@ -348,22 +350,23 @@ function Find({ state }: { state: OutreachState }) {
 
 // ── The run, live ─────────────────────────────────────────────────────────────
 
-function stageCount(stage: (typeof RUN_STAGES)[number], funnel: RunFunnel): string {
+function stageCount(stage: FindStage, run: ProspectRunState): string {
+  const { funnel, enrichment } = run;
   switch (stage) {
     case "discovering":
       return funnel.rawFound ? `${funnel.rawFound} listings found` : "";
     case "deduplicating":
       return funnel.unique ? `${funnel.unique} unique · ${funnel.selected} new to you` : "";
     case "verifying":
-      return funnel.checked ? `${funnel.checked} businesses checked` : "";
-    case "websites":
-      return funnel.checked ? `${funnel.websiteVerified} websites verified · ${funnel.checked - funnel.goodWebsite} opportunities` : "";
-    case "emails":
-      return funnel.checked ? `${funnel.emailsFound} verified public emails` : "";
+      return funnel.checked ? `${funnel.websiteVerified} websites · ${funnel.emailsFound} public emails` : "";
+    case "enriching":
+      return enrichment.companiesChecked || enrichment.audited
+        ? `${enrichment.companiesConfirmed} companies confirmed · ${enrichment.audited} sites audited`
+        : "";
     case "qualifying":
-      return funnel.eligible || funnel.call ? `${funnel.eligible} eligible · ${funnel.call} to call` : "";
+      return run.result?.summary || funnel.eligible || funnel.call ? `${funnel.eligible} to email · ${run.result?.summary.callReady ?? funnel.call} to call` : "";
     case "personalising":
-      return funnel.prepared ? `${funnel.prepared} personalised emails` : "";
+      return funnel.prepared ? `${funnel.prepared} drafts written` : "";
     case "ready":
       return funnel.prepared ? `${funnel.readyToday} ready today` : "";
     default:
@@ -382,7 +385,10 @@ function RunView({
   onReset: () => void;
   running: boolean;
 }) {
-  const [showLog, setShowLog] = useState(false);
+  const [showLog, setShowLog] = useState(run.status === "failed");
+  useEffect(() => {
+    if (run.status === "failed") setShowLog(true);
+  }, [run.status]);
   const { funnel } = run;
   const finished = !running;
   const problems = useMemo(() => (finished ? reconcileFunnel(funnel) : []), [finished, funnel]);
@@ -403,7 +409,7 @@ function RunView({
         description={run.detail}
         actions={
           running ? (
-            <Button variant="secondary" onClick={onStop}>
+            <Button variant="secondary" onClick={onStop} disabled={!run.jobId}>
               <Square className="size-3.5" />
               Stop
             </Button>
@@ -415,24 +421,44 @@ function RunView({
         }
       />
 
+      {running ? (
+        <p className="-mt-3 text-sm text-muted">This runs on our server — you can close this page or lock your phone, and it will carry on. Nothing is sent without you.</p>
+      ) : null}
+      {run.error ? (
+        <Notice tone="warn" title="Reconnecting">
+          {run.error}
+        </Notice>
+      ) : null}
+
       <Card className="p-5 md:p-6">
         <ol className="flex flex-col gap-0.5">
-          {RUN_STAGES.map((stage) => {
+          {FIND_STAGES.map((stage) => {
             const done = run.completed.includes(stage) || (finished && run.status === "done");
             const current = running && run.stage === stage;
-            const count = stageCount(stage, funnel);
+            const endedHere = finished && run.status !== "done" && run.stage === stage;
+            const count = stageCount(stage, run);
             return (
               <li key={stage} className="flex items-center gap-3 py-2">
                 <span
                   className={cn(
                     "flex size-6 shrink-0 items-center justify-center rounded-full",
-                    done ? "bg-good/15 text-good" : current ? "bg-accent text-accent-fg" : "bg-surface-2 text-subtle",
+                    endedHere ? "bg-warn/15 text-warn" : done ? "bg-good/15 text-good" : current ? "bg-accent text-accent-fg" : "bg-surface-2 text-subtle",
                   )}
                 >
-                  {done ? <Check className="size-3.5" /> : current ? <Loader2 className="size-3.5 animate-spin" /> : <Circle className="size-2 fill-current" />}
+                  {endedHere ? (
+                    <TriangleAlert className="size-3.5" />
+                  ) : done ? (
+                    <Check className="size-3.5" />
+                  ) : current ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <Circle className="size-2 fill-current" />
+                  )}
                 </span>
-                <span className={cn("flex-1 text-sm", done || current ? "text-fg" : "text-subtle")}>{STAGE_TITLES[stage]}</span>
-                {count && (done || current) ? <span className="text-sm text-muted tabular">{count}</span> : null}
+                <span className="flex min-w-0 flex-1 flex-col sm:flex-row sm:items-baseline sm:justify-between sm:gap-3">
+                  <span className={cn("text-sm", done || current || endedHere ? "text-fg" : "text-subtle")}>{FIND_STAGE_TITLES[stage]}</span>
+                  {count && (done || current || endedHere) ? <span className="text-xs text-muted tabular sm:text-sm">{count}</span> : null}
+                </span>
               </li>
             );
           })}
@@ -480,22 +506,46 @@ function RunView({
 
 function Outcome({ run }: { run: ProspectRunState }) {
   const { funnel, result } = run;
+  const summary = result?.summary;
   return (
-    <Card className="flex flex-col gap-4 p-5 md:p-6">
-      <div className="grid grid-cols-3 gap-3 text-center">
-        <div>
-          <p className="font-display text-3xl font-medium tabular">{funnel.readyToday}</p>
-          <p className="mt-1 text-xs text-muted">ready to send today</p>
+    <Card className="flex flex-col gap-5 p-5 md:p-6">
+      {summary ? (
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <Stat value={summary.found} label="businesses checked" />
+          <Stat value={summary.strong} label="strong" tone="good" />
+          <Stat value={summary.good} label="good" />
+          <Stat value={summary.weak + summary.rejected} label={`weak or not worth it`} muted />
         </div>
-        <div>
-          <p className="font-display text-3xl font-medium tabular">{funnel.heldForTomorrow}</p>
-          <p className="mt-1 text-xs text-muted">held for tomorrow</p>
-        </div>
-        <div>
-          <p className="font-display text-3xl font-medium tabular">{funnel.call}</p>
-          <p className="mt-1 text-xs text-muted">to call</p>
-        </div>
+      ) : null}
+      <div className="grid grid-cols-3 gap-3 border-t border-border pt-4 text-center">
+        <Stat value={funnel.readyToday} label="emails to review today" />
+        <Stat value={summary?.callReady ?? funnel.call} label="to call" />
+        <Stat value={summary?.review ?? funnel.manualReview} label="need a check from you" />
       </div>
+      {funnel.heldForTomorrow > 0 ? (
+        <p className="-mt-2 text-center text-xs text-subtle">{plural(funnel.heldForTomorrow, "more draft")} held for tomorrow by your daily limit.</p>
+      ) : null}
+
+      {result && result.top.length > 0 ? (
+        <div className="flex flex-col gap-1 border-t border-border pt-4">
+          <p className="text-xs font-medium text-subtle">Best first</p>
+          <ul className="flex flex-col">
+            {result.top.map((prospect) => (
+              <li key={prospect.id} className="flex items-baseline gap-3 py-1.5">
+                <span className={cn("w-12 shrink-0 text-xs font-medium", prospect.band === "STRONG" ? "text-good" : "text-muted")}>{SHORT_BAND[prospect.band]}</span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-medium">{prospect.businessName}</span>
+                  <span className="line-clamp-2 block text-xs text-muted">
+                    {[prospect.trade, prospect.town].filter(Boolean).join(" · ")} — {prospect.reason}
+                  </span>
+                </span>
+                <span className="shrink-0 text-xs text-muted">{ACTION_LABEL[prospect.action]}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
       <div className="flex flex-col gap-2 sm:flex-row">
         {funnel.prepared > 0 ? (
           <Link to="/send" search={result?.campaignId ? { campaign: result.campaignId } : {}} className="flex-1">
@@ -506,11 +556,11 @@ function Outcome({ run }: { run: ProspectRunState }) {
             </Button>
           </Link>
         ) : null}
-        {funnel.call > 0 ? (
+        {(summary?.callReady ?? funnel.call) > 0 ? (
           <Link to="/calls" className="flex-1">
             <Button variant="secondary" className="h-12 w-full">
               <Phone />
-              Call list ({funnel.call})
+              Call list ({summary?.callReady ?? funnel.call})
             </Button>
           </Link>
         ) : null}
@@ -523,6 +573,17 @@ function Outcome({ run }: { run: ProspectRunState }) {
         ) : null}
       </div>
     </Card>
+  );
+}
+
+const SHORT_BAND: Record<Band, string> = { STRONG: "Strong", GOOD: "Good", WEAK: "Weak", NONE: "—" };
+
+function Stat({ value, label, tone, muted }: { value: number; label: string; tone?: "good"; muted?: boolean }) {
+  return (
+    <div className="text-center">
+      <p className={cn("font-display text-3xl font-medium tabular", tone === "good" ? "text-good" : muted ? "text-muted" : "")}>{value}</p>
+      <p className="mt-1 text-xs text-muted">{label}</p>
+    </div>
   );
 }
 

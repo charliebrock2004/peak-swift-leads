@@ -180,7 +180,12 @@ export const researchProspects = createServerFn({ method: "POST" })
     if (businessType.length < 2) throw new Error("Enter a business type");
     return { location, businessType, limit, radiusMiles };
   })
-  .handler(async ({ data, context }): Promise<ResearchResult> => {
+  .handler(async ({ data, context }): Promise<ResearchResult> => researchCore(data, context));
+
+export type ResearchInput = { location: string; businessType: string; limit: number; radiusMiles: number };
+
+/** One area's discovery, callable from a background job as well as the server function. */
+export async function researchCore(data: ResearchInput, context: { userId: string }): Promise<ResearchResult> {
     const { sharedChLimiter } = await import("@/lib/sources/ch-limiter.server");
     const found = await discoverBusinesses({ ...data, companiesHouse: { limiter: await sharedChLimiter() } });
     if (!found.ok) return { ok: false, error: found.error };
@@ -239,4 +244,4 @@ export const researchProspects = createServerFn({ method: "POST" })
       // rather than only how many businesses came out of it.
       funnel: found.funnel,
     };
-  });
+}
