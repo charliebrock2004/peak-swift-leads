@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { createLead, computeOpportunity, opportunityBand } from "./leads.ts";
+import { createLead } from "./leads.ts";
+import { scoreProspect } from "./scoring/prospect-score.ts";
+import type { OutreachLead } from "./outreach/types.ts";
 import {
   extractEmails,
   inventingEmailWouldBe,
@@ -121,33 +123,17 @@ describe("email extraction", () => {
   });
 });
 
-describe("opportunity score", () => {
-  it("rates no website + email + phone as high opportunity", () => {
-    const score = computeOpportunity(
-      createLead({
-        website: "",
-        websiteStatus: "No Website Found",
-        email: "info@example.co.uk",
-        phone: "01764 650000",
-        businessStatus: "Active",
-      }),
-    );
-    assert.ok(score >= 70, String(score));
-    assert.equal(opportunityBand(score), "High");
+describe("prospect score (the one model — scoring/prospect-score.ts)", () => {
+  it("a missing website is plausible need, but only a search makes it strong", () => {
+    const unsearched = scoreProspect(createLead({ website: "", websiteStatus: "No Website Found", email: "info@example.co.uk", phone: "01764 650000", businessStatus: "Active" }) as OutreachLead);
+    assert.equal(unsearched.need.reasons[0]!.text, "No website listed — not yet searched");
+    assert.ok(unsearched.need.score < 85);
   });
 
-  it("rates a good existing website as low opportunity", () => {
-    const score = computeOpportunity(
-      createLead({
-        website: "https://monziejoinery.co.uk",
-        websiteStatus: "Proper Website",
-        websiteQuality: "good",
-        websiteScore: 86,
-        phone: "01764 650000",
-      }),
-    );
-    assert.ok(score < 45, String(score));
-    assert.equal(opportunityBand(score), "Low");
+  it("a good existing website is not an opportunity", () => {
+    const score = scoreProspect(createLead({ website: "https://monziejoinery.co.uk", websiteStatus: "Proper Website", websiteQuality: "good", websiteScore: 86, phone: "01764 650000" }) as OutreachLead);
+    assert.ok(score.need.score <= 10, String(score.need.score));
+    assert.equal(score.band, "NONE");
   });
 
   it("never invents an email just because a domain exists", () => {
@@ -155,17 +141,8 @@ describe("opportunity score", () => {
     assert.equal(extractEmails(html).length, 0);
   });
 
-  it("caps opportunity after not interested", () => {
-    const score = computeOpportunity(
-      createLead({
-        website: "",
-        websiteStatus: "No Website Found",
-        email: "info@x.co.uk",
-        phone: "01764 650000",
-        called: "Not Interested",
-        callResult: "Not Interested",
-      }),
-    );
-    assert.ok(score <= 22, String(score));
+  it("stops recommending contact after not interested", () => {
+    const score = scoreProspect(createLead({ website: "", websiteStatus: "No Website Found", email: "info@x.co.uk", phone: "01764 650000", called: "Not Interested", callResult: "Not Interested" }) as OutreachLead);
+    assert.equal(score.action, "SKIP");
   });
 });

@@ -20,7 +20,7 @@ import { Page } from "@/components/app/app-shell";
 import { WithState } from "@/components/app/setup-gate";
 import { sendQueue } from "@/components/app/send-queue";
 import { Badge, Card, ProgressBar, SectionTitle, Stat } from "@/components/app/ui";
-import { decideProspect } from "@/lib/decision";
+import { useScores } from "@/components/app/use-scores";
 import { liveLeads } from "@/lib/leads";
 import { outreachOverview } from "@/lib/outreach/analytics";
 import { callQueue } from "@/lib/outreach/call-queue";
@@ -62,13 +62,14 @@ function Home({ state }: { state: OutreachState }) {
   }, []);
 
   const leads = state.leads as OutreachLead[];
+  const scores = useScores(state);
   const overview = useMemo(() => outreachOverview(state.leads, state.emails), [state.leads, state.emails]);
   const figures = useMemo(() => {
     let good = 0;
     let held = 0;
     for (const lead of leads) {
-      const level = decideProspect(lead).level;
-      if (level === "HOT" || level === "WARM" || level === "CALL") good += 1;
+      const action = scores.get(lead.id)?.action;
+      if (action === "CALL" || action === "EMAIL") good += 1;
       if (context && checkEligibility(lead, context).manualReview) held += 1;
     }
     const emails = state.emails;
@@ -83,7 +84,7 @@ function Home({ state }: { state: OutreachState }) {
       newReplies: emails.filter((email) => email.status === "replied" && (email.replyStage || "new") === "new").length,
       followUps: context ? followUpsDue(leads, emails, state.settings, context).length : 0,
     };
-  }, [leads, state, context]);
+  }, [leads, state, context, scores]);
   const calls = useMemo(() => callQueue(liveLeads(sheet)).today.length, [sheet]);
 
   const attention: Attention[] = [];

@@ -10,15 +10,12 @@
  * The rules are deliberately conservative. Every "no" is a named reason the UI
  * can show, so nothing is ever silently dropped.
  */
-import { computeOpportunity, opportunityBand, type Lead } from "../leads.ts";
+import { scoreProspect } from "../scoring/prospect-score.ts";
 import { emailContactability, type EmailContactability, type VerificationResult } from "../contactability/email.ts";
-import {
-  classifyLegalForm,
-  DEFAULT_CONTACT_RULES,
-  type ContactRules,
-  type LegalFormInput,
-  type LegalFormResult,
-} from "../contactability/legal-form.ts";
+import { DEFAULT_CONTACT_RULES, type ContactRules, type LegalFormResult } from "../contactability/legal-form.ts";
+import { legalFormOf } from "../contactability/lead.ts";
+
+export { legalFormOf, legalInputOf } from "../contactability/lead.ts";
 import type { EmailKind, OutreachLead, OutreachSettings } from "./types.ts";
 
 export const INELIGIBLE_REASONS = [
@@ -34,6 +31,8 @@ export const INELIGIBLE_REASONS = [
   "replied",
   "no-opportunity",
   "low-opportunity",
+  /** The website has not been audited, so there is no measured reason to write. */
+  "unaudited",
   "manual-review",
   "invalid-email",
   /** A sole trader or partnership: an individual subscriber, who needs to have consented. */
@@ -56,8 +55,9 @@ export const REASON_LABELS: Record<IneligibleReason, string> = {
   booked: "Already booked",
   won: "Already a customer",
   replied: "They have replied — over to you",
-  "no-opportunity": "Their website is already good",
+  "no-opportunity": "No measured website opportunity",
   "low-opportunity": "Low opportunity",
+  unaudited: "Website not audited yet",
   "manual-review": "Not confirmed as a company",
   "invalid-email": "Email address does not look valid",
   "individual-subscriber": "Sole trader or partnership — call instead",
@@ -95,38 +95,6 @@ export function looksLikeEmail(value: string): boolean {
 
 export function emailDomain(email: string): string {
   return email.trim().toLowerCase().split("@")[1] ?? "";
-}
-
-/**
- * What the legal-form rules need from a lead: the server's facts when it has
- * them, otherwise what the discovery record itself says (a Companies House
- * lead carries its number in `placeId` and its type in the notes).
- */
-export function legalInputOf(lead: OutreachLead): LegalFormInput {
-  const facts = lead.facts;
-  // Discovery merges a Companies House record into a map listing only when
-  // the entity resolver says they are the same business, and keeps the
-  // register's "Companies House <number> (<type>)" line in the notes.
-  const noted = /Companies House ([A-Z]{0,2}\d{6,8})(?: \(([a-z-]+)\))?/i.exec(lead.notes ?? "");
-  const placeNumber =
-    /^ch:([A-Z0-9]+)$/i.exec(lead.placeId?.trim() ?? "")?.[1]?.toUpperCase() ?? noted?.[1]?.toUpperCase() ?? "";
-  const notedType = noted && noted[1]!.toUpperCase() === placeNumber ? (noted[2] ?? "").toLowerCase() : "";
-  return {
-    businessName: lead.businessName,
-    email: lead.email,
-    companyNumber: facts?.companyNumber || placeNumber,
-    companyType: facts?.companyType || (placeNumber ? notedType : ""),
-    // A Companies House lead was active on the day discovery found it.
-    companyStatus: facts?.companyStatus || (placeNumber ? "active" : ""),
-    companyCheckedAt: facts?.companyCheckedAt || (placeNumber ? lead.foundAt : ""),
-    override: facts?.legalFormOverride ?? "",
-    overrideNote: facts?.legalFormNote ?? "",
-    overrideAt: facts?.legalFormSetAt ?? "",
-  };
-}
-
-export function legalFormOf(lead: OutreachLead, rules: ContactRules = DEFAULT_CONTACT_RULES, now: Date = new Date()): LegalFormResult {
-  return classifyLegalForm(legalInputOf(lead), rules, now);
 }
 
 /**
@@ -169,6 +137,16 @@ export function emptyContext(
 }
 
 /**
+ * The send queue's three bands, from the prospect score's opportunity (need ×
+ * value). Reach is judged by the rules below, so "no way to contact" is
+ * reported as that — never disguised as a low opportunity.
+ */
+export function bandOf(score: { opportunity?: number; priority: number }): "High" | "Medium" | "Low" {
+  const value = score.opportunity ?? score.priority;
+  return value >= 70 ? "High" : value >= 45 ? "Medium" : "Low";
+}
+
+/**
  * May we email this lead?
  *
  * `kind` matters: an initial email is refused once one has been sent, but a
@@ -181,8 +159,11 @@ export function checkEligibility(
   context: EligibilityContext = emptyContext(),
   kind: EmailKind = "initial",
 ): Eligibility {
-  const score = computeOpportunity(lead as Lead);
-  const band = opportunityBand(score);
+  // The one prospect score (scoring/prospect-score.ts) decides opportunity;
+  // the rules below decide permission.
+  const prospect = scoreProspect(lead, { rules: context.rules });
+  const score = prospect.opportunity;
+  const band = bandOf(prospect);
   const reasons: IneligibleReason[] = [];
   const email = lead.email.trim().toLowerCase();
 
@@ -216,8 +197,9 @@ export function checkEligibility(
   if (result === "Won") reasons.push("won");
 
   // A business whose site is already good has nothing honest to offer them.
-  if (lead.websiteQuality === "good") reasons.push("no-opportunity");
-  if (band === "Low" && !context.settings.includeLow) reasons.push("low-opportunity");
+  if (prospect.need.score <= 10) reasons.push("no-opportunity");
+  else if (prospect.blockers.includes("Audit the website")) reasons.push("unaudited");
+  else if (band === "Low" && !context.settings.includeLow) reasons.push("low-opportunity");
 
   // Who the subscriber is. The legal rules only ever add caution: they can
   // hold or refuse a lead, never let through one another rule refused.

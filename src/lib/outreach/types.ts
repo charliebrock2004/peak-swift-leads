@@ -259,6 +259,8 @@ export type OutreachLead = Pick<
 > & {
   /** Stable source id ("ch:SC612222", "osm:node:1"). Optional: older callers omit it. */
   placeId?: string;
+  /** When the email address was found. Optional: older callers omit it. */
+  emailFoundAt?: string;
   /** Server-held facts about the business's registered identity. Absent on browser-only rows. */
   facts?: BusinessFacts;
 };

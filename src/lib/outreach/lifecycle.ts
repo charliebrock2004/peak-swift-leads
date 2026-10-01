@@ -193,13 +193,14 @@ function furthestEmailStage(emails: readonly OutreachEmail[]): LifecycleStage | 
  * explicit call outcome, then the email trail, then the lead's own summary,
  * then — only when nothing else has an opinion — the automated verdict.
  *
- * `decision` is the level from `decideProspect`, passed in rather than computed
- * so this module stays free of the scoring engine and can be tested on its own.
+ * `score` is the recommended action from the prospect score, passed in rather
+ * than computed so this module stays free of the scoring engine and can be
+ * tested on its own.
  */
 export function lifecycleOf(
   lead: Lead | OutreachLead,
   emails: readonly OutreachEmail[] = [],
-  decision?: { level: string; reviewRequired?: boolean },
+  score?: { action: "CALL" | "EMAIL" | "REVIEW" | "SKIP" | "WAIT" },
 ): LifecycleStage {
   if (lead.unsubscribed.trim()) return "UNSUBSCRIBED";
   const outreach = lead.outreachStatus.trim().toLowerCase();
@@ -223,12 +224,11 @@ export function lifecycleOf(
   if (outreach === "sent" || outreach === "followed up") return "SENT";
   if (called) return called;
 
-  if (decision) {
-    if (decision.level === "SKIP") return "SKIPPED";
-    if (decision.level === "CALL") return "CALL";
-    if (decision.reviewRequired) return "REVIEW";
-    if (decision.level === "HOT" || decision.level === "WARM") return "QUALIFIED";
-    if (decision.level === "LOW") return "QUALIFIED";
+  if (score) {
+    if (score.action === "SKIP") return "SKIPPED";
+    if (score.action === "CALL") return "CALL";
+    if (score.action === "REVIEW") return "REVIEW";
+    if (score.action === "EMAIL") return "QUALIFIED";
   }
   return "DISCOVERED";
 }

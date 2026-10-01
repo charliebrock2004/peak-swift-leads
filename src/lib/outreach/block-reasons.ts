@@ -30,7 +30,9 @@ export function blockedSentence(reason: string): string {
     case "replied":
       return "they have replied — answer them from Gmail instead";
     case "no-opportunity":
-      return "their website is already good, so there is nothing honest to offer";
+      return "nothing measured suggests their website needs work, so there is nothing honest to offer";
+    case "unaudited":
+      return "their website has not been audited yet — audit it so the email can point to something real";
     case "low-opportunity":
       return "the opportunity is too low (turn on 'Include low opportunity' to allow it)";
     case "manual-review":

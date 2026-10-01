@@ -1,8 +1,8 @@
 import { cn } from "@/lib/utils";
+import { scoreProspect } from "@/lib/scoring/prospect-score";
+import { bandOf } from "@/lib/outreach/eligibility";
 import {
   WEBSITE_QUALITY_LABEL,
-  computeOpportunity,
-  opportunityBand,
   type Lead,
   type WebsiteQuality,
 } from "@/lib/leads";
@@ -42,8 +42,8 @@ export function WebsiteQualityBadge({
 }
 
 export function OpportunityBadge({ lead, className }: { lead: Lead; className?: string }) {
-  const score = computeOpportunity(lead);
-  const band = opportunityBand(score);
+  const score = scoreProspect(lead).priority;
+  const band = bandOf({ priority: score });
   return (
     <span
       title="Website opportunity — rules-based, not an AI prediction"

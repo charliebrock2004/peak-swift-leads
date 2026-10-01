@@ -167,7 +167,7 @@ describe("lifecycleOf", () => {
 
   it("puts an unsubscribe above absolutely everything else", () => {
     const l = lead({ unsubscribed: "2026-01-01", callResult: "Won", outreachStatus: "Replied" });
-    assert.equal(lifecycleOf(l, [mail({ status: "replied" })], { level: "HOT" }), "UNSUBSCRIBED");
+    assert.equal(lifecycleOf(l, [mail({ status: "replied" })], { action: "EMAIL" }), "UNSUBSCRIBED");
     assert.equal(lifecycleOf(lead({ outreachStatus: "Unsubscribed" })), "UNSUBSCRIBED");
   });
 
@@ -211,16 +211,15 @@ describe("lifecycleOf", () => {
   });
 
   it("uses the automated verdict only when nothing else has an opinion", () => {
-    assert.equal(lifecycleOf(lead(), [], { level: "HOT" }), "QUALIFIED");
-    assert.equal(lifecycleOf(lead(), [], { level: "WARM" }), "QUALIFIED");
-    assert.equal(lifecycleOf(lead(), [], { level: "CALL" }), "CALL");
-    assert.equal(lifecycleOf(lead(), [], { level: "SKIP" }), "SKIPPED");
-    assert.equal(lifecycleOf(lead(), [], { level: "HOT", reviewRequired: true }), "REVIEW");
+    assert.equal(lifecycleOf(lead(), [], { action: "EMAIL" }), "QUALIFIED");
+    assert.equal(lifecycleOf(lead(), [], { action: "CALL" }), "CALL");
+    assert.equal(lifecycleOf(lead(), [], { action: "SKIP" }), "SKIPPED");
+    assert.equal(lifecycleOf(lead(), [], { action: "REVIEW" }), "REVIEW");
   });
 
   it("never lets a verdict override a real contact record", () => {
-    assert.equal(lifecycleOf(lead(), [mail({ status: "sent" })], { level: "SKIP" }), "SENT");
-    assert.equal(lifecycleOf(lead({ unsubscribed: "x" }), [], { level: "HOT" }), "UNSUBSCRIBED");
+    assert.equal(lifecycleOf(lead(), [mail({ status: "sent" })], { action: "SKIP" }), "SENT");
+    assert.equal(lifecycleOf(lead({ unsubscribed: "x" }), [], { action: "EMAIL" }), "UNSUBSCRIBED");
   });
 
   it("only ever returns a stage that exists", () => {
@@ -283,7 +282,7 @@ describe("the lifecycle agrees with the real eligibility gate", () => {
       true,
       eligibility.eligible ? "" : eligibility.reasons.join(", "),
     );
-    assert.ok(stageAllowsSending(lifecycleOf(l, [], { level: "HOT" })));
+    assert.ok(stageAllowsSending(lifecycleOf(l, [], { action: "EMAIL" })));
   });
 
   it("refuses an unsubscribed business at both locks", () => {
@@ -338,7 +337,7 @@ describe("the lifecycle agrees with the real eligibility gate", () => {
         `eligibility should refuse ${JSON.stringify(partial)}`,
       );
       assert.equal(
-        stageAllowsSending(lifecycleOf(l, [], { level: "HOT" })),
+        stageAllowsSending(lifecycleOf(l, [], { action: "EMAIL" })),
         false,
         `the lifecycle should also refuse ${JSON.stringify(partial)}`,
       );

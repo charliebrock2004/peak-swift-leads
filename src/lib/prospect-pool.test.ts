@@ -7,7 +7,6 @@ import {
   createProspectPool,
   funnelReconciles,
   rankProspects,
-  scoreProspect,
   sourceKeyOf,
   stopReason,
 } from "./prospect-pool.ts";
@@ -312,35 +311,20 @@ describe("ranking prefers contactable businesses without excluding anyone", () =
   });
   const noWebsite = prospect({ businessName: "Bridgend Carpentry", town: "Perth", phone: "01738 555444" });
 
-  it("ranks a public email above a site above no site", () => {
-    const ranked = rankProspects([noWebsite, socialOnly, withSite, withEmail], {
+  it("ranks by need: social-only and no-website businesses before ones that already have a site", () => {
+    const ranked = rankProspects([withSite, withEmail, socialOnly, noWebsite], {
       tradeTerms: ["joiner"],
       townTerms: ["Perth"],
     });
-    assert.deepEqual(
-      ranked.map((item) => item.businessName),
-      ["Tay Joinery", "Almond Woodwork", "Craigie Joiners", "Bridgend Carpentry"],
-    );
+    const order = ranked.map((item) => item.businessName);
+    assert.ok(order.indexOf("Craigie Joiners") < order.indexOf("Almond Woodwork"), order.join(", "));
+    assert.ok(order.indexOf("Bridgend Carpentry") < order.indexOf("Almond Woodwork"), order.join(", "));
   });
 
   it("keeps businesses with no website — they are the call list", () => {
     const { prospects } = buildProspectPool([noWebsite, socialOnly, withSite, withEmail], { target: 60 });
     assert.equal(prospects.length, 4);
     assert.ok(prospects.some((item) => item.businessName === "Bridgend Carpentry"));
-  });
-
-  it("rewards a site whose domain matches the business name", () => {
-    const matching = prospect({
-      businessName: "Strathearn Joinery",
-      website: "https://strathearnjoinery.co.uk",
-      websiteStatus: "Proper Website",
-    });
-    const borrowed = prospect({
-      businessName: "Strathearn Joinery",
-      website: "https://someother-host.co.uk",
-      websiteStatus: "Proper Website",
-    });
-    assert.ok(scoreProspect(matching) > scoreProspect(borrowed));
   });
 
   it("never invents an email while ranking", () => {
@@ -351,11 +335,12 @@ describe("ranking prefers contactable businesses without excluding anyone", () =
   });
 
   it("counts websites and emails in the delivered set, not the raw set", () => {
+    // Need-first ranking delivers the two without an independent site.
     const { diagnostics } = buildProspectPool([noWebsite, socialOnly, withSite, withEmail], { target: 2 });
     assert.equal(diagnostics.targetAchieved, 2);
-    assert.equal(diagnostics.withWebsite, 2);
-    assert.equal(diagnostics.withoutWebsite, 0);
-    assert.equal(diagnostics.withListedEmail, 1);
+    assert.equal(diagnostics.withWebsite, 0);
+    assert.equal(diagnostics.withoutWebsite, 2);
+    assert.equal(diagnostics.withListedEmail, 0);
   });
 });
 

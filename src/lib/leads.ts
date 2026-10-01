@@ -75,7 +75,7 @@ export type Lead = {
   emailSource: string;
   emailConfidence: EmailConfidence;
   emailFoundAt: string;
-  /** Snapshot of computeOpportunity. Display always recomputes. */
+  /** Snapshot of the prospect score's priority (scoring/prospect-score.ts). Display always recomputes. */
   opportunityScore: number | "";
   /** Where this lead came from: research, spreadsheet import, added by hand. */
   source: string;
@@ -387,90 +387,6 @@ export function computePriority(
   return "COLD";
 }
 
-type OpportunityInput = Pick<
-  Lead,
-  | "website"
-  | "websiteStatus"
-  | "websiteQuality"
-  | "email"
-  | "phone"
-  | "businessStatus"
-  | "reviews"
-  | "rating"
-  | "called"
-  | "callResult"
->;
-
-export type OpportunityPoint = { label: string; points: number };
-
-/**
- * The opportunity score, with every point accounted for.
- *
- * `computeOpportunity` is derived from this, so the number on a card and the
- * reasons listed under it can never disagree: each line is a rule that fired
- * and what it added or took away.
- */
-export function explainOpportunity(lead: OpportunityInput): { score: number; points: OpportunityPoint[]; capped: string } {
-  const points: OpportunityPoint[] = [{ label: "Local business", points: 25 }];
-  const status = resolveWebsiteStatus(lead);
-  const quality = lead.websiteQuality;
-
-  if (status === "No Website Found") points.push({ label: "No independent website", points: 38 });
-  else if (status === "Social Only") points.push({ label: "Only a social media page", points: 28 });
-  else if (status === "Directory Only") points.push({ label: "Only directory listings", points: 24 });
-  else if (quality === "poor") points.push({ label: "Website scored poorly", points: 30 });
-  else if (quality === "improve" || status === "Basic Website") points.push({ label: "Basic website that could do more", points: 18 });
-  else if (quality === "good") points.push({ label: "Already has a good website", points: -22 });
-  else if (status === "Proper Website") points.push({ label: "Already has a website", points: -15 });
-  else if (status === "Unclear") points.push({ label: "Website presence unclear", points: 10 });
-
-  if (lead.email.trim()) points.push({ label: "Public email address", points: 16 });
-  if ((lead.phone ?? "").replace(/\D/g, "").length >= 10) points.push({ label: "Phone number listed", points: 8 });
-  if (/active/i.test(lead.businessStatus ?? "")) points.push({ label: "Actively trading", points: 6 });
-
-  const reviews = typeof lead.reviews === "number" ? lead.reviews : 0;
-  const rating = typeof lead.rating === "number" ? lead.rating : 0;
-  if (reviews >= 20 && rating >= 4.5) points.push({ label: `${reviews} reviews at ${rating}`, points: 10 });
-  else if (reviews >= 8) points.push({ label: `${reviews} reviews`, points: 4 });
-
-  let score = points.reduce((sum, point) => sum + point.points, 0);
-  let capped = "";
-  if (lead.callResult === "Not Interested" || lead.called === "Not Interested") {
-    if (score > 22) capped = "Capped: they said not interested";
-    score = Math.min(score, 22);
-  }
-  if (lead.callResult === "Booked") {
-    if (score > 18) capped = "Capped: already booked";
-    score = Math.min(score, 18);
-  }
-  if (lead.callResult === "Wrong Number") {
-    if (score > 15) capped = "Capped: wrong number";
-    score = Math.min(score, 15);
-  }
-  return { score: Math.max(0, Math.min(100, Math.round(score))), points, capped };
-}
-
-/**
- * Rules-based website opportunity, 0–100. Not an AI prediction.
- * No website / poor site / public email push it up; a good existing site pulls it down.
- */
-export function computeOpportunity(lead: OpportunityInput): number {
-  return explainOpportunity(lead).score;
-}
-
-/** The score in words, for the top of a prospect card. */
-export function opportunityLabel(score: number): string {
-  if (score >= 85) return "Excellent opportunity";
-  if (score >= 70) return "Strong opportunity";
-  if (score >= 45) return "Good opportunity";
-  return "Low opportunity";
-}
-
-export function opportunityBand(score: number): "High" | "Medium" | "Low" {
-  if (score >= 70) return "High";
-  if (score >= 45) return "Medium";
-  return "Low";
-}
 
 export function priorityReason(
   lead: Pick<Lead, "website" | "reviews" | "rating" | "websiteStatus" | "phone">,
@@ -719,7 +635,7 @@ export function leadsToCsv(leads: Lead[]): string {
       lead.businessStatus ?? "",
       lead.mapsLink,
       computePriority(lead),
-      computeOpportunity(lead),
+      lead.opportunityScore,
       priorityReason(lead),
       lead.called,
       lead.callResult,
@@ -785,7 +701,7 @@ function sortValue(lead: Lead, key: SortKey): string | number {
   if (key === "rating") return typeof lead.rating === "number" ? lead.rating : -1;
   if (key === "reviews") return typeof lead.reviews === "number" ? lead.reviews : -1;
   if (key === "websiteScore") return typeof lead.websiteScore === "number" ? lead.websiteScore : -1;
-  if (key === "opportunityScore") return computeOpportunity(lead);
+  if (key === "opportunityScore") return typeof lead.opportunityScore === "number" ? lead.opportunityScore : -1;
   if (key === "website") return hasWebsite(lead.website) ? lead.website.toLowerCase() : "";
   if (key === "websiteStatus") return resolveWebsiteStatus(lead);
   if (key === "websiteQuality") return lead.websiteQuality || "";

@@ -192,7 +192,7 @@ describe("what reaches email discovery", () => {
     assert.deepEqual(prospects[0], source);
   });
 
-  it("puts businesses with real sites ahead of those without, so they are crawled first", () => {
+  it("puts businesses more likely to need a website first (measured need, not ease of enrichment)", () => {
     const { prospects } = buildProspectPool(
       [
         prospect({ businessName: "No Site Joinery", phone: "01738 111111" }),
@@ -200,8 +200,8 @@ describe("what reaches email discovery", () => {
       ],
       { target: 60, tradeTerms: ["joiner"] },
     );
-    assert.equal(prospects[0]?.businessName, "Real Site Joinery");
-    assert.equal(prospects[1]?.businessName, "No Site Joinery");
+    assert.equal(prospects[0]?.businessName, "No Site Joinery");
+    assert.equal(prospects[1]?.businessName, "Real Site Joinery");
   });
 });
 

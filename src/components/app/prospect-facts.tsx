@@ -6,41 +6,48 @@
  */
 import { CircleCheck, ExternalLink, Globe, Mail, Phone, Star } from "lucide-react";
 import { Badge, ScoreBadge } from "./ui";
-import { explainOpportunity, opportunityLabel, resolveWebsiteStatus, websiteHref, type Lead } from "@/lib/leads";
+import { resolveWebsiteStatus, websiteHref, type Lead } from "@/lib/leads";
 import { websiteTicks, type LeadEvidence } from "@/lib/outreach/evidence-record";
 import type { OutreachLead } from "@/lib/outreach/types";
+import { dateLabel } from "@/lib/audit/findings";
+import { ACTION_LABEL, BAND_LABEL, scoreProspect, type ProspectScore } from "@/lib/scoring/prospect-score";
 import { websiteLine } from "./format";
 
-export function ScoreHeader({ lead }: { lead: OutreachLead }) {
-  const { score } = explainOpportunity(lead as Lead);
+/** The band, priority and recommended action — the one score, nothing else. */
+export function ScoreHeader({ lead, score }: { lead: OutreachLead; score?: ProspectScore }) {
+  const scored = score ?? scoreProspect(lead);
   return (
     <div className="flex items-center gap-2">
-      <ScoreBadge score={score} />
-      <span className="hidden text-xs text-muted sm:inline">{opportunityLabel(score)}</span>
+      <ScoreBadge score={scored.priority} />
+      <span className="hidden text-xs text-muted sm:inline">
+        {BAND_LABEL[scored.band]} · {ACTION_LABEL[scored.action]}
+      </span>
     </div>
   );
 }
 
-export function WhyThisProspect({ lead }: { lead: OutreachLead }) {
-  const { points, capped } = explainOpportunity(lead as Lead);
+/**
+ * Why this business is (or is not) worth contacting: the strongest reasons on
+ * each axis, each with where and when it was observed.
+ */
+export function WhyThisProspect({ lead, score, limit = 5 }: { lead: OutreachLead; score?: ProspectScore; limit?: number }) {
+  const scored = score ?? scoreProspect(lead);
   return (
-    <ul className="flex flex-wrap gap-1.5">
-      {points
-        .filter((point) => point.points !== 0 && point.label !== "Local business")
-        .map((point) => (
-          <li key={point.label}>
-            <Badge tone={point.points > 0 ? "neutral" : "warn"}>
-              {point.label}
-              <span className="text-subtle tabular">{point.points > 0 ? `+${point.points}` : point.points}</span>
-            </Badge>
+    <div className="flex min-w-0 flex-col gap-1">
+      <ul className="flex min-w-0 flex-col gap-0.5 text-xs">
+        {scored.why.slice(0, limit).map((reason) => (
+          <li key={`${reason.axis}-${reason.text}`} className={reason.freshness === "stale" ? "text-warn" : "text-muted"}>
+            <span className="text-fg">{reason.text}</span>
+            <span className="text-subtle">
+              {" "}
+              · {reason.source}
+              {reason.at ? ` · ${dateLabel(reason.at)}` : ""}
+            </span>
           </li>
         ))}
-      {capped ? (
-        <li>
-          <Badge tone="warn">{capped}</Badge>
-        </li>
-      ) : null}
-    </ul>
+      </ul>
+      {scored.blockers.length ? <p className="text-xs text-warn">Before contacting: {scored.blockers.join(" · ")}</p> : null}
+    </div>
   );
 }
 

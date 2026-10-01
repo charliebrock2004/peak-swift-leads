@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { createLead, type Lead } from "../leads.ts";
-import { matchesProspectFilter, PROSPECT_FILTERS } from "../decision.ts";
-import { checkEligibility, emptyContext } from "./eligibility.ts";
-import type { OutreachEmail, OutreachLead } from "./types.ts";
+import type { OutreachEmail } from "./types.ts";
 import {
   ANY,
   NO_REFINEMENT,
@@ -31,20 +29,6 @@ function mail(partial: Partial<OutreachEmail> = {}): OutreachEmail {
 }
 
 const NO_CONTEXT = { stage: "DISCOVERED" as const, campaigns: new Set<string>() };
-
-describe("the existing chips keep working", () => {
-  it("still recognises every filter it recognised before", () => {
-    for (const filter of PROSPECT_FILTERS) {
-      const l = lead() as OutreachLead;
-      const verdict = matchesProspectFilter(l, checkEligibility(l, emptyContext()), filter);
-      assert.equal(typeof verdict, "boolean", `${filter} should still return a verdict`);
-    }
-    assert.ok(PROSPECT_FILTERS.includes("hot"));
-    assert.ok(PROSPECT_FILTERS.includes("warm"));
-    assert.ok(PROSPECT_FILTERS.includes("call"));
-    assert.ok(PROSPECT_FILTERS.includes("skipped"));
-  });
-});
 
 describe("matchesRefinement", () => {
   it("lets everything through when nothing is set", () => {
@@ -169,7 +153,7 @@ describe("stagesByLead", () => {
   });
 
   it("passes the automated verdict through when one is given", () => {
-    const stages = stagesByLead([lead({ id: "a" })], [], new Map([["a", { level: "CALL" }]]));
+    const stages = stagesByLead([lead({ id: "a" })], [], new Map([["a", { action: "CALL" as const }]]));
     assert.equal(stages.get("a"), "CALL");
   });
 });

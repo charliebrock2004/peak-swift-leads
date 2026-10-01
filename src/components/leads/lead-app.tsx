@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { scoreProspect } from "@/lib/scoring/prospect-score";
 import { Link } from "@tanstack/react-router";
 import { Download, FileUp, Loader2, Mail, Plus, Search, SlidersHorizontal } from "lucide-react";
 import { toast } from "sonner";
@@ -23,7 +24,6 @@ import {
   WEBSITE_SIGNAL_OPTIONS,
   WEBSITE_STATUS_OPTIONS,
   compareLeads,
-  computeOpportunity,
   computePriority,
   downloadCsv,
   findDuplicate,
@@ -140,7 +140,7 @@ export function LeadApp() {
         if (qualityFilter !== "ALL" && lead.websiteQuality !== qualityFilter) return false;
         if (emailFilter === "found" && !lead.email.trim()) return false;
         if (emailFilter === "none" && lead.email.trim()) return false;
-        if (highOpportunity && computeOpportunity(lead) < 70) return false;
+        if (highOpportunity && scoreProspect(lead).priority < 70) return false;
         if (dueOnly && !isFollowUpDue(lead)) return false;
         if (!needle) return true;
         return [lead.businessName, lead.trade, lead.town, lead.phone, lead.notes, lead.website, lead.email]

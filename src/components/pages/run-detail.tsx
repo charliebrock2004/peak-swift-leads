@@ -7,8 +7,7 @@ import { WithState } from "@/components/app/setup-gate";
 import { Badge, Card, LoadingPage, Notice, PageHeader, ScoreBadge, SectionTitle, Stat } from "@/components/app/ui";
 import { FunnelDetail } from "@/components/pages/find";
 import { statusTone } from "@/components/app/format";
-import { decideProspect } from "@/lib/decision";
-import { computeOpportunity, type Lead } from "@/lib/leads";
+import { scoreProspect } from "@/lib/scoring/prospect-score";
 import { lifecycleOf, STAGE_LABELS } from "@/lib/outreach/lifecycle";
 import { funnelHeadline, parseFunnel, reconcileFunnel } from "@/lib/outreach/run-funnel";
 import { runDuration } from "@/lib/outreach/runs";
@@ -125,11 +124,12 @@ function RunDetail() {
         ) : (
           <Card as="div" className="divide-y divide-border">
             {detail.leads
-              .map((lead) => ({ lead, score: computeOpportunity(lead as Lead) }))
-              .sort((a, b) => b.score - a.score)
-              .map(({ lead, score }) => {
+              .map((lead) => ({ lead, scored: scoreProspect(lead) }))
+              .sort((a, b) => b.scored.priority - a.scored.priority)
+              .map(({ lead, scored }) => {
+                const score = scored.priority;
                 const emails = detail.emails.filter((email) => email.leadId === lead.id);
-                const stage = lifecycleOf(lead, emails, decideProspect(lead));
+                const stage = lifecycleOf(lead, emails, scored);
                 return (
                   <div key={lead.id} className="flex items-center gap-3 px-4 py-3">
                     <div className="min-w-0 flex-1">

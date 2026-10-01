@@ -11,7 +11,9 @@
  * actually contains — real towns, real trades — rather than a fixed vocabulary
  * that would go stale the first time a new trade is searched.
  */
-import { computeOpportunity, opportunityBand, resolveWebsiteStatus, type Lead } from "../leads.ts";
+import { resolveWebsiteStatus, type Lead } from "../leads.ts";
+import { scoreProspect } from "../scoring/prospect-score.ts";
+import { bandOf } from "./eligibility.ts";
 import { lifecycleOf, type LifecycleStage } from "./lifecycle.ts";
 import type { OutreachEmail, OutreachLead } from "./types.ts";
 
@@ -73,7 +75,7 @@ export function matchesRefinement(
   if (refinement.stage !== ANY && context.stage !== refinement.stage) return false;
   if (refinement.town !== ANY && lead.town.trim() !== refinement.town) return false;
   if (refinement.trade !== ANY && lead.trade.trim() !== refinement.trade) return false;
-  if (refinement.band !== ANY && opportunityBand(computeOpportunity(lead as Lead)) !== refinement.band) {
+  if (refinement.band !== ANY && bandOf(scoreProspect(lead)) !== refinement.band) {
     return false;
   }
   if (refinement.websiteStatus !== ANY && resolveWebsiteStatus(lead) !== refinement.websiteStatus) {
@@ -136,7 +138,7 @@ export function campaignsByLead(
 export function stagesByLead(
   leads: readonly (Lead | OutreachLead)[],
   emails: readonly OutreachEmail[],
-  decisions?: ReadonlyMap<string, { level: string; reviewRequired?: boolean }>,
+  decisions?: ReadonlyMap<string, { action: "CALL" | "EMAIL" | "REVIEW" | "SKIP" | "WAIT" }>,
 ): Map<string, LifecycleStage> {
   const byLead = new Map<string, OutreachEmail[]>();
   for (const email of emails) {

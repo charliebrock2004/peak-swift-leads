@@ -1,7 +1,9 @@
 import { DISCOVERY_SAFETY } from "../discovery-limits.ts";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { computeOpportunity, createLead, type Lead } from "../leads.ts";
+import { createLead, type Lead } from "../leads.ts";
+import { scoreProspect } from "../scoring/prospect-score.ts";
+import { factsWith, searchedNoWebsite } from "../test-support/facts.ts";
 import {
   appendLog,
   appendSkips,
@@ -320,12 +322,12 @@ describe("a search that turns up nothing contactable", () => {
   });
 
   it("reports the second reason too, instead of hiding it behind the first", () => {
-    // The Companies House rows are Low opportunity AS WELL as having no email.
-    // Showing only the first reason sends you looking in the wrong place.
+    // A Companies House row with no website on record is plausible need, so
+    // its only reason is the missing address (and no phone to ring instead).
     const plan = planTargets(stirling, context(), 30);
     const companiesHouse = plan.skipped.find((s) => s.businessName === "Stirling Joinery Services Ltd");
     assert.ok(companiesHouse);
-    assert.deepEqual(companiesHouse.reasons, ["No public email found", "Low opportunity"]);
+    assert.deepEqual(companiesHouse.reasons, ["No public email found"]);
     // And a hold that checkEligibility short-circuited past is still reported:
     // a good website already AND not confirmed as a company.
     const unconfirmed = planTargets(
@@ -333,7 +335,7 @@ describe("a search that turns up nothing contactable", () => {
       context(),
       10,
     ).skipped[0];
-    assert.ok(unconfirmed.reasons.includes("Their website is already good"), unconfirmed.reasons.join(", "));
+    assert.ok(unconfirmed.reasons.includes("No measured website opportunity"), unconfirmed.reasons.join(", "));
     assert.ok(unconfirmed.reasons.includes("Not confirmed as a company"), unconfirmed.reasons.join(", "));
   });
 
@@ -343,12 +345,18 @@ describe("a search that turns up nothing contactable", () => {
     assert.ok(SKIP_ADVICE[reason], `missing advice for ${reason}`);
   });
 
-  it("qualifies the one business that has a real, scrapeable opportunity", () => {
-    // What the email lookup can actually achieve: an address from the one site
-    // it could fetch. Nothing else about the eight changes.
+  it("qualifies the one business that has a real, measured opportunity", () => {
+    // An address from the one site it could fetch, and an audit of that site
+    // that found something worth raising. Nothing else about the eight changes.
     const enriched = stirling.map((lead) =>
       lead.id === "osm-4"
-        ? { ...lead, email: "info@boa.co.uk", emailSource: "Business contact page", emailConfidence: "HIGH" as const }
+        ? {
+            ...lead,
+            email: "info@boa.co.uk",
+            emailSource: "Business contact page",
+            emailConfidence: "HIGH" as const,
+            facts: factsWith({ audit: { id: "a", status: "ok" as const, httpStatus: 200, url: "https://boa.co.uk", finishedAt: new Date().toISOString(), opportunity: "moderate" as const, points: 12, keyFindings: [] } }),
+          }
         : lead,
     );
     const plan = planTargets(enriched, context(), 30);
@@ -371,7 +379,7 @@ describe("a search that turns up nothing contactable", () => {
     const plan = planTargets(enriched, context(), 30);
     assert.equal(plan.leadIds.includes("osm-5"), false);
     const row = plan.skipped.find((s) => s.businessName === "Cambusbarron Woodcraft Ltd");
-    assert.ok(row?.reasons.includes("Their website is already good"));
+    assert.ok(row?.reasons.includes("No measured website opportunity"));
   });
 });
 
@@ -449,8 +457,8 @@ describe("keeping both halves of the qualify step", () => {
       businessStatus: "Active",
       phone: "01786 450010",
     }) as OutreachLead;
-    const withoutQuality = computeOpportunity(base as Lead);
-    const withQuality = computeOpportunity({ ...base, websiteQuality: "poor" } as Lead);
+    const withoutQuality = scoreProspect(base).need.score;
+    const withQuality = scoreProspect({ ...base, websiteQuality: "poor" }).need.score;
     assert.ok(
       withQuality > withoutQuality,
       `losing the website patch drops the score from ${withQuality} to ${withoutQuality}`,
@@ -502,7 +510,7 @@ describe("businesses worth ringing instead", () => {
   }
 
   it("keeps a strong prospect that simply has no published address", () => {
-    const plan = planTargets([noEmail({ id: "a" })], context(), 10);
+    const plan = planTargets([{ ...noEmail({ id: "a" }), facts: factsWith({ websiteEvidence: searchedNoWebsite() }) }], context(), 10);
     assert.deepEqual(plan.leadIds, [], "it is still not emailed");
     assert.equal(plan.ringing.length, 1);
     assert.equal(plan.ringing[0].businessName, "Raploch Joinery Ltd");
@@ -585,13 +593,15 @@ describe("businesses worth ringing instead", () => {
   });
 
   it("puts the best opportunity at the top of the call list", () => {
-    const strong = noEmail({ id: "strong", websiteStatus: "No Website Found", phone: "01786 1" });
+    // Measured need first: a search found no website for "strong"; "weaker"
+    // has only a social page on record and nobody has searched.
+    const strong = { ...noEmail({ id: "strong", websiteStatus: "No Website Found", phone: "01786 450101" }), facts: factsWith({ websiteEvidence: searchedNoWebsite() }) };
     const weaker = noEmail({
       id: "weaker",
       businessName: "Cornton Carpentry Ltd",
-      website: "https://cornton.test",
+      website: "https://facebook.com/cornton",
       websiteStatus: "Social Only",
-      phone: "01786 2",
+      phone: "01786 450102",
     });
     const plan = planTargets([weaker, strong], context(), 10);
     assert.equal(plan.ringing[0].id, "strong");

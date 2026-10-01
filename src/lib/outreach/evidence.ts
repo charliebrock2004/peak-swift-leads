@@ -13,7 +13,7 @@
  * from.
  */
 import { websiteVerificationOf } from "../audit/website-state.ts";
-import { computeOpportunity, opportunityBand, type Lead } from "../leads.ts";
+import { scoreProspect, BAND_LABEL } from "../scoring/prospect-score.ts";
 import type { OutreachLead } from "./types.ts";
 
 /** How much a piece of evidence earns its place in a short email. */
@@ -198,7 +198,7 @@ export function evidenceFacts(lead: OutreachLead): string[] {
   for (const item of strongestEvidence(gatherEvidence(lead))) {
     facts.push(`Observed (${item.source}): ${item.text}`);
   }
-  const score = computeOpportunity(lead as Lead);
-  facts.push(`Opportunity score: ${score} (${opportunityBand(score)})`);
+  const scored = scoreProspect(lead);
+  facts.push(`Prospect score: ${scored.priority} (${BAND_LABEL[scored.band]})`);
   return facts;
 }

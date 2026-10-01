@@ -29,5 +29,5 @@ export {
 export { researchProspects } from "../research.ts";
 export { checkLeadWebsite, findLeadEmail } from "../qualify-server.ts";
 export { checkEligibility, emptyContext } from "./eligibility.ts";
-export { describeBottleneck, tallyDecisions, decideProspect } from "../decision.ts";
+export { describeBottleneck, tallyScores, scoreProspect } from "../scoring/prospect-score.ts";
 export { assessHealth } from "./health.ts";

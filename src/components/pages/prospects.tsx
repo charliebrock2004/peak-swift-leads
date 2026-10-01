@@ -9,8 +9,9 @@ import { Page } from "@/components/app/app-shell";
 import { WithState } from "@/components/app/setup-gate";
 import { Badge, Card, EmptyState, PageHeader, ScoreBadge, Segmented } from "@/components/app/ui";
 
-import { decideProspect } from "@/lib/decision";
-import { computeOpportunity, type Lead } from "@/lib/leads";
+import { BAND_LABEL, ACTION_LABEL } from "@/lib/scoring/prospect-score";
+import { useScores } from "@/components/app/use-scores";
+import { WhyThisProspect } from "@/components/app/prospect-facts";
 import { checkEligibility, isWorthRinging } from "@/lib/outreach/eligibility";
 import { lifecycleOf, STAGE_LABELS } from "@/lib/outreach/lifecycle";
 import { blockedSentence } from "@/lib/outreach/block-reasons";
@@ -37,6 +38,7 @@ export function ProspectsPage() {
 
 function Prospects({ state }: { state: OutreachState }) {
   const { context, reload } = useAppData();
+  const scores = useScores(state);
   const search = useSearch({ from: "/_app/prospects" });
   const navigate = useNavigate();
   const [filter, setFilter] = useState<Filter>(
@@ -95,14 +97,14 @@ function Prospects({ state }: { state: OutreachState }) {
       .filter((lead) => !members || members.has(lead.id))
       .map((lead) => {
         const eligibility = context ? checkEligibility(lead, context) : null;
-        const decision = decideProspect(lead);
+        const scored = scores.get(lead.id)!;
         const emails = emailsByLead.get(lead.id) ?? [];
-        const stage = lifecycleOf(lead, emails, decision);
+        const stage = lifecycleOf(lead, emails, scored);
         const hasDraft = emails.some((email) => ["draft", "approved", "queued"].includes(email.status));
-        return { lead, eligibility, stage, score: computeOpportunity(lead as Lead), hasDraft };
+        return { lead, eligibility, stage, scored, score: scored.priority, hasDraft };
       })
       .sort((a, b) => b.score - a.score);
-  }, [state, context, campaign]);
+  }, [state, context, campaign, scores]);
 
   const matches = (row: (typeof rows)[number], which: Filter): boolean => {
     const eligible = row.eligibility?.eligible ?? false;
@@ -319,6 +321,15 @@ function Prospects({ state }: { state: OutreachState }) {
                   <p className="mt-0.5 truncate text-sm text-muted">
                     {[row.lead.trade, row.lead.town].filter(Boolean).join(" · ")} · {websiteLine(row.lead)}
                   </p>
+                  {row.scored && !["SENT", "REPLIED", "INTERESTED", "BOOKED", "WON", "UNSUBSCRIBED"].includes(row.stage) ? (
+                    <div className="mt-1.5 flex flex-col gap-1">
+                      <p className="text-xs">
+                        <span className="font-medium">{BAND_LABEL[row.scored.band]}</span>
+                        <span className="text-muted"> · {ACTION_LABEL[row.scored.action]} — {row.scored.actionReason}</span>
+                      </p>
+                      {row.scored.action !== "SKIP" ? <WhyThisProspect lead={row.lead} score={row.scored} limit={3} /> : null}
+                    </div>
+                  ) : null}
                   <p className="mt-0.5 flex flex-wrap items-center gap-2 text-xs">
                     {row.lead.facts?.audit && row.lead.facts.audit.opportunity !== "unmeasured" ? (
                       <Badge tone={row.lead.facts.audit.opportunity === "strong" ? "good" : "neutral"}>
@@ -337,7 +348,7 @@ function Prospects({ state }: { state: OutreachState }) {
                   <p className="mt-0.5 truncate text-xs text-subtle">
                     {row.lead.email ? `${row.lead.email} (${row.lead.emailConfidence || "unverified"})` : row.lead.phone ? `No public email · ${row.lead.phone}` : "No public email or phone"}
                   </p>
-                  {reason && !row.hasDraft && !["SENT", "REPLIED", "INTERESTED", "BOOKED", "WON"].includes(row.stage) ? (
+                  {reason && !row.hasDraft && ["ready", "email", "manual-review"].includes(filter) && !["SENT", "REPLIED", "INTERESTED", "BOOKED", "WON"].includes(row.stage) ? (
                     <p className="mt-0.5 text-xs text-warn">Not emailable — {reason}</p>
                   ) : null}
                   {row.eligibility?.manualReview ? (

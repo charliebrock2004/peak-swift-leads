@@ -9,8 +9,8 @@
  * Nobody who said no, asked not to be contacted, was booked or won, or gave a
  * wrong number is ever on it. Pure and unit-tested.
  */
-import { computeOpportunity, isFollowUpDue, todayIso, type Lead } from "../leads.ts";
-import { decideProspect } from "../decision.ts";
+import { isFollowUpDue, todayIso, type Lead } from "../leads.ts";
+import { scoreProspect } from "../scoring/prospect-score.ts";
 
 export type CallItem = {
   lead: Lead;
@@ -45,7 +45,8 @@ export function callQueue(leads: readonly Lead[], today: string = todayIso()): {
   const fresh: CallItem[] = [];
   for (const lead of leads) {
     if (!callable(lead)) continue;
-    const score = computeOpportunity(lead);
+    const scored = scoreProspect(lead);
+    const score = scored.priority;
     if (lead.followUpDate) {
       const item: CallItem = { lead, kind: "follow-up", reason: followUpReason(lead), score, due: lead.followUpDate };
       if (isFollowUpDue(lead) && lead.followUpDate <= today) due.push(item);
@@ -53,12 +54,12 @@ export function callQueue(leads: readonly Lead[], today: string = todayIso()): {
       continue;
     }
     if (lead.called !== "Not Called") continue;
-    const decision = decideProspect(lead);
-    if (decision.level !== "CALL") continue;
+    if (scored.action !== "CALL") continue;
+    const why = scored.need.reasons[0]?.text;
     fresh.push({
       lead,
       kind: "prospect",
-      reason: decision.reasons[0] ? `${decision.reasons[0].replace(/\.$/, "")} — no public email` : "Good prospect — no public email",
+      reason: why ? `${why} — ${scored.actionReason.charAt(0).toLowerCase()}${scored.actionReason.slice(1)}` : scored.actionReason,
       score,
       due: "",
     });

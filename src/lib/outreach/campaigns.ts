@@ -231,7 +231,7 @@ export function campaignProgress(
   campaign: Pick<Campaign, "targetProspects">,
   leads: readonly (Lead | OutreachLead)[],
   emails: readonly OutreachEmail[],
-  decisions?: ReadonlyMap<string, { level: string; reviewRequired?: boolean }>,
+  decisions?: ReadonlyMap<string, { action: "CALL" | "EMAIL" | "REVIEW" | "SKIP" | "WAIT" }>,
 ): CampaignProgress {
   const byLead = new Map<string, OutreachEmail[]>();
   for (const email of emails) {

@@ -139,20 +139,27 @@ async function loadCampaignWorld(
 }
 
 async function salesTools() {
-  const [decision, health, dash] = await Promise.all([
-    import("../decision.ts"),
+  const [scoring, records, health, dash] = await Promise.all([
+    import("../scoring/prospect-score.ts"),
+    import("../scoring/records.ts"),
     import("./health.ts"),
     import("./dashboard.ts"),
   ]);
-  return {
-    decideProspect: decision.decideProspect,
-    describeBottleneck: decision.describeBottleneck,
-    needsAiReview: decision.needsAiReview,
-    tallyDecisions: decision.tallyDecisions,
-    toProspectRecord: decision.toProspectRecord,
-    assessHealth: health.assessHealth,
-    computeStats: dash.computeStats,
-  };
+  return { ...scoring, ...records, assessHealth: health.assessHealth, computeStats: dash.computeStats };
+}
+
+/** Everything the prospect score needs beyond the lead itself, loaded once. */
+async function scoringWorld(userId: string, settings: OutreachSettings, suppressed: ReadonlySet<string>, emails: readonly OutreachEmail[] = []) {
+  const { getSql } = await import("@/lib/db");
+  const contacts = await import("@/lib/contactability/store.server");
+  const sql = await getSql();
+  const [screenings, doNotCall] = await Promise.all([
+    contacts.loadScreenings(sql, userId).catch(() => new Map()),
+    contacts.loadDoNotCall(sql, userId).catch(() => new Map()),
+  ]);
+  const live = new Set(["approved", "queued", "sending", "sent", "replied"]);
+  const contacted = new Set(emails.filter((email) => email.kind === "initial" && live.has(email.status)).map((email) => email.leadId));
+  return { screenings, doNotCall, suppressed, contacted, rules: settings.contactRules };
 }
 
 // ── AI ───────────────────────────────────────────────────────────────────────
@@ -1205,26 +1212,28 @@ export const getCampaignStats = createServerFn({ method: "GET" })
   .handler(async ({ context }) => {
     try {
       const { settings, emails, suppression, store, sql } = await loadWorld(context.userId);
-      const { computeStats, decideProspect, describeBottleneck } = await salesTools();
+      const { computeStats, scoreAll, describeBottleneck } = await salesTools();
       const leads = await store.loadLeads(sql, context.userId);
       const ctx = contextFrom(emails, suppression, settings);
-      const stats = computeStats(leads, emails, settings, ctx);
-      const decisions = leads.map((lead) => decideProspect(lead));
+      const world = await scoringWorld(context.userId, settings, suppression, emails);
+      const scores = [...scoreAll(leads, world).values()];
+      const stats = computeStats(leads, emails, settings, ctx, new Date(), scores);
       const room = allowance(emails, settings);
       return {
         success: true as const,
         count: stats.leads,
         qualified: stats.eligibleNow,
+        // "hot"/"warm" are the API's historical names for strong/good prospects.
         hot: stats.hot,
         warm: stats.warm,
         calls: stats.call,
-        skipped: decisions.filter((d) => d.level === "SKIP").length,
+        skipped: scores.filter((score) => score.action === "SKIP").length,
         emailsFound: stats.emailsAvailable,
         sentToday: stats.sentToday,
         remainingToday: room.remaining,
         replies: stats.replies,
         errors: stats.failed,
-        bottleneck: describeBottleneck(decisions),
+        bottleneck: describeBottleneck(scores),
       };
     } catch (error) {
       return agentFail(error instanceof Error ? error.message : "Could not load stats.", "STATS_FAILED", true);
@@ -1276,7 +1285,8 @@ export const getReviewQueue = createServerFn({ method: "GET" })
   .handler(async ({ context }) => {
     try {
       const { store, sql } = await loadWorld(context.userId);
-      const { needsAiReview, decideProspect } = await salesTools();
+      const { scoreAll, toProspectRecord } = await salesTools();
+      const { settings, emails, suppression } = await loadWorld(context.userId);
       const leads = await store.loadLeads(sql, context.userId);
       let reviews: Awaited<ReturnType<typeof store.loadReviews>> = [];
       try {
@@ -1285,20 +1295,11 @@ export const getReviewQueue = createServerFn({ method: "GET" })
         if (!isMissingTable(error)) throw error;
       }
       const decided = new Map(reviews.map((row) => [row.leadId, row]));
+      const scores = scoreAll(leads, await scoringWorld(context.userId, settings, suppression, emails));
       const queue = leads
-        .filter((lead) => needsAiReview(lead) && (decided.get(lead.id)?.decision ?? "pending") === "pending")
-        .sort((a, b) => decideProspect(b).score - decideProspect(a).score)
-        .map((lead) => ({
-          id: lead.id,
-          businessName: lead.businessName,
-          trade: lead.trade,
-          town: lead.town,
-          phone: lead.phone,
-          email: lead.email,
-          website: lead.website,
-          websiteStatus: lead.websiteStatus,
-          decision: decideProspect(lead),
-        }));
+        .filter((lead) => scores.get(lead.id)!.action === "REVIEW" && (decided.get(lead.id)?.decision ?? "pending") === "pending")
+        .sort((a, b) => scores.get(b.id)!.priority - scores.get(a.id)!.priority)
+        .map((lead) => toProspectRecord(lead, scores.get(lead.id)!));
       return { success: true as const, count: queue.length, queue };
     } catch (error) {
       return agentFail(error instanceof Error ? error.message : "Could not load the review queue.", "REVIEW_FAILED", true);
@@ -1556,17 +1557,19 @@ export const getLeads = createServerFn({ method: "GET" })
   .handler(async ({ context }) => {
     try {
       const { store, sql } = await loadWorld(context.userId);
-      const { toProspectRecord, tallyDecisions } = await salesTools();
+      const { toProspectRecord, tallyScores, scoreAll } = await salesTools();
+      const { settings, emails, suppression } = await loadWorld(context.userId);
       const leads = await store.loadLeads(sql, context.userId);
-      const rows = leads.map((lead) => toProspectRecord(lead));
-      const tally = tallyDecisions(leads);
+      const scores = scoreAll(leads, await scoringWorld(context.userId, settings, suppression, emails));
+      const rows = leads.map((lead) => toProspectRecord(lead, scores.get(lead.id)!));
+      const tally = tallyScores(leads, [...scores.values()]);
       return {
         success: true as const,
         count: rows.length,
-        hot: tally.hot,
-        warm: tally.warm,
+        hot: tally.strong,
+        warm: tally.good,
         calls: tally.call,
-        skipped: tally.skip,
+        skipped: [...scores.values()].filter((score) => score.action === "SKIP").length,
         emailsFound: tally.emailsFound,
         rows,
       };
@@ -1582,10 +1585,12 @@ export const getLead = createServerFn({ method: "GET" })
     if (!data.id) return agentFail("Missing lead id.", "INVALID", false);
     try {
       const { store, sql } = await loadWorld(context.userId);
-      const { toProspectRecord } = await salesTools();
+      const { toProspectRecord, scoreLead } = await salesTools();
       const lead = await store.loadLead(sql, context.userId, data.id);
       if (!lead) return agentFail("Lead not found.", "NOT_FOUND", false);
-      return { success: true as const, lead: toProspectRecord(lead) };
+      const { settings, emails, suppression } = await loadWorld(context.userId);
+      const score = scoreLead(lead, await scoringWorld(context.userId, settings, suppression, emails));
+      return { success: true as const, lead: toProspectRecord(lead, score) };
     } catch (error) {
       return agentFail(error instanceof Error ? error.message : "Could not load the lead.", "LEAD_FAILED", true);
     }
@@ -1596,22 +1601,32 @@ export const qualifyLeads = createServerFn({ method: "GET" })
   .handler(async ({ context }) => {
     try {
       const { store, sql } = await loadWorld(context.userId);
-      const { decideProspect } = await salesTools();
+      const { scoreAll } = await salesTools();
+      const { settings, emails, suppression } = await loadWorld(context.userId);
       const leads = await store.loadLeads(sql, context.userId);
-      const rows = leads.map((lead) => ({
-        id: lead.id,
-        businessName: lead.businessName,
-        trade: lead.trade,
-        town: lead.town,
-        phone: lead.phone,
-        email: lead.email,
-        website: lead.website,
-        websiteStatus: lead.websiteStatus,
-        decision: decideProspect(lead),
-      }));
-      const hot = rows.filter((row) => row.decision.level === "HOT").length;
-      const warm = rows.filter((row) => row.decision.level === "WARM").length;
-      const calls = rows.filter((row) => row.decision.level === "CALL").length;
+      const scores = scoreAll(leads, await scoringWorld(context.userId, settings, suppression, emails));
+      const rows = leads.map((lead) => {
+        const score = scores.get(lead.id)!;
+        return {
+          id: lead.id,
+          businessName: lead.businessName,
+          trade: lead.trade,
+          town: lead.town,
+          phone: lead.phone,
+          email: lead.email,
+          website: lead.website,
+          websiteStatus: lead.websiteStatus,
+          band: score.band,
+          priority: score.priority,
+          action: score.action,
+          actionReason: score.actionReason,
+          blockers: score.blockers,
+          why: score.why.map((reason) => reason.text),
+        };
+      });
+      const hot = rows.filter((row) => row.band === "STRONG").length;
+      const warm = rows.filter((row) => row.band === "GOOD").length;
+      const calls = rows.filter((row) => row.action === "CALL").length;
       return {
         success: true as const,
         count: rows.length,
@@ -1619,7 +1634,7 @@ export const qualifyLeads = createServerFn({ method: "GET" })
         hot,
         warm,
         calls,
-        skipped: rows.filter((row) => row.decision.level === "SKIP").length,
+        skipped: rows.filter((row) => row.action === "SKIP").length,
         emailsFound: rows.filter((row) => row.email.trim()).length,
         errors: 0,
         rows,

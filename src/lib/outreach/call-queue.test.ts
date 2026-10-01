@@ -33,7 +33,14 @@ describe("the call list", () => {
   });
 
   it("leaves prospects that can be emailed to the email workflow", () => {
-    const emailable = lead({ id: "e", email: "hi@tay.co.uk", emailConfidence: "HIGH", emailSource: "Contact page" });
+    const emailable = lead({ id: "e", businessName: "Tay Joinery Ltd", email: "hi@tay.co.uk", emailConfidence: "HIGH", emailSource: "Contact page" });
     assert.equal(callQueue([emailable], "2026-09-30").today.length, 0);
+  });
+
+  it("rings a business not confirmed as a company rather than emailing it", () => {
+    const unconfirmed = lead({ id: "u", email: "hi@tay.co.uk", emailConfidence: "HIGH", emailSource: "Contact page" });
+    const today = callQueue([unconfirmed], "2026-09-30").today;
+    assert.deepEqual(today.map((item) => item.lead.id), ["u"]);
+    assert.match(today[0]!.reason, /ring instead of emailing/);
   });
 });

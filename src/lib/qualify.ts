@@ -5,9 +5,9 @@
  * Emails are extracted from that HTML (and a same-origin contact page if the
  * homepage links to one). Nothing is guessed from a domain, and nothing is sent.
  */
+import { scoreProspect } from "./scoring/prospect-score.ts";
 import {
   classifyWebsiteUrl,
-  computeOpportunity,
   hasWebsite,
   hostnameOf,
   type EmailConfidence,
@@ -374,7 +374,7 @@ export function websitePatch(
     websiteCheckedAt: checkedAt,
   };
   if (check.websiteStatus) patch.websiteStatus = check.websiteStatus;
-  patch.opportunityScore = computeOpportunity({ ...lead, ...patch } as Lead);
+  patch.opportunityScore = scoreProspect({ ...lead, ...patch } as Lead).priority;
   return patch;
 }
 
@@ -391,7 +391,7 @@ export function emailPatch(
     emailConfidence: found.confidence,
     emailFoundAt: foundAt,
   };
-  patch.opportunityScore = computeOpportunity({ ...lead, ...patch } as Lead);
+  patch.opportunityScore = scoreProspect({ ...lead, ...patch } as Lead).priority;
   return patch;
 }
 
@@ -415,6 +415,6 @@ export function discoveredWebsitePatch(
     website: match.url,
     websiteStatus: status,
   };
-  patch.opportunityScore = computeOpportunity({ ...lead, ...patch } as Lead);
+  patch.opportunityScore = scoreProspect({ ...lead, ...patch } as Lead).priority;
   return patch;
 }

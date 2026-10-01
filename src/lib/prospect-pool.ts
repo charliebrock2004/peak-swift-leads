@@ -1,4 +1,6 @@
-import { independentHost, type LeadIdentity } from "./leads.ts";
+import { createLead, independentHost, type LeadIdentity } from "./leads.ts";
+import { scoreProspect } from "./scoring/prospect-score.ts";
+import type { OutreachLead } from "./outreach/types.ts";
 import { createIdentityIndex, indexOf, type IdentityIndex } from "./identity-index.ts";
 import { DISCOVERY_SAFETY } from "./discovery-limits.ts";
 import type { Prospect } from "./research.ts";
@@ -157,67 +159,39 @@ function normaliseTerms(values: readonly string[] | undefined): string[] {
 }
 
 /**
- * How useful a prospect is for outreach, highest first.
- *
- * Signals only ever add. Nothing here can remove a business from the run: a
- * joiner with no website scores lowest and still comes back, because a
- * phone number and an address make a perfectly good call. Ranking decides
- * who gets written to first, never who exists.
+ * How closely a candidate matches what was searched for: the trade in its
+ * name or category, and a town the run planned. A tie-breaker only.
  */
-export function scoreProspect(
+export function searchRelevance(
   prospect: Prospect,
   context: { tradeTerms?: readonly string[]; townTerms?: readonly string[] } = {},
 ): number {
-  let score = 0;
   const name = prospect.businessName.toLowerCase();
   const trade = `${prospect.trade} ${prospect.notes}`.toLowerCase();
-  const host = independentHost(prospect.website);
-
-  // 1. Trade match — the business says it does the work we searched for.
-  const tradeTerms = context.tradeTerms ?? [];
-  if (tradeTerms.some((term) => trade.includes(term))) score += 30;
-  if (tradeTerms.some((term) => name.includes(term))) score += 20;
-
-  // 2. Location match — it sits in a town the run actually planned.
-  const townTerms = context.townTerms ?? [];
   const town = prospect.town.toLowerCase();
-  if (town && townTerms.some((term) => town.includes(term))) score += 15;
-  else if (town) score += 5;
-
-  // 3-4. An independent site of its own, not a directory or a Facebook page.
-  if (host) score += 40;
-  else if (prospect.website.trim()) score += 5;
-
-  // 5. A published address is the single strongest signal for outreach.
-  if (prospect.email.trim()) score += 35;
-
-  // 6. The site looks like it belongs to this business, not to whoever the
-  //    directory happened to link. A shared word between name and host is weak
-  //    evidence on its own, which is why it scores far below a verified site.
-  if (host) {
-    const nameWords = name.split(/[^a-z0-9]+/).filter((word) => word.length >= 4);
-    if (nameWords.some((word) => host.includes(word))) score += 15;
-  }
-
-  // 7. Contact detail worth ringing.
-  if (prospect.phone.trim()) score += 12;
-  if (prospect.address.trim()) score += 6;
-
-  // 8. Independent identity rather than a national chain listing.
-  if (typeof prospect.reviews === "number" && prospect.reviews > 0) score += 3;
-  if (prospect.priority === "HOT") score += 10;
-  else if (prospect.priority === "WARM") score += 5;
-
-  return score;
+  let relevance = 0;
+  if ((context.tradeTerms ?? []).some((term) => name.includes(term))) relevance += 2;
+  else if ((context.tradeTerms ?? []).some((term) => trade.includes(term))) relevance += 1;
+  if (town && (context.townTerms ?? []).some((term) => town.includes(term.toLowerCase()))) relevance += 1;
+  return relevance;
 }
 
+/**
+ * Best first, by the one prospect score (scoring/prospect-score.ts): measured
+ * need and reachability, not how easy a business is to enrich. Nothing is
+ * removed here — ranking decides who makes the target, never who exists.
+ */
 export function rankProspects(
   prospects: readonly Prospect[],
   context: { tradeTerms?: readonly string[]; townTerms?: readonly string[] } = {},
 ): Prospect[] {
   return [...prospects]
-    .map((prospect, index) => ({ prospect, index, score: scoreProspect(prospect, context) }))
-    .sort((a, b) => (b.score !== a.score ? b.score - a.score : a.index - b.index))
+    .map((prospect, index) => ({
+      prospect,
+      index,
+      key: scoreProspect(createLead({ ...prospect, id: `candidate-${index}` }) as OutreachLead).priority + searchRelevance(prospect, context) * 5,
+    }))
+    .sort((a, b) => (b.key !== a.key ? b.key - a.key : a.index - b.index))
     .map((item) => item.prospect);
 }
 

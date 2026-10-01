@@ -3,12 +3,13 @@ import { createServerFn } from "@tanstack/react-start";
 import { authMiddleware } from "@/lib/auth/middleware";
 import {
   classifyWebsiteUrl,
-  computePriority,
+  createLead,
   mergeWebsiteEvidence,
-  priorityReason,
   type Priority,
   type WebsiteStatus,
 } from "@/lib/leads";
+import { scoreProspect } from "@/lib/scoring/prospect-score";
+import type { OutreachLead } from "@/lib/outreach/types";
 import {
   discoverBusinesses,
   listingWebsiteHint,
@@ -104,7 +105,10 @@ function scorePlace(place: DiscoveredPlace, websiteStatus: WebsiteStatus, extraN
     rating: "" as const,
     reviews: "" as const,
   };
-  const priority = computePriority(scored);
+  // The one prospect score decides the order (and the HOT/WARM/COLD label
+  // the run list shows is derived from its band).
+  const unified = scoreProspect(createLead({ ...scored, id: place.placeId || place.businessName }) as OutreachLead);
+  const priority: Priority = unified.band === "STRONG" ? "HOT" : unified.band === "GOOD" ? "WARM" : "COLD";
   return {
     businessName: place.businessName,
     trade: place.trade,
@@ -120,7 +124,7 @@ function scorePlace(place: DiscoveredPlace, websiteStatus: WebsiteStatus, extraN
     notes,
     source: place.source,
     priority,
-    reason: priorityReason(scored),
+    reason: unified.need.reasons[0]?.text ?? unified.actionReason,
     lat: place.lat,
     lng: place.lng,
     placeId: place.placeId,

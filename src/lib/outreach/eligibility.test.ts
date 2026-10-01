@@ -10,10 +10,20 @@ import {
   needsManualReview,
   rankEligible,
 } from "./eligibility.ts";
-import { EMPTY_FACTS, type OutreachLead } from "./types.ts";
+import { EMPTY_FACTS, type AuditSummary, type OutreachLead } from "./types.ts";
+import { factsWith, searchedNoWebsite } from "../test-support/facts.ts";
+
+const audited = (opportunity: AuditSummary["opportunity"]): AuditSummary => ({
+  id: "a", status: "ok", httpStatus: 200, url: "https://example.co.uk", finishedAt: new Date().toISOString(), opportunity, points: 10, keyFindings: [],
+});
 
 /** A lead that passes every rule, so each test can break exactly one thing. */
 function sendable(partial: Partial<Lead> = {}): OutreachLead {
+  // A qualified prospect: a recent web search looked for its website and found none.
+  return { ...bareLead(partial), facts: factsWith({ websiteEvidence: searchedNoWebsite() }) };
+}
+
+function bareLead(partial: Partial<Lead> = {}): OutreachLead {
   return createLead({
     businessName: "Strathearn Joinery Ltd",
     trade: "Joiner",
@@ -114,16 +124,18 @@ describe("who may be emailed", () => {
     assert.ok(!result.eligible && result.reasons.includes("no-opportunity"));
   });
 
+  it("refuses to write about a website nobody has audited", () => {
+    const result = checkEligibility(bareLead({ websiteStatus: "Basic Website", website: "https://example.co.uk", websiteQuality: "improve" }));
+    assert.ok(!result.eligible && result.reasons.includes("unaudited"));
+    const done = checkEligibility({ ...bareLead({ websiteStatus: "Basic Website", website: "https://example.co.uk" }), facts: factsWith({ audit: audited("strong") }) });
+    assert.equal(done.eligible, true, "an audited opportunity can be written about");
+  });
+
   it("holds LOW opportunity back unless it is explicitly asked for", () => {
-    const lead = sendable({
-      websiteStatus: "Proper Website",
-      website: "https://example.co.uk",
-      websiteQuality: "improve",
-      email: "",
-      phone: "",
-      emailConfidence: "",
-      businessStatus: "",
-    });
+    const lead = {
+      ...bareLead({ trade: "Takeaway", websiteStatus: "Proper Website", website: "https://example.co.uk", email: "", phone: "", emailConfidence: "", businessStatus: "" }),
+      facts: factsWith({ audit: audited("low") }),
+    };
     const held = checkEligibility(lead);
     assert.equal(held.band, "Low");
     assert.ok(!held.eligible && held.reasons.includes("low-opportunity"));
@@ -211,7 +223,7 @@ describe("who the subscriber is (legal form)", () => {
 describe("ordering", () => {
   it("puts High opportunity first, then the strongest score", () => {
     const leads = [
-      sendable({ id: "a", businessName: "Low Co Ltd", websiteStatus: "Proper Website", website: "https://a.co", websiteQuality: "improve" }),
+      { ...bareLead({ id: "a", businessName: "Low Co Ltd", websiteStatus: "Proper Website", website: "https://a.co" }), facts: factsWith({ audit: audited("moderate") }) },
       sendable({ id: "b", businessName: "Best Co Ltd", websiteStatus: "No Website Found", reviews: 40, rating: 4.8 }),
       sendable({ id: "c", businessName: "Mid Co Ltd", websiteStatus: "Social Only", website: "https://facebook.com/mid" }),
     ];

@@ -5,8 +5,7 @@
  * connection is healthy, not that Google was just asked. That is deliberate:
  * a diagnostics page that itself spends quota would lie the moment it is open.
  */
-import { decideProspect } from "../decision.ts";
-import type { Lead } from "../leads.ts";
+import { scoreProspect } from "../scoring/prospect-score.ts";
 import { sentToday } from "./limits.ts";
 import type { GmailConnection, OutreachEmail, OutreachLead } from "./types.ts";
 import { missingAdvice } from "./oauth-setup.ts";
@@ -80,7 +79,7 @@ export function assessHealth(input: HealthInput): HealthReport {
   });
 
   const withEmail = input.leads.filter((lead) => lead.email.trim()).length;
-  const calls = input.leads.filter((lead) => decideProspect(lead as Lead).level === "CALL").length;
+  const calls = input.leads.filter((lead) => scoreProspect(lead).action === "CALL").length;
   items.push({
     id: "email",
     label: "Email discovery",

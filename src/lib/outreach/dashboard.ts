@@ -8,7 +8,7 @@ import { checkEligibility, type EligibilityContext } from "./eligibility.ts";
 import { sentToday } from "./limits.ts";
 import type { GmailStatus, OutreachEmail, OutreachLead, OutreachSettings } from "./types.ts";
 import { followUpsDue } from "./follow-ups.ts";
-import { decideProspect, describeBottleneck, tallyDecisions } from "../decision.ts";
+import { describeBottleneck, scoreProspect, tallyScores, type ProspectScore } from "../scoring/prospect-score.ts";
 
 export type OutreachStats = {
   leads: number;
@@ -42,6 +42,8 @@ export function computeStats(
   settings: OutreachSettings,
   context: EligibilityContext,
   now: Date = new Date(),
+  /** The prospect scores, when the caller has them with screening context. */
+  scores?: readonly ProspectScore[],
 ): OutreachStats {
   let highOpportunity = 0;
   let emailsAvailable = 0;
@@ -66,8 +68,8 @@ export function computeStats(
     if (lead.unsubscribed.trim()) unsubscribed += 1;
   }
 
-  const tally = tallyDecisions(leads);
-  const decisions = leads.map((lead) => decideProspect(lead));
+  const scored = scores ?? leads.map((lead) => scoreProspect(lead, { rules: context.rules, now }));
+  const tally = tallyScores(leads, scored);
 
   const totalSent = emails.filter((email) => email.status === "sent" || email.status === "replied").length;
 
@@ -90,11 +92,12 @@ export function computeStats(
     won,
     followUpsDue: followUpsDue(leads, emails, settings, context, now).length,
     unsubscribed,
-    hot: tally.hot,
-    warm: tally.warm,
+    // Historical field names: hot = strong prospects, warm = good ones.
+    hot: tally.strong,
+    warm: tally.good,
     call: tally.call,
     review: tally.review,
-    bottleneck: describeBottleneck(decisions),
+    bottleneck: describeBottleneck(scored),
   };
 }
 

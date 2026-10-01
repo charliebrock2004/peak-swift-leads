@@ -226,8 +226,8 @@ describe("campaignProgress", () => {
   it("separates the call list from the skipped list", () => {
     const leads = [lead({ id: "a" }), lead({ id: "b" })];
     const decisions = new Map([
-      ["a", { level: "CALL" }],
-      ["b", { level: "SKIP" }],
+      ["a", { action: "CALL" as const }],
+      ["b", { action: "SKIP" as const }],
     ]);
     const progress = campaignProgress(campaign(), leads, [], decisions);
     assert.equal(progress.call, 1);
