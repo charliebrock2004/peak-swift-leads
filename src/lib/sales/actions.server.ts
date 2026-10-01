@@ -32,7 +32,7 @@ export type LogCallResult = { interaction: Interaction; task: Task | null; stage
 export async function logCall(
   sql: Sql,
   userId: string,
-  input: { leadId: string; outcome: CallOutcome; note?: string; at?: string; today?: string },
+  input: { leadId: string; outcome: CallOutcome; note?: string; at?: string; today?: string; durationSeconds?: number },
 ): Promise<LogCallResult> {
   const store = await import("../outreach/store.server.ts");
   const lead = await store.loadLead(sql, userId, input.leadId);
@@ -41,13 +41,17 @@ export async function logCall(
 
   await patchLead(sql, userId, lead.id, effects.leadPatch);
   const note = (input.note ?? "").trim().slice(0, 4000);
+  const seconds = Math.max(0, Math.min(sales.CALL_MAX_SECONDS, Math.round(input.durationSeconds ?? 0) || 0));
   const interaction = await sales.addInteraction(sql, userId, {
     leadId: lead.id,
     type: "call",
     outcome: input.outcome,
     summary: effects.summary,
-    detail: { ...(note ? { note } : {}), ...(input.at ? { at: input.at } : {}), phone: lead.phone },
+    detail: { ...(note ? { note } : {}), ...(input.at ? { at: input.at } : {}), ...(seconds ? { durationSeconds: String(seconds) } : {}), phone: lead.phone },
   });
+  // Time on the phone counts toward minutes per conversation. Best effort: a
+  // missing time table must never lose the call itself.
+  if (seconds) await sales.addTime(sql, userId, "call", seconds).catch(() => 0);
 
   // The call was made: whatever call was on the list for it is done.
   await sales.completeOpenTasks(sql, userId, lead.id, ["CALL"]);

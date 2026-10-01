@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { ArrowLeft, ExternalLink, Globe, Mail, MapPin, Pencil, Phone, PhoneCall, Send, Trash2 } from "lucide-react";
@@ -25,6 +25,7 @@ import { formatPence } from "@/lib/sales/pipeline";
 import { getBusiness } from "@/lib/sales/server";
 import type { TimelineEvent } from "@/lib/sales/timeline";
 import { STAGE_LABEL, type Opportunity, type Stage, type Task } from "@/lib/sales/types";
+import { markCallStarted } from "@/lib/sales/call-timer";
 import { friendlyServerError } from "@/lib/server-errors";
 import { cn } from "@/lib/utils";
 
@@ -57,6 +58,7 @@ export function BusinessPage() {
   const [error, setError] = useState("");
   const [note, setNote] = useState("");
   const [editing, setEditing] = useState(false);
+  const logCall = useRef<HTMLDetailsElement>(null);
   const navigate = useNavigate();
 
   const load = useCallback(async () => {
@@ -140,7 +142,15 @@ export function BusinessPage() {
       {/* The one thing to do, always in reach of a thumb. */}
       <div className="sticky bottom-[calc(4.5rem+env(safe-area-inset-bottom))] z-30 -mx-1 flex gap-2 rounded-xl bg-bg/90 p-1 backdrop-blur md:static md:bg-transparent md:p-0">
         {tel && call.status !== "BLOCKED" ? (
-          <a href={tel} className="flex-1">
+          <a
+            href={tel}
+            className="flex-1"
+            onClick={() => {
+              markCallStarted(lead.id);
+              // Ready for when the call ends.
+              logCall.current?.setAttribute("open", "");
+            }}
+          >
             <Button className="h-12 w-full text-[15px]">
               <Phone /> Call {lead.phone}
             </Button>
@@ -185,7 +195,7 @@ export function BusinessPage() {
               <Card className="px-4 py-3">
                 <CallBriefView brief={view.brief} />
               </Card>
-              <details className="rounded-xl bg-surface px-4 py-3 shadow-(--shadow-border)">
+              <details ref={logCall} className="rounded-xl bg-surface px-4 py-3 shadow-(--shadow-border)">
                 <summary className="cursor-pointer text-sm font-medium">Log a call</summary>
                 <div className="mt-3">
                   <CallOutcomePicker

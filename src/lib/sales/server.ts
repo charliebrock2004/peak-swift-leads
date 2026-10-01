@@ -219,6 +219,33 @@ export const getPipeline = createServerFn({ method: "GET" })
     }
   });
 
+/** Revenue analytics and the north-star minutes (revenue.ts), from the account's own rows. */
+export const getRevenue = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }): Promise<Reply> => {
+    try {
+      const w = await world(context.userId);
+      const [history, time] = await Promise.all([
+        w.sales.saleHistory(w.sql, context.userId),
+        // Before migration 0015 there is no measured time — the rest still stands.
+        w.sales.loadTime(w.sql, context.userId).catch(() => []),
+      ]);
+      const { revenueAnalytics } = await import("./revenue.ts");
+      const revenue = revenueAnalytics({
+        now: new Date(),
+        leads: w.leads,
+        reachable: (lead) => (w.scores.get(lead.id)?.reach.channel ?? "none") !== "none",
+        emails: w.emails,
+        opportunities: w.opportunities,
+        interactions: history,
+        time,
+      });
+      return { ok: true, json: JSON.stringify(revenue) };
+    } catch (error) {
+      return failure(error, "Could not load revenue.");
+    }
+  });
+
 /**
  * Every sales write behind one function — log a call, change a stage, save a
  * value, add a note, add or close a task. They are one shape of operation and
@@ -230,13 +257,14 @@ export const salesAction = createServerFn({ method: "POST" })
   .validator((input: unknown) => {
     const source = (input ?? {}) as Record<string, unknown>;
     const action = str(source.action, 20);
-    if (!["log_call", "set_stage", "save_value", "add_note", "save_task", "task_status"].includes(action)) throw new Error("Unknown action.");
+    if (!["log_call", "set_stage", "save_value", "add_note", "save_task", "task_status", "log_time"].includes(action)) throw new Error("Unknown action.");
     const outcome = str(source.outcome, 30);
     const stage = str(source.stage, 20);
     const type = str(source.type, 20);
     const status = str(source.status, 20);
     const priority = str(source.priority, 10);
     const value = source.valuePence === null || source.valuePence === "" ? null : Number(source.valuePence);
+    const seconds = Number(source.seconds);
     return {
       action,
       leadId: str(source.leadId, 64),
@@ -253,6 +281,7 @@ export const salesAction = createServerFn({ method: "POST" })
       dueAt: str(source.dueAt, 40),
       priority: (priority === "high" || priority === "low" ? priority : "normal") as TaskPriority,
       status: (status === "done" || status === "cancelled" || status === "open" ? status : "done") as TaskStatus,
+      seconds: Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds) : 0,
     };
   })
   .handler(async ({ data, context }): Promise<Reply> => {
@@ -266,7 +295,7 @@ export const salesAction = createServerFn({ method: "POST" })
       switch (data.action) {
         case "log_call":
           if (!data.outcome) return { ok: false, error: "Choose what happened on the call." };
-          out = await actions.logCall(sql, context.userId, { leadId: data.leadId, outcome: data.outcome, note: data.note, at: data.at });
+          out = await actions.logCall(sql, context.userId, { leadId: data.leadId, outcome: data.outcome, note: data.note, at: data.at, durationSeconds: data.seconds });
           break;
         case "set_stage":
           if (!data.stage) return { ok: false, error: "Choose a stage." };
@@ -281,6 +310,9 @@ export const salesAction = createServerFn({ method: "POST" })
         case "save_task":
           out = await sales.createTask(sql, context.userId, { leadId: data.leadId, type: data.type, title: data.title, dueAt: data.dueAt, priority: data.priority, notes: data.note });
           break;
+        case "log_time":
+          // App time only: call time is recorded with the call it belongs to.
+          return { ok: true, json: JSON.stringify({ added: await sales.addTime(sql, context.userId, "app", data.seconds) }) };
         case "task_status": {
           const task = await sales.updateTask(sql, context.userId, data.taskId, { status: data.status });
           if (!task) return { ok: false, error: "That task no longer exists." };

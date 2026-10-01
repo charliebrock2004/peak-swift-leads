@@ -19,6 +19,7 @@ import { plural } from "@/components/app/format";
 import { CallBriefView, CallOutcomePicker } from "@/components/app/sales";
 import type { CallBrief } from "@/lib/sales/call-brief";
 import { getBusiness } from "@/lib/sales/server";
+import { markCallStarted } from "@/lib/sales/call-timer";
 
 /**
  * The call list, from the account's businesses. Every outcome is logged on the
@@ -336,7 +337,7 @@ function CallCard({
 
       <div className="mt-4 flex gap-2">
         {tel ? (
-          <a href={tel} className="flex-1">
+          <a href={tel} className="flex-1" onClick={() => markCallStarted(lead.id)}>
             <Button className="h-12 w-full text-[15px]">
               <PhoneCall />
               Call {lead.phone}
@@ -455,7 +456,7 @@ function CallMode({
 
       <div className="sticky bottom-[calc(4.5rem+env(safe-area-inset-bottom))] z-30 -mx-1 flex gap-2 rounded-xl bg-bg/90 p-1 backdrop-blur md:static md:bg-transparent md:p-0">
         {tel && call.status !== "BLOCKED" ? (
-          <a href={tel} className="flex-1">
+          <a href={tel} className="flex-1" onClick={() => markCallStarted(lead.id)}>
             <Button className="h-14 w-full text-base">
               <PhoneCall /> Call {lead.phone}
             </Button>

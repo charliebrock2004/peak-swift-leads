@@ -295,3 +295,41 @@ export async function lastInteractions(sql: Sql, userId: string): Promise<Map<st
   );
   return new Map(rows.map((row) => { const item = interactionFromRow(row); return [item.leadId, item]; }));
 }
+
+/** The sale's own history for every business — calls, stage changes, quotes, meetings — for revenue analytics. */
+export async function saleHistory(sql: Sql, userId: string): Promise<{ leadId: string; type: string; outcome: string; occurredAt: string }[]> {
+  const rows = await sql.query<Record<string, unknown>>(
+    `select lead_id, type, outcome, occurred_at from interactions
+      where user_id = $1 and type in ('call', 'stage_change', 'quote', 'meeting')
+      order by occurred_at limit 50000`,
+    [userId],
+  );
+  return rows.map((row) => ({ leadId: text(row.lead_id), type: text(row.type), outcome: text(row.outcome), occurredAt: iso(row.occurred_at) }));
+}
+
+// ── Measured time (migration 0015) ───────────────────────────────────────────
+
+/** One report adds at most this much: the client reports every few minutes. */
+export const TIME_REPORT_MAX_SECONDS = 15 * 60;
+/** A call is timed for at most this long. */
+export const CALL_MAX_SECONDS = 90 * 60;
+/** No day holds more than this of either kind, whatever is reported. */
+export const TIME_DAY_MAX_SECONDS = 16 * 3600;
+
+/** Add measured seconds to today's total, within the caps. Returns what was added. */
+export async function addTime(sql: Sql, userId: string, kind: "app" | "call", seconds: number, now: Date = new Date()): Promise<number> {
+  const cap = kind === "call" ? CALL_MAX_SECONDS : TIME_REPORT_MAX_SECONDS;
+  const add = Math.max(0, Math.min(cap, Math.round(Number.isFinite(seconds) ? seconds : 0)));
+  if (!add) return 0;
+  await sql.query(
+    `insert into time_log (user_id, day, kind, seconds) values ($1, $2::date, $3, least($4::integer, $5::integer))
+     on conflict (user_id, day, kind) do update set seconds = least(time_log.seconds + excluded.seconds, $5::integer)`,
+    [userId, now.toISOString().slice(0, 10), kind, add, TIME_DAY_MAX_SECONDS],
+  );
+  return add;
+}
+
+export async function loadTime(sql: Sql, userId: string): Promise<{ day: string; kind: "app" | "call"; seconds: number }[]> {
+  const rows = await sql.query<Record<string, unknown>>(`select day, kind, seconds from time_log where user_id = $1 order by day`, [userId]);
+  return rows.map((row) => ({ day: day(row.day), kind: text(row.kind) === "call" ? "call" : "app", seconds: Number(row.seconds) || 0 }));
+}

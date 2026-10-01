@@ -104,7 +104,7 @@ export function Stat({
       <p className={cn("mt-1 font-display text-[1.65rem] leading-none font-medium tabular", tone === "neutral" ? "text-fg" : toneText(tone))}>
         {value}
       </p>
-      {sub ? <p className="mt-1.5 truncate text-xs text-subtle">{sub}</p> : null}
+      {sub ? <p className="mt-1.5 line-clamp-2 text-xs text-subtle">{sub}</p> : null}
     </>
   );
   const base = cn("block min-w-0 rounded-lg bg-surface px-4 py-3.5 shadow-(--shadow-border)", className);

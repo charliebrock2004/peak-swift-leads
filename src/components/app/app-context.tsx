@@ -12,6 +12,7 @@ import { autoContext } from "@/lib/outreach/auto-run";
 import { useLegacyLeadMigration } from "./use-legacy-leads";
 import { useProspectRun } from "./use-prospect-run";
 import { useReplyPolling } from "./use-reply-polling";
+import { useActiveTime } from "./use-active-time";
 import { AppDataContext } from "./app-data";
 
 /** Refresh when the tab comes back, but not more often than this. */
@@ -69,6 +70,9 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
   });
 
   useLegacyLeadMigration(() => void reload());
+
+  // Minutes of your time, for minutes per conversation (Insights).
+  useActiveTime(state !== null);
 
   const context = useMemo(
     () => (state ? autoContext(state.emails, state.suppression.map((entry) => entry.email), state.settings) : null),

@@ -28,6 +28,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import { callMinutes, clearCallStart } from "@/lib/sales/call-timer";
 import { runSalesAction } from "@/lib/sales/client";
 import type { CallBrief } from "@/lib/sales/call-brief";
 import { formatPence, parsePounds } from "@/lib/sales/pipeline";
@@ -140,16 +141,26 @@ export function CallOutcomePicker({ leadId, onLogged, autoFocusNote = false }: {
   const [outcome, setOutcome] = useState<CallOutcome | "">("");
   const [note, setNote] = useState("");
   const [when, setWhen] = useState("");
+  const [minutes, setMinutes] = useState("");
   const [busy, setBusy] = useState(false);
   const dictation = useDictation((text) => setNote((current) => [current.trim(), text].filter(Boolean).join(" ")));
   const needsWhen = outcome === "call_back" || outcome === "meeting_booked";
 
+  const choose = (value: CallOutcome) => {
+    setOutcome(value);
+    // The timer started when Call was tapped; the person confirms or corrects it.
+    if (!minutes) setMinutes(String(callMinutes(leadId) ?? ""));
+  };
+
   const save = async () => {
     if (!outcome) return;
     setBusy(true);
-    const reply = await runSalesAction({ action: "log_call", leadId, outcome, note, at: when ? new Date(when).toISOString() : "" });
+    const spent = Math.min(90, Math.max(0, Number(minutes) || 0));
+    const reply = await runSalesAction({ action: "log_call", leadId, outcome, note, at: when ? new Date(when).toISOString() : "", seconds: Math.round(spent * 60) });
     setBusy(false);
     if (!reply.ok) return void toast(reply.error);
+    clearCallStart();
+    setMinutes("");
     const result = JSON.parse(reply.json) as { leadPatch: Record<string, string>; doNotCall: boolean; task: Task | null };
     toast(`${CALL_OUTCOME_LABEL[outcome]} — logged${result.task ? `. Next: ${result.task.title}` : ""}${result.doNotCall ? ". Number added to your do-not-call list." : ""}`);
     onLogged({ outcome, leadPatch: result.leadPatch });
@@ -165,7 +176,7 @@ export function CallOutcomePicker({ leadId, onLogged, autoFocusNote = false }: {
           <button
             key={value}
             type="button"
-            onClick={() => setOutcome(value)}
+            onClick={() => choose(value)}
             className={cn(
               "h-12 rounded-lg px-2 text-sm font-medium transition-colors",
               outcome === value
@@ -205,6 +216,20 @@ export function CallOutcomePicker({ leadId, onLogged, autoFocusNote = false }: {
             ) : null}
           </div>
           {dictation.listening ? <p className="-mt-1 text-xs text-muted">Listening… your browser's speech service turns this into text.</p> : null}
+          <label className="flex items-center gap-2 text-sm text-muted">
+            Minutes on the call
+            <Input
+              type="number"
+              inputMode="numeric"
+              min={0}
+              max={90}
+              value={minutes}
+              onChange={(event) => setMinutes(event.target.value)}
+              placeholder="—"
+              className="h-11 w-20 tabular"
+            />
+            <span className="hidden text-xs text-subtle sm:inline">counts toward minutes per conversation</span>
+          </label>
           <Button className="h-12" disabled={busy || (outcome === "meeting_booked" && !when)} onClick={() => void save()}>
             <Check />
             Log: {CALL_OUTCOME_LABEL[outcome]}
