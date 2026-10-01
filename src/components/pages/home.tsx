@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
 import {
@@ -111,23 +111,39 @@ function Today({ state }: { state: OutreachState }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
 
-  const load = useCallback(async () => {
-    try {
-      const reply = await getToday();
-      if (!reply.ok) return setError(reply.error);
-      setPlan(JSON.parse(reply.json) as TodayPlan);
-      setError("");
-    } catch (failure) {
-      setError(friendlyServerError(failure));
-    }
+  const loading = useRef<Promise<void> | null>(null);
+  const loadedAt = useRef(0);
+  // Coming back to the tab and the state refreshing land together: one load answers both.
+  const load = useCallback((force = false) => {
+    if (loading.current) return loading.current;
+    if (!force && Date.now() - loadedAt.current < 3000) return Promise.resolve();
+    const task = (async () => {
+      try {
+        const reply = await getToday();
+        if (!reply.ok) return setError(reply.error);
+        setPlan(JSON.parse(reply.json) as TodayPlan);
+        setError("");
+      } catch (failure) {
+        setError(friendlyServerError(failure));
+      } finally {
+        loadedAt.current = Date.now();
+        loading.current = null;
+      }
+    })();
+    loading.current = task;
+    return task;
   }, []);
 
+  // The account's data changed: reload the plan.
   useEffect(() => {
-    void load();
+    void load(true);
+  }, [load, state, prospecting.run.status]);
+  // Back in the tab: tasks and replies may have moved on elsewhere.
+  useEffect(() => {
     const onVisible = () => document.visibilityState === "visible" && void load();
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
-  }, [load, state, prospecting.run.status]);
+  }, [load]);
 
   const done = async (step: TodayStep) => {
     setBusy(step.key);
@@ -135,7 +151,7 @@ function Today({ state }: { state: OutreachState }) {
     setBusy("");
     if (!reply.ok) return void toast(reply.error);
     toast("Done.");
-    void load();
+    void load(true);
   };
 
   const now = new Date();

@@ -165,7 +165,7 @@ const replyPoll = (): JobHandler<Record<string, never>, { passes: number }, Repl
 
 // ── Retention ────────────────────────────────────────────────────────────────
 
-export type RetentionResult = { jobs: number; audits: number; evidence: number };
+export type RetentionResult = { jobs: number; audits: number; evidence: number; rateWindows?: number };
 
 /**
  * Tidies what is safe to tidy, and nothing else.
@@ -197,7 +197,12 @@ export async function applyRetention(sql: Sql): Promise<RetentionResult> {
     .query(`delete from evidence_items where superseded_at is not null and superseded_at < now() - interval '365 days' returning id`)
     .then((rows) => rows.length)
     .catch(() => 0);
-  return { jobs, audits, evidence };
+  // Rate-limit windows (security/rate-limit.server.ts) older than a day.
+  const rateWindows = await sql
+    .query(`delete from usage_counters where kind like 'rl:%' and day < $1 returning kind`, [new Date(Date.now() - 86_400_000).toISOString().slice(0, 16)])
+    .then((rows) => rows.length)
+    .catch(() => 0);
+  return { jobs, audits, evidence, rateWindows };
 }
 
 const retention = (): JobHandler<Record<string, never>, { ran: boolean }, { detail: string }, RetentionResult> => ({

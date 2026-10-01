@@ -11,6 +11,7 @@
  * repeated step updates rather than duplicates.
  */
 import type { Sql } from "@/lib/db";
+import { log } from "../log.server.ts";
 import * as store from "./store.server.ts";
 import { LostLease, type Job } from "./store.server.ts";
 import type { JobType } from "./types.ts";
@@ -83,12 +84,15 @@ export async function runSlice(sql: Sql, job: Job, handler: JobHandler, budgetMs
       switch (out.kind) {
         case "done":
           await store.finish(sql, job, { status: "done", state: out.state, progress: out.progress, result: out.result });
+          log.info("job_finished", { userId: job.userId, jobId: job.id, type: job.type, attempts: job.attempts });
           return "done";
         case "cancelled":
           await store.finish(sql, job, { status: "cancelled", state: out.state, progress: out.progress, result: out.result });
+          log.info("job_cancelled", { userId: job.userId, jobId: job.id, type: job.type });
           return "cancelled";
         case "failed":
           await store.finish(sql, job, { status: "failed", state: out.state, progress: out.progress, error: out.error });
+          log.warn("job_failed", { userId: job.userId, jobId: job.id, type: job.type, error: out.error });
           return "failed";
         case "wait":
           await store.release(sql, job, { state: out.state, progress: out.progress, delayMs: out.delayMs });
@@ -103,6 +107,8 @@ export async function runSlice(sql: Sql, job: Job, handler: JobHandler, budgetMs
     if (error instanceof LostLease) return "lost";
     const message = error instanceof Error ? error.message : String(error);
     const outcome = await store.failAttempt(sql, job, message, backoffMs(job.attempts)).catch(() => "retry" as const);
+    if (outcome === "failed") log.error("job_failed", { userId: job.userId, jobId: job.id, type: job.type, attempts: job.attempts + 1, error: message });
+    else log.warn("job_retry", { userId: job.userId, jobId: job.id, type: job.type, attempt: job.attempts + 1, retryInMs: backoffMs(job.attempts), error: message });
     if (outcome === "failed" && handler.failed) {
       const progress = await handler.failed(ctx, snapshot, message).catch(() => snapshot.progress);
       await sql

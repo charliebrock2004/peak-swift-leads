@@ -298,6 +298,70 @@ export function autoContext(
   };
 }
 
+/** A read-only view of `base` without one value — O(1), no copy. */
+function without(base: ReadonlySet<string>, removed: string): ReadonlySet<string> {
+  if (!removed || !base.has(removed)) return base;
+  const values = function* () {
+    for (const value of base) if (value !== removed) yield value;
+  };
+  const view: ReadonlySet<string> = {
+    has: (value) => value !== removed && base.has(value),
+    get size() {
+      return base.size - 1;
+    },
+    forEach: (callback, thisArg) => {
+      for (const value of values()) callback.call(thisArg, value, value, view);
+    },
+    entries: function* () {
+      for (const value of values()) yield [value, value] as [string, string];
+    } as ReadonlySet<string>["entries"],
+    keys: values as ReadonlySet<string>["keys"],
+    values: values as ReadonlySet<string>["values"],
+    [Symbol.iterator]: values as ReadonlySet<string>[typeof Symbol.iterator],
+  } as ReadonlySet<string>;
+  return view;
+}
+
+/**
+ * `autoContext` for judging each email against all the OTHERS, built once.
+ *
+ * An approved email must not count against itself as "this business already
+ * has a live email". Rebuilding the context per email made the send queue
+ * quadratic (every draft scanned every email); this counts once and, for an
+ * email that is the only live one for its business or address, hands back a
+ * view without it.
+ */
+export function autoContextExcluding(
+  emails: readonly OutreachEmail[],
+  suppressed: readonly string[],
+  settings: Pick<OutreachSettings, "includeLow" | "contactRules">,
+): (emailId: string) => EligibilityContext {
+  const base = autoContext(emails, suppressed, settings);
+  const live = new Set(["approved", "queued", "sending", "sent", "replied"]);
+  const byLead = new Map<string, number>();
+  const byAddress = new Map<string, number>();
+  const own = new Map<string, { leadId: string; address: string }>();
+  for (const email of emails) {
+    if (email.kind !== "initial" || !live.has(email.status)) continue;
+    const address = email.recipient ? email.recipient.toLowerCase() : "";
+    byLead.set(email.leadId, (byLead.get(email.leadId) ?? 0) + 1);
+    if (address) byAddress.set(address, (byAddress.get(address) ?? 0) + 1);
+    own.set(email.id, { leadId: email.leadId, address });
+  }
+  return (emailId) => {
+    const mine = own.get(emailId);
+    if (!mine) return base;
+    const soleForLead = byLead.get(mine.leadId) === 1;
+    const soleForAddress = Boolean(mine.address) && byAddress.get(mine.address) === 1;
+    if (!soleForLead && !soleForAddress) return base;
+    return {
+      ...base,
+      alreadyContacted: soleForLead ? without(base.alreadyContacted, mine.leadId) : base.alreadyContacted,
+      contactedAddresses: soleForAddress ? without(base.contactedAddresses, mine.address) : base.contactedAddresses,
+    };
+  };
+}
+
 /**
  * A business worth ringing: a real opportunity that simply cannot be emailed.
  *

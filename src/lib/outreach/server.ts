@@ -310,6 +310,8 @@ async function usableToken(userId: string): Promise<UsableToken> {
 
 export type OutreachState = {
   ok: true;
+  /** Fingerprint of what this state was built from (store `stateVersion`). */
+  version: string;
   /** The studio profile with defaults filled in — what emails actually use. */
   profile: BusinessProfile;
   /** True once the owner has saved their own profile. */
@@ -360,12 +362,34 @@ async function clientIdentity(config: { clientId: string } | null) {
   };
 }
 
-/** Everything the outreach screen needs, in one round trip. */
+/** Nothing changed since the version the screen already holds. */
+export type StateUnchanged = { ok: true; unchanged: true; version: string };
+
+/** Statuses whose body nobody reads from the app state (replies keep theirs for the Replies page). */
+const FINISHED = new Set(["sent", "bounced", "skipped", "unsubscribed", "test_sent"]);
+
+/**
+ * Everything the outreach screen needs, in one round trip.
+ *
+ * `ifChanged` is the version the screen already holds: when nothing has
+ * changed since, the answer is one fingerprint query instead of every row.
+ * Finished emails travel without their body and evidence — the lists never
+ * show them, and a business's own page loads its full history itself.
+ */
 export const getOutreachState = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
-  .handler(async ({ context }): Promise<OutreachState | Fail> => {
+  .validator((input: unknown) => {
+    const ifChanged = (input as { ifChanged?: unknown } | null | undefined)?.ifChanged;
+    return { ifChanged: typeof ifChanged === "string" ? ifChanged.slice(0, 64) : "" };
+  })
+  .handler(async ({ data, context }): Promise<OutreachState | StateUnchanged | Fail> => {
     try {
-      const { sql, store, settings, emails, templates } = await loadWorld(context.userId);
+      const { getSql } = await import("@/lib/db");
+      const versionStore = await import("./store.server.ts");
+      const version = await versionStore.stateVersion(await getSql(), context.userId);
+      if (data.ifChanged && version && data.ifChanged === version) return { ok: true, unchanged: true, version };
+      const { sql, store, settings, emails: allEmails, templates } = await loadWorld(context.userId);
+      const emails = allEmails.map((email) => (FINISHED.has(email.status) ? { ...email, body: "", personalisationEvidence: "", providerResponse: "" } : email));
       const gmail = await import("@/lib/gmail/client.server.ts");
       const { dbSource } = await import("@/lib/db");
       const config = gmail.googleConfig();
@@ -388,6 +412,7 @@ export const getOutreachState = createServerFn({ method: "GET" })
       const used = await store.budgetUsed(sql, context.userId).catch(() => ({ search: 0, ai: 0 }));
       return {
         ok: true,
+        version,
         profile: effectiveProfile(storedProfile),
         profileSaved: profileIsSetUp(storedProfile),
         onboardedAt,
@@ -414,7 +439,7 @@ export const getOutreachState = createServerFn({ method: "GET" })
         database: dbSource,
       };
     } catch (error) {
-      console.error("[outreach] state failed:", error);
+      (await import("@/lib/log.server")).log.error("outreach_state_failed", { userId: context.userId, error });
       const setup = await classifyStateFailure(error);
       return { ok: false, error: SETUP_COPY[setup].detail, setup };
     }
@@ -545,17 +570,25 @@ export const completeGmailConnect = createServerFn({ method: "POST" })
     const store = await import("./store.server.ts");
     const gmail = await import("@/lib/gmail/client.server.ts");
 
+    const { log } = await import("@/lib/log.server");
     const redirectUri = await redirectUriFor(data.origin);
     const exchanged = await gmail.exchangeCode(data.code, redirectUri);
-    if (!exchanged.ok) return { ok: false, error: exchanged.error };
+    if (!exchanged.ok) {
+      log.warn("gmail_oauth_failed", { userId: context.userId, stage: "exchange", error: exchanged.error });
+      return { ok: false, error: exchanged.error };
+    }
 
     const profile = await gmail.getProfile(exchanged.accessToken);
-    if (!profile.ok) return { ok: false, error: `Connected, but Gmail would not identify the account: ${profile.error}` };
+    if (!profile.ok) {
+      log.warn("gmail_oauth_failed", { userId: context.userId, stage: "profile", error: profile.error });
+      return { ok: false, error: `Connected, but Gmail would not identify the account: ${profile.error}` };
+    }
 
     // When a sender is pinned, connecting the wrong account is refused outright
     // rather than quietly sending from somewhere unexpected.
     const expected = gmail.allowedSender();
     if (expected && profile.email.toLowerCase() !== expected) {
+      log.warn("gmail_oauth_failed", { userId: context.userId, stage: "wrong_account" });
       await gmail.revokeToken(exchanged.accessToken);
       return {
         ok: false,
@@ -572,6 +605,8 @@ export const completeGmailConnect = createServerFn({ method: "POST" })
       scope: exchanged.scope,
     });
     const account = await store.loadGmailAccount(sql, context.userId);
+    const { audit } = await import("@/lib/security/audit.server");
+    await audit(sql, context.userId, "GMAIL_CONNECTED", { result: profile.email });
     return {
       ok: true,
       connection: store.publicConnection(account, true, await clientIdentity(gmail.googleConfig())),
@@ -589,6 +624,8 @@ export const disconnectGmail = createServerFn({ method: "POST" })
     // Tell Google first, but never let that failure block forgetting locally.
     if (account?.refresh_token) await gmail.revokeToken(account.refresh_token);
     await store.clearGmailAccount(sql, context.userId);
+    const { audit } = await import("@/lib/security/audit.server");
+    await audit(sql, context.userId, "GMAIL_DISCONNECTED", { result: String(account?.email ?? "") });
     return { ok: true };
   });
 
@@ -758,6 +795,16 @@ export async function generateEmailsCore(data: GenerateInput, context: { userId:
           status: "draft",
           gmailThreadId: data.kind === "initial" ? "" : (previous?.gmailThreadId ?? ""),
         });
+        if (composed.fellBackBecause || !verdict.ok) {
+          (await import("@/lib/log.server")).log.info(composed.fellBackBecause ? "ai_draft_rejected" : "draft_blocked_by_gate", {
+            userId: context.userId,
+            leadId,
+            emailId: id,
+            angle: composed.angle,
+            reason: composed.fellBackBecause ? composed.fellBackBecause.slice(0, 300) : undefined,
+            problems: verdict.ok ? undefined : verdict.problems.map((problem) => problem.code),
+          });
+        }
         await store.recordActivity(sql, context.userId, {
           id: newLeadId(),
           type: "EMAIL_PREPARED",
@@ -783,7 +830,7 @@ export async function generateEmailsCore(data: GenerateInput, context: { userId:
       }
       return { ok: true, rows };
     } catch (error) {
-      console.error("[outreach] generate failed:", error);
+      (await import("@/lib/log.server")).log.error("email_generate_failed", { userId: context.userId, error });
       return { ok: false, error: "Could not generate emails." };
     }
 }
@@ -908,7 +955,7 @@ export const setEmailDecision = createServerFn({ method: "POST" })
       }
       return { ok: true, changed, refused, notes };
     } catch (error) {
-      console.error("[outreach] decision failed:", error);
+      (await import("@/lib/log.server")).log.error("email_decision_failed", { userId: context.userId, error });
       return { ok: false, error: "Could not update those emails." };
     }
   });
@@ -985,7 +1032,7 @@ export const sendQueued = createServerFn({ method: "POST" })
       const after = await store.loadEmails(sql, context.userId);
       return { ok: true, sent, failed, skipped, remaining: allowance(after, settings).remaining, details, stopped };
     } catch (error) {
-      console.error("[outreach] send failed:", error);
+      (await import("@/lib/log.server")).log.error("gmail_send_failed", { userId: context.userId, error });
       return { ok: false, error: "Sending stopped on a server error. Anything sent before it is recorded; nothing further was sent." };
     }
   });
@@ -1181,7 +1228,7 @@ export async function checkRepliesCore(userId: string): Promise<ReplyReport | Fa
         more: ranOut || waiting.length === REPLY_BATCH,
       };
     } catch (error) {
-      console.error("[outreach] reply check failed:", error);
+      (await import("@/lib/log.server")).log.error("reply_poll_failed", { userId: userId, error });
       return { ok: false, error: "Could not check for replies." };
     }
 }
@@ -1218,6 +1265,8 @@ export const unsubscribeLead = createServerFn({ method: "POST" })
         unsubscribed: new Date().toISOString(),
       });
     }
+    const { audit } = await import("@/lib/security/audit.server");
+    await audit(sql, context.userId, "SUPPRESSED_BY_YOU", { leadId: data.leadId, leadName: lead?.businessName, result: address, reason: data.reason });
     return { ok: true };
   });
 
@@ -1233,6 +1282,13 @@ export const saveOutreachSettings = createServerFn({ method: "POST" })
     const current = await store.loadSettings(sql, context.userId);
     const next = sanitizeSettings(data ?? {}, current ?? DEFAULT_SETTINGS);
     await store.saveSettings(sql, context.userId, next);
+    // Which settings changed, by name — the values are on the settings page.
+    const before = (current ?? DEFAULT_SETTINGS) as Record<string, unknown>;
+    const changed = Object.keys(next).filter((key) => JSON.stringify((next as Record<string, unknown>)[key]) !== JSON.stringify(before[key]));
+    if (changed.length) {
+      const { audit } = await import("@/lib/security/audit.server");
+      await audit(sql, context.userId, "SETTINGS_CHANGED", { result: changed.join(", ").slice(0, 300), metadata: { changed } });
+    }
     return { ok: true, settings: next };
   });
 
@@ -1750,7 +1806,7 @@ export const sendEmail = createServerFn({ method: "POST" })
         allowance: { sent: sentToday, limit: settings.dailyLimit, remaining: Math.max(0, settings.dailyLimit - sentToday) },
       };
     } catch (error) {
-      console.error("[outreach] sendEmail failed:", error);
+      (await import("@/lib/log.server")).log.error("gmail_send_failed", { userId: context.userId, error });
       return {
         ok: false as const,
         error:
@@ -1768,7 +1824,7 @@ export const reconcileSending = createServerFn({ method: "POST" })
       const result = await engine.reconcileStale(await engineDeps(context.userId));
       return { ok: true as const, ...result };
     } catch (error) {
-      console.error("[outreach] reconcile failed:", error);
+      (await import("@/lib/log.server")).log.error("send_reconcile_failed", { userId: context.userId, error });
       return { ok: false as const, error: "Could not check unfinished sends against Gmail just now." };
     }
   });
@@ -1783,7 +1839,7 @@ export const retryFailedEmails = createServerFn({ method: "POST" })
       const results = await engine.retryEmails(await engineDeps(context.userId), data.ids);
       return { ok: true as const, results };
     } catch (error) {
-      console.error("[outreach] retry failed:", error);
+      (await import("@/lib/log.server")).log.error("send_retry_failed", { userId: context.userId, error });
       return { ok: false as const, error: "Could not retry those emails." };
     }
   });
@@ -1913,7 +1969,7 @@ export const checkGmailHealth = createServerFn({ method: "POST" })
       });
       return finishHealth(sql, store, context.userId, checks);
     } catch (error) {
-      console.error("[outreach] health check failed:", error);
+      (await import("@/lib/log.server")).log.error("gmail_health_failed", { userId: context.userId, error });
       add({ id: "server", label: "Health check", level: "fail", detail: error instanceof Error ? error.message : "The check could not run." });
       return { ok: true as const, checks, healthy: false, checkedAt: new Date().toISOString() };
     }
@@ -1967,7 +2023,7 @@ export const runPipelineTest = createServerFn({ method: "POST" })
         to,
       };
     } catch (error) {
-      console.error("[outreach] pipeline test failed:", error);
+      (await import("@/lib/log.server")).log.error("pipeline_test_failed", { userId: context.userId, error });
       return { ok: false as const, error: error instanceof Error ? error.message : "The test could not run." };
     }
   });
@@ -1983,10 +2039,15 @@ export const saveBusinessProfile = createServerFn({ method: "POST" })
       const { getSql } = await import("@/lib/db");
       const store = await import("./store.server.ts");
       const { profile, problems } = sanitizeProfile(data as never);
-      await store.saveProfile(await getSql(), context.userId, profile, { onboarded: data.onboarded === true });
+      const sql = await getSql();
+      const { RATE, RATE_LIMITED, withinRate } = await import("@/lib/security/rate-limit.server");
+      if (!(await withinRate(sql, context.userId, RATE.profile))) return { ok: false as const, error: RATE_LIMITED };
+      await store.saveProfile(sql, context.userId, profile, { onboarded: data.onboarded === true });
+      const { audit } = await import("@/lib/security/audit.server");
+      await audit(sql, context.userId, "PROFILE_SAVED", { result: data.onboarded === true ? "welcome" : "settings" });
       return { ok: true as const, profile: effectiveProfile(profile), problems };
     } catch (error) {
-      console.error("[outreach] profile save failed:", error);
+      (await import("@/lib/log.server")).log.error("profile_save_failed", { userId: context.userId, error });
       return { ok: false as const, error: isMissingTable(error) ? "Redeploy so the latest migration runs, then save again." : "Could not save the profile." };
     }
   });
@@ -2036,7 +2097,7 @@ export const setReplyStage = createServerFn({ method: "POST" })
       });
       return { ok: true as const, email };
     } catch (error) {
-      console.error("[outreach] reply stage failed:", error);
+      (await import("@/lib/log.server")).log.error("reply_stage_failed", { userId: context.userId, error });
       return { ok: false as const, error: "Could not update that reply." };
     }
   });
@@ -2129,7 +2190,7 @@ export const getRunDetail = createServerFn({ method: "GET" })
       );
       return { ok: true as const, run, leads, emails };
     } catch (error) {
-      console.error("[outreach] run detail failed:", error);
+      (await import("@/lib/log.server")).log.error("run_detail_failed", { userId: context.userId, error });
       return { ok: false as const, error: "Could not load that run." };
     }
   });
@@ -2147,7 +2208,7 @@ export const listRuns = createServerFn({ method: "GET" })
       return { ok: true as const, runs };
     } catch (error) {
       if (isMissingTable(error)) return { ok: true as const, runs: [] };
-      console.error("[outreach] list runs failed:", error);
+      (await import("@/lib/log.server")).log.error("list_runs_failed", { userId: context.userId, error });
       return { ok: false as const, error: "Could not load run history." };
     }
   });

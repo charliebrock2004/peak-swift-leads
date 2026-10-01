@@ -51,6 +51,8 @@ export const businessAction = createServerFn({ method: "POST" })
       const { sanitizeLead } = await import("@/lib/leads-server");
       const { mergePatch } = await import("@/lib/csv-import");
       const { log } = await import("@/lib/log.server");
+      const { RATE, RATE_LIMITED, withinRate } = await import("@/lib/security/rate-limit.server");
+      if (!(await withinRate(sql, context.userId, data.action === "import" ? RATE.import : RATE.business))) return { ok: false, error: RATE_LIMITED };
       const now = new Date().toISOString();
 
       /** The extra fields a hand-entered email or website implies. */
@@ -110,8 +112,11 @@ export const businessAction = createServerFn({ method: "POST" })
       if (data.action === "remove") {
         // A soft delete: the row stays, so suppression and send history keep
         // their meaning; it just leaves every list.
-        const rows = await sql.query(`update leads set deleted_at = now(), updated_at = now() where user_id = $1 and id = $2 and deleted_at is null returning id`, [context.userId, data.id]);
-        return rows.length ? { ok: true, json: JSON.stringify({ id: data.id }) } : { ok: false, error: "That business no longer exists." };
+        const rows = await sql.query<{ business_name: string }>(`update leads set deleted_at = now(), updated_at = now() where user_id = $1 and id = $2 and deleted_at is null returning business_name`, [context.userId, data.id]);
+        if (!rows.length) return { ok: false, error: "That business no longer exists." };
+        const { audit } = await import("@/lib/security/audit.server");
+        await audit(sql, context.userId, "BUSINESS_REMOVED", { leadId: data.id, leadName: String(rows[0]!.business_name ?? "") });
+        return { ok: true, json: JSON.stringify({ id: data.id }) };
       }
 
       // Import: re-checked here against the account's own list, so a stale
@@ -141,6 +146,8 @@ export const businessAction = createServerFn({ method: "POST" })
       await writes.insertLeads(sql, context.userId, fresh as never[]);
       for (const [id, patch] of merged) await writes.patchLead(sql, context.userId, id, patch as never);
       log.info("businesses_imported", { userId: context.userId, added: fresh.length, merged: merged.size });
+      const { audit } = await import("@/lib/security/audit.server");
+      await audit(sql, context.userId, "BUSINESSES_IMPORTED", { result: `${fresh.length} added, ${merged.size} topped up` });
       return { ok: true, json: JSON.stringify({ added: fresh.length, merged: merged.size, ids: [...fresh.map((lead) => String(lead.id)), ...merged.keys()] }) };
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : "Could not save that." };

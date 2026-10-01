@@ -62,7 +62,7 @@ export const getToday = createServerFn({ method: "GET" })
   .handler(async ({ context }): Promise<Reply> => {
     try {
       const w = await world(context.userId);
-      const { sendQueue } = await import("@/components/app/send-queue");
+      const { sendQueue } = await import("@/lib/outreach/send-queue");
       const { allowance } = await import("@/lib/outreach/limits");
       const { autoContext } = await import("@/lib/outreach/auto-run");
       const { followUpsDue } = await import("@/lib/outreach/follow-ups");
@@ -297,6 +297,8 @@ export const salesAction = createServerFn({ method: "POST" })
     try {
       const { getSql } = await import("@/lib/db");
       const sql = await getSql();
+      const { RATE, RATE_LIMITED, withinRate } = await import("@/lib/security/rate-limit.server");
+      if (!(await withinRate(sql, context.userId, RATE.sales))) return { ok: false, error: RATE_LIMITED };
       const actions = await import("./actions.server.ts");
       const sales = await import("./store.server.ts");
       const { log } = await import("@/lib/log.server");

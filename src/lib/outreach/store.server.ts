@@ -6,6 +6,7 @@
  * always the verified id from `authMiddleware` — never anything a client sent.
  */
 import { domainOf, parseVerdicts } from "../feedback/verdicts.ts";
+import { log } from "../log.server.ts";
 import type { Sql } from "@/lib/db";
 import { leadFromRow, type LeadRow } from "../leads-row.ts";
 import { openSecret, sealSecret } from "../crypto/secrets.server.ts";
@@ -1015,6 +1016,14 @@ export async function loadLeads(sql: Sql, userId: string, limit = 20000): Promis
   return rows.map(leadWithFacts);
 }
 
+/** Several leads with their facts in one query (a Find run's batch), in no particular order. */
+export async function loadLeadsByIds(sql: Sql, userId: string, ids: readonly string[]): Promise<LeadWithFacts[]> {
+  const unique = [...new Set(ids)].slice(0, 5000);
+  if (unique.length === 0) return [];
+  const rows = await queryLeadsWithFacts(sql, `where l.user_id = $1 and l.id = any($2::text[]) and l.deleted_at is null`, [userId, unique]);
+  return rows.map(leadWithFacts);
+}
+
 export async function loadLead(sql: Sql, userId: string, id: string): Promise<LeadWithFacts | null> {
   const rows = await queryLeadsWithFacts(sql, `where l.user_id = $1 and l.id = $2 and l.deleted_at is null`, [userId, id]);
   return rows[0] ? leadWithFacts(rows[0]) : null;
@@ -1106,12 +1115,15 @@ export async function suppress(
 ): Promise<void> {
   const email = entry.email.trim().toLowerCase();
   if (!email) return;
-  await sql.query(
+  const rows = await sql.query(
     `insert into outreach_suppression (user_id, email, reason, lead_id, business_name, created_at)
      values ($1,$2,$3,$4,$5, now())
-     on conflict (user_id, email) do nothing`,
+     on conflict (user_id, email) do nothing
+     returning email`,
     [userId, email, entry.reason.slice(0, 200), entry.leadId ?? "", entry.businessName ?? ""],
   );
+  // The address itself stays out of the logs: the lead and the reason identify it.
+  if (rows.length) log.info("suppression_added", { userId, leadId: entry.leadId || undefined, reason: entry.reason.slice(0, 120) });
 }
 
 /**
@@ -1802,4 +1814,43 @@ export async function closeAbandonedRuns(sql: Sql, userId: string, olderThanMinu
       where user_id = $1 and status = 'running' and updated_at < now() - make_interval(mins => $2)`,
     [userId, olderThanMinutes],
   );
+}
+
+// ── State version ────────────────────────────────────────────────────────────
+
+/**
+ * A fingerprint of everything the app's state is built from: row counts and
+ * the latest change in each table, plus today's date (the daily allowance
+ * turns over at midnight). One small query, so a screen coming back into view
+ * can ask "has anything changed?" instead of reloading thousands of rows.
+ * Any failure (a table missing mid-migration) returns "" — which never
+ * matches, so the caller simply loads in full.
+ */
+export async function stateVersion(sql: Sql, userId: string, now: Date = new Date()): Promise<string> {
+  const part = (table: string, column: string, counted = true) =>
+    `(select ${counted ? "count(*)::text || ':' || " : ""}coalesce(max(${column})::text, '') from ${table} where user_id = $1)`;
+  try {
+    const rows = await sql.query<{ v: string }>(
+      `select concat_ws('|',
+          ${part("leads", "updated_at")},
+          ${part("outreach_emails", "updated_at")},
+          ${part("outreach_settings", "updated_at", false)},
+          ${part("business_profile", "updated_at", false)},
+          ${part("outreach_suppression", "created_at")},
+          ${part("gmail_accounts", "updated_at", false)},
+          ${part("outreach_templates", "updated_at")},
+          ${part("campaigns", "updated_at")},
+          ${part("campaign_prospects", "added_at")},
+          ${part("lead_evidence", "updated_at")},
+          ${part("website_audits", "finished_at")},
+          ${part("prospect_feedback", "created_at")},
+          (select coalesce(sum(used), 0)::text from usage_counters where user_id = $1 and day = $2)
+        ) as v`,
+      [userId, now.toISOString().slice(0, 10)],
+    );
+    const { createHash } = await import("node:crypto");
+    return createHash("sha256").update(`${now.toISOString().slice(0, 10)}|${rows[0]?.v ?? ""}`).digest("base64url").slice(0, 24);
+  } catch {
+    return "";
+  }
 }

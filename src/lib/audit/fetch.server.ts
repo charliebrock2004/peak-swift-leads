@@ -16,7 +16,7 @@ export type PageFetch =
   | { ok: true; status: number; finalUrl: string; redirects: string[]; html: string; bytes: number; responseMs: number; contentType: string }
   | { ok: false; error: string; redirects: string[]; responseMs: number; status: number; finalUrl: string };
 
-async function readCapped(response: Response, cap: number): Promise<{ text: string; bytes: number }> {
+export async function readCapped(response: Response, cap: number): Promise<{ text: string; bytes: number }> {
   const reader = response.body?.getReader();
   if (!reader) return { text: "", bytes: 0 };
   const chunks: Uint8Array[] = [];

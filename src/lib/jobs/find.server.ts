@@ -30,6 +30,7 @@ import { clampCampaign, campaignProblem, newCampaign } from "../outreach/campaig
 import { allowance } from "../outreach/limits.ts";
 import { effectiveProfile, scoringProfile } from "../outreach/profile.ts";
 import { sourceWeights } from "../feedback/quality.ts";
+import { log as slog } from "../log.server.ts";
 import { domainOf } from "../feedback/verdicts.ts";
 import { emptyFunnel, reconcileFunnel, tallyOutcomes, type RunFunnel } from "../outreach/run-funnel.ts";
 import type { GeneratedRow, GenerateInput } from "../outreach/server.ts";
@@ -357,6 +358,13 @@ async function discover(ctx: StepContext, snap: Snapshot, deps: FindDeps): Promi
     shouldCancel: () => Date.now() - started > DISCOVERY_STEP_MAX_MS,
     research: (query) => deps.research({ location: query.location, businessType: query.businessType, limit: query.limit, radiusMiles: input.radiusMiles }, ctx.userId),
   });
+  // What each source gave, so a failing or empty source is visible in the logs.
+  const ids = { userId: ctx.userId, jobId: ctx.jobId, trade, location: input.location };
+  slog.info("discovery_search", { ...ids, areas: search.funnel.areas, raw: search.funnel.rawTotal, rawBySource: search.funnel.rawBySource, newCandidates: search.pool.newCandidates, errors: search.errors.length });
+  for (const error of search.errors.slice(0, 5)) slog.warn("discovery_source_failed", { ...ids, error });
+  if (search.funnel.queriesSent > 0) {
+    for (const [source, rows] of Object.entries(search.funnel.rawBySource)) if (rows === 0) slog.info("discovery_zero_yield_source", { ...ids, source });
+  }
   const seen = new Set(snap.state.seen);
   const { added, rediscovered } = absorbSearch(funnel, search, seen);
   let progress = { ...snap.progress, funnel };
@@ -465,6 +473,7 @@ async function verify(ctx: StepContext, snap: Snapshot, deps: FindDeps): Promise
           if (mail.website) verified.add(lead.id);
           funnel.websitesRejected += mail.rejectedCandidates?.length ?? 0;
           funnel.emailsRejected += mail.rejectedEmails?.length ?? 0;
+          if (mail.searchFailure) slog.warn("email_discovery_failed", { userId: ctx.userId, jobId: ctx.jobId, leadId: lead.id, source: "web_search", reason: mail.searchFailure });
           if (!mail.found && mail.discovery.reason) {
             const note = mail.searchFailure ? ` (${SEARCH_FAILURE_LABELS[mail.searchFailure] ?? mail.searchFailure})` : "";
             whyNoEmail[lead.id] = `${DISCOVERY_REASON_LABELS[mail.discovery.reason] ?? mail.discovery.reason}${note}`;
@@ -472,6 +481,7 @@ async function verify(ctx: StepContext, snap: Snapshot, deps: FindDeps): Promise
         }
       } catch (error) {
         funnel.checkErrors += 1;
+        slog.warn("email_discovery_failed", { userId: ctx.userId, jobId: ctx.jobId, leadId: lead.id, error });
         notes.push({ text: `${lead.businessName}: ${friendlyServerError(error, "check failed")}`, tone: "warn" });
       }
     }),
@@ -512,7 +522,7 @@ async function enrich(ctx: StepContext, snap: Snapshot, deps: FindDeps): Promise
   let chStopped = snap.state.chStopped;
   let auditStopped = snap.state.auditStopped;
   const now = Date.now();
-  const leads = (await Promise.all(ids.map((id) => store.loadLead(ctx.sql, ctx.userId, id)))).filter((lead): lead is LeadWithFacts => Boolean(lead));
+  const leads = await store.loadLeadsByIds(ctx.sql, ctx.userId, ids);
 
   await Promise.all(
     leads.map(async (lead) => {
@@ -547,9 +557,13 @@ async function enrich(ctx: StepContext, snap: Snapshot, deps: FindDeps): Promise
         try {
           const audit = await deps.audit(ctx.sql, ctx.userId, lead);
           if (audit.status === "ok") enrichment.audited += 1;
-          else enrichment.auditFailed += 1;
-        } catch {
+          else {
+            enrichment.auditFailed += 1;
+            slog.warn("website_audit_failed", { userId: ctx.userId, jobId: ctx.jobId, leadId: lead.id, status: audit.status });
+          }
+        } catch (error) {
           enrichment.auditFailed += 1;
+          slog.warn("website_audit_failed", { userId: ctx.userId, jobId: ctx.jobId, leadId: lead.id, error });
         }
       }
     }),
@@ -594,7 +608,7 @@ async function qualify(ctx: StepContext, snap: Snapshot): Promise<Snapshot> {
     store.loadProfile(ctx.sql, ctx.userId).catch(() => null),
   ]);
   const ids = new Set(snap.state.leadIds);
-  const leads = (await Promise.all([...ids].map((id) => store.loadLead(ctx.sql, ctx.userId, id)))).filter((lead): lead is LeadWithFacts => Boolean(lead));
+  const leads = await store.loadLeadsByIds(ctx.sql, ctx.userId, [...ids]);
   const context = autoContext(emails, [...suppression], settings);
   const outcomes = tallyOutcomes(leads, context);
   const funnel: RunFunnel = {

@@ -8,6 +8,7 @@ import { Card, EmptyState, Notice, PageHeader, ScoreBadge, Segmented } from "@/c
 import { CallStatusBadge } from "@/components/app/contactability";
 import { callContactability, SCREENING_VALID_DAYS, type CallContactability } from "@/lib/contactability/phone";
 import { getContactContext, recordPhoneScreening, setDoNotCall, type ContactContext } from "@/lib/contactability/server";
+import { invalidateContactContext } from "@/components/app/use-scores";
 import { friendlyServerError } from "@/lib/server-errors";
 import { WhyThisProspect } from "@/components/app/prospect-facts";
 import { liveLeads, mapsHref, phoneHref } from "@/lib/leads";
@@ -40,6 +41,8 @@ export function CallsPage() {
   const [contactError, setContactError] = useState("");
 
   const refresh = useCallback(async () => {
+    // This screen writes screenings and do-not-call entries: the shared copy is stale after.
+    invalidateContactContext();
     try {
       const result = await getContactContext();
       if (result.success) {

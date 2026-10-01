@@ -15,8 +15,8 @@ import { useReplyPolling } from "./use-reply-polling";
 import { useActiveTime } from "./use-active-time";
 import { AppDataContext } from "./app-data";
 
-/** Refresh when the tab comes back, but not more often than this. */
-const REFRESH_AFTER_MS = 45_000;
+/** Check for changes when the tab comes back, but not more often than this. */
+const REFRESH_AFTER_MS = 20_000;
 
 export function AppDataProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<OutreachState | null>(null);
@@ -25,22 +25,29 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState("");
   const loadedAt = useRef(0);
   const inFlight = useRef<Promise<void> | null>(null);
+  const version = useRef("");
 
-
-  const reload = useCallback(async () => {
+  /**
+   * Load the account's state. `onlyIfChanged` asks the server first whether
+   * anything changed since the version on screen — what coming back to the
+   * tab uses, so returning from a phone call does not reload every row.
+   */
+  const refresh = useCallback(async (onlyIfChanged: boolean) => {
     if (inFlight.current) return inFlight.current;
     const task = (async () => {
       try {
-        const next = await getOutreachState();
+        const next = await getOutreachState({ data: { ifChanged: onlyIfChanged ? version.current : "" } });
         if (!next.ok) {
           setError(next.error);
           setSetup(next.setup ?? classifySetupError(next.error));
           return;
         }
+        loadedAt.current = Date.now();
+        if ("unchanged" in next) return;
+        version.current = next.version;
         setState(next);
         setError("");
         setSetup(null);
-        loadedAt.current = Date.now();
       } catch (err) {
         const message = err instanceof Error ? err.message : "Could not load.";
         setError(message);
@@ -54,14 +61,16 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     return task;
   }, []);
 
+  const reload = useCallback(() => refresh(false), [refresh]);
+
   useEffect(() => {
     void reload();
     const onVisible = () => {
-      if (document.visibilityState === "visible" && Date.now() - loadedAt.current > REFRESH_AFTER_MS) void reload();
+      if (document.visibilityState === "visible" && Date.now() - loadedAt.current > REFRESH_AFTER_MS) void refresh(true);
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
-  }, [reload]);
+  }, [reload, refresh]);
 
   useReplyPolling(state?.connection.status === "connected", () => void reload());
 

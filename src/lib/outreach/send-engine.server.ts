@@ -26,6 +26,7 @@
  * (PGLite) and a stand-in Gmail.
  */
 import type { Sql } from "@/lib/db";
+import { log } from "../log.server.ts";
 import type { Lead } from "@/lib/leads";
 import type { MessageMeta, SendResult, SentLookup, GmailFailure } from "../gmail/client.server.ts";
 import { buildRawMessage } from "../gmail/mime.ts";
@@ -365,6 +366,7 @@ export async function sendOne(deps: EngineDeps, emailId: string, options: SendOp
 
   // ── Gmail did not confirm. What that means depends on why. ─────────────────
   const response = JSON.stringify({ status: result.status ?? 0, kind: result.kind, error: result.error.slice(0, 300) });
+  log.warn("gmail_send_failed", { userId: deps.userId, emailId: email.id, leadId: email.leadId, kind: result.kind, status: result.status ?? 0, error: result.error.slice(0, 300) });
   await activity(deps, {
     id: newId(deps),
     type: "EMAIL_FAILED",

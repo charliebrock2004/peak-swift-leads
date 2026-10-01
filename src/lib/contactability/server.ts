@@ -209,6 +209,8 @@ export const setLegalForm = createServerFn({ method: "POST" })
           observedAt: at,
         },
       ]);
+      const { audit } = await import("@/lib/security/audit.server");
+      await audit(sql, context.userId, "LEGAL_FORM_SET", { leadId: data.leadId, result: data.form || "cleared", reason: data.note });
       return { success: true as const };
     } catch (error) {
       return failure(error);
@@ -265,6 +267,8 @@ export const recordPhoneScreening = createServerFn({ method: "POST" })
           rejected.push(entry.phone);
         }
       }
+      const { audit } = await import("@/lib/security/audit.server");
+      await audit(sql, context.userId, "PHONES_SCREENED", { result: `${saved} saved, ${rejected.length} rejected`, reason: data.method });
       return { success: true as const, saved, rejected };
     } catch (error) {
       return failure(error);
@@ -300,6 +304,8 @@ export const setDoNotCall = createServerFn({ method: "POST" })
           },
         ]);
       }
+      const { audit } = await import("@/lib/security/audit.server");
+      await audit(sql, context.userId, "DO_NOT_CALL_ADDED", { leadId: data.leadId, result: number });
       return { success: true as const, phone: number };
     } catch (error) {
       return failure(error);
@@ -314,6 +320,8 @@ export const clearDoNotCall = createServerFn({ method: "POST" })
     try {
       const { sql, contacts } = await world(context.userId);
       await contacts.removeDoNotCall(sql, context.userId, data.phone);
+      const { audit } = await import("@/lib/security/audit.server");
+      await audit(sql, context.userId, "DO_NOT_CALL_CLEARED", { result: data.phone });
       return { success: true as const };
     } catch (error) {
       return failure(error);

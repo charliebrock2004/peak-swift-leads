@@ -90,7 +90,9 @@ async function fetchPage(
       headers: { "User-Agent": USER_AGENT, Accept: "text/html,application/xhtml+xml" },
     });
     const type = response.headers.get("content-type") ?? "";
-    const html = /html|xml|text/i.test(type) || !type ? (await response.text()).slice(0, 400_000) : "";
+    // Read at most 400 KB: a page that streams forever must not fill memory.
+    const { readCapped } = await import("@/lib/audit/fetch.server");
+    const html = /html|xml|text/i.test(type) || !type ? (await readCapped(response, 400_000)).text : (await response.body?.cancel().catch(() => undefined), "");
     return { ok: response.ok, status: response.status, finalUrl: finalUrl || href, html };
   } finally {
     clearTimeout(timer);
