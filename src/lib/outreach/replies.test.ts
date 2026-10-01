@@ -36,6 +36,7 @@ describe("sorting what came back on a thread", () => {
     assert.deepEqual(classifyReply(msg("Jim <jim@x.co.uk>", "Re: Website?", "Sounds good, how much would it cost?")), {
       kind: "human",
       suggestion: "interested",
+      intent: "positive",
     });
     assert.equal(classifyReply(msg("jim@x.co.uk", "Re: Website?", "No thanks, we're sorted.")).suggestion, "not_interested");
     assert.equal(classifyReply(msg("jim@x.co.uk", "Re: Website?", "Could you pop in on Tuesday at 10?")).suggestion, "booked");
@@ -66,5 +67,29 @@ describe("sorting what came back on a thread", () => {
     assert.equal(leadOutcomeForStage("booked")?.callResult, "Booked");
     assert.equal(leadOutcomeForStage("won")?.callResult, "Won");
     assert.equal(leadOutcomeForStage("new"), null);
+  });
+});
+
+describe("what a reply meant", () => {
+  const intent = (snippet: string, subject = "Re: Website?") => classifyReply(msg("jim@x.co.uk", subject, snippet)).intent;
+  it("rules decide, in order", () => {
+    assert.equal(intent("Sounds good — can you give me a ring?"), "positive");
+    assert.equal(intent("Could you pop in on Tuesday at 10?"), "positive");
+    assert.equal(intent("No thanks, we're sorted."), "negative");
+    assert.equal(intent("Honestly it's too expensive for us."), "objection");
+    assert.equal(intent("We get all our work through word of mouth."), "objection");
+    assert.equal(intent("Maybe next year, we're flat out."), "later");
+    assert.equal(intent("Too busy at the moment, try me after Christmas"), "later");
+    assert.equal(intent("You'll want to speak to my partner Sarah about that."), "referral");
+    assert.equal(intent("Wrong person I'm afraid, Dave left the company."), "wrong_person");
+    assert.equal(intent("Who gave you this address?"), "neutral");
+    assert.equal(intent("Please remove me from your list"), "unsubscribe");
+    assert.equal(classifyReply(msg("jim@x.co.uk", "Out of office", "Away until 3 October")).intent, "ooo");
+  });
+
+  it("a plain no is a no, even with a time in it — unless it leaves the door open", () => {
+    assert.equal(intent("Not interested, thanks."), "negative");
+    assert.equal(intent("No thanks — not interested right now or next year."), "negative");
+    assert.equal(intent("Not interested right now, but maybe next year."), "later");
   });
 });

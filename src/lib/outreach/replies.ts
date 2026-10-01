@@ -22,7 +22,24 @@ export type ThreadMessageLike = {
   headers?: Record<string, string>;
 };
 
-export type ReplyClass = { kind: Exclude<ReplyKind, "">; suggestion: ReplyStage | "" };
+/** What a reply meant. A suggestion for a person; nothing is sent because of it. */
+export const REPLY_INTENTS = ["positive", "neutral", "negative", "objection", "ooo", "unsubscribe", "referral", "wrong_person", "later", "bounce"] as const;
+export type ReplyIntent = (typeof REPLY_INTENTS)[number];
+
+export const REPLY_INTENT_LABEL: Record<ReplyIntent, string> = {
+  positive: "Positive",
+  neutral: "Neutral",
+  negative: "Not interested",
+  objection: "Objection",
+  ooo: "Out of office",
+  unsubscribe: "Asked to stop",
+  referral: "Referred you on",
+  wrong_person: "Wrong person",
+  later: "Later",
+  bounce: "Bounced",
+};
+
+export type ReplyClass = { kind: Exclude<ReplyKind, "">; suggestion: ReplyStage | ""; intent: ReplyIntent };
 
 const BOUNCE_FROM = /mailer-daemon|postmaster@|mail delivery (?:subsystem|system)|microsoftexchange[0-9a-f]*@/i;
 const BOUNCE_SUBJECT =
@@ -38,6 +55,15 @@ const NOT_INTERESTED =
 // Checked only after NOT_INTERESTED, so "not interested" never reaches here.
 const INTERESTED =
   /\b(?:yes|yeah|aye|sounds (?:good|great|interesting)|interested|go ahead|how much|what (?:would|does) it cost|price|pricing|quote|give (?:me|us) a (?:call|ring)|call me|ring me|let'?s (?:chat|talk)|happy to (?:chat|talk)|mock[- ]?up|send (?:it|me|us) over|keen|tell me more|more (?:info|information|details))\b/i;
+const WRONG_PERSON =
+  /\b(?:wrong (?:person|email|address|business|company|number)|not the (?:right )?person|you(?:'ve| have) got the wrong|(?:i|he|she|they) (?:no longer|don'?t|doesn'?t) work(?:s)? (?:here|there|for)|(?:has|have) left (?:the )?(?:company|business|firm))\b/i;
+const REFERRAL =
+  /\b(?:(?:speak|talk) to|(?:contact|email|try|ring|call) (?:my|our|the))\s+(?:\w+\s+){0,2}(?:partner|husband|wife|son|daughter|manager|boss|owner|office|colleague|director|team)\b|\b(?:cc'?d|copied in|forwarded (?:this|your (?:email|message)) (?:to|on))\b/i;
+const LATER =
+  /\b(?:maybe (?:later|next (?:year|month|spring|summer|autumn|winter))|(?:in|after) the (?:new year|spring|summer|autumn|winter)|(?:in|after|until) (?:january|february|march|april|may|june|july|august|september|october|november|december)\b|(?:get|come) back to (?:you|me|us) (?:in|after|later|next)|(?:try|contact|ask|email) (?:me|us) (?:again )?(?:in|after|later|next)|(?:too|really|very) busy (?:at the moment|right now|just now)|(?:not|maybe not) (?:just|right) now|not at the moment|later in the year|next year)\b/i;
+const OBJECTION =
+  /\b(?:too (?:expensive|dear|pricey|much)|can'?t afford|out of (?:our|my) budget|word of mouth|(?:get|have) (?:enough|plenty of) work|facebook (?:does|is) (?:fine|enough|plenty)|(?:is this|sounds like) a scam|what'?s the catch|how (?:do|can) (?:i|we) (?:know|trust))\b/i;
+const EXPLICIT_NO = /\b(?:no thanks|no thank you|not interested|please don'?t|stop (?:emailing|contacting))\b/i;
 const BOOKING = /\b(?:book(?:ed)? (?:a|in)|meet(?:ing)? (?:on|at)|see you (?:on|at)|(?:monday|tuesday|wednesday|thursday|friday|saturday) (?:at|morning|afternoon)|pop (?:in|round|over))\b/i;
 
 function header(message: ThreadMessageLike, name: string): string {
@@ -64,17 +90,30 @@ export function isAutoReply(message: ThreadMessageLike): boolean {
   return AUTO_BODY.test(message.snippet);
 }
 
-/** Sort one incoming message into what it is, with a suggested stage for a person. */
+/**
+ * Sort one incoming message into what it is, with what it probably means and a
+ * suggested stage for a person. Rules, in a fixed order, always decide —
+ * nothing here guesses: delivery failures and out-of-office replies by their
+ * headers first, then a request to stop, then who it is for, then timing,
+ * then the answer itself.
+ */
 export function classifyReply(message: ThreadMessageLike): ReplyClass {
-  if (isBounce(message)) return { kind: "bounce", suggestion: "" };
-  if (isAutoReply(message)) return { kind: "auto_reply", suggestion: "" };
+  if (isBounce(message)) return { kind: "bounce", suggestion: "", intent: "bounce" };
+  if (isAutoReply(message)) return { kind: "auto_reply", suggestion: "", intent: "ooo" };
   const text = `${message.subject} ${message.snippet}`;
-  if (readsAsUnsubscribe(text)) return { kind: "unsubscribe", suggestion: "not_interested" };
-  if (NOT_INTERESTED.test(text)) return { kind: "human", suggestion: "not_interested" };
-  if (BOOKING.test(text)) return { kind: "human", suggestion: "booked" };
-  if (INTERESTED.test(text)) return { kind: "human", suggestion: "interested" };
-  if (/\?/.test(message.snippet)) return { kind: "human", suggestion: "needs_follow_up" };
-  return { kind: "human", suggestion: "new" };
+  if (readsAsUnsubscribe(text)) return { kind: "unsubscribe", suggestion: "not_interested", intent: "unsubscribe" };
+  if (WRONG_PERSON.test(text)) return { kind: "human", suggestion: "needs_follow_up", intent: "wrong_person" };
+  if (REFERRAL.test(text)) return { kind: "human", suggestion: "needs_follow_up", intent: "referral" };
+  const no = EXPLICIT_NO.test(text);
+  // A clear no stays a no unless it leaves the door open ("maybe next year").
+  const doorOpen = /\b(?:maybe|perhaps|possibly|try (?:me|us) again|get back (?:to|in touch)|in touch (?:in|after|next))\b/i.test(text);
+  if (LATER.test(text) && (!no || doorOpen)) return { kind: "human", suggestion: "needs_follow_up", intent: "later" };
+  if (OBJECTION.test(text) && !no) return { kind: "human", suggestion: "needs_follow_up", intent: "objection" };
+  if (NOT_INTERESTED.test(text)) return { kind: "human", suggestion: "not_interested", intent: "negative" };
+  if (BOOKING.test(text)) return { kind: "human", suggestion: "booked", intent: "positive" };
+  if (INTERESTED.test(text)) return { kind: "human", suggestion: "interested", intent: "positive" };
+  if (/\?/.test(message.snippet)) return { kind: "human", suggestion: "needs_follow_up", intent: "neutral" };
+  return { kind: "human", suggestion: "new", intent: "neutral" };
 }
 
 /**

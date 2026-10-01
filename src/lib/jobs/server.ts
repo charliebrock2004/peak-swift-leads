@@ -18,6 +18,8 @@ type Fail = { ok: false; error: string };
 type JobReply = { ok: true; job: string; alreadyRunning?: boolean } | Fail;
 
 const STARTABLE: readonly JobType[] = ["find", "audit_batch", "company_batch", "reply_poll"];
+/** The shortest gap between two reply checks for one account. */
+const REPLY_POLL_MIN_GAP_MS = 10 * 60 * 1000;
 /** An inline slice from the open app: short, so the screen hears back often. */
 const INLINE_BUDGET_MS = 25_000;
 
@@ -68,6 +70,14 @@ export const startJob = createServerFn({ method: "POST" })
         const leadIds = Array.isArray(source.leadIds) ? source.leadIds.filter((id): id is string => typeof id === "string").map((id) => id.slice(0, 64)).slice(0, 200) : [];
         const limit = Number(source.limit);
         input = { leadIds, limit: Number.isFinite(limit) ? Math.max(1, Math.min(200, Math.round(limit))) : 50 };
+      }
+      // Reply polling is rate-limited per account: a check that finished in
+      // the last ten minutes is answer enough, however many tabs ask.
+      if (data.type === "reply_poll") {
+        const [last] = await store.recentJobs(sql, context.userId, "reply_poll", 1);
+        if (last && last.status === "done" && Date.parse(last.finishedAt) > Date.now() - REPLY_POLL_MIN_GAP_MS) {
+          return { ok: true, job: JSON.stringify(store.toView(last)), alreadyRunning: false };
+        }
       }
       const { job, created } = await store.createJob(sql, context.userId, {
         type: data.type,

@@ -12,6 +12,7 @@ import { autoContext } from "@/lib/outreach/auto-run";
 import { useLeadSync } from "@/lib/use-lead-sync";
 import { useLeadsStore } from "@/store/leads-store";
 import { useProspectRun } from "./use-prospect-run";
+import { useReplyPolling } from "./use-reply-polling";
 import { AppDataContext } from "./app-data";
 
 /** Refresh when the tab comes back, but not more often than this. */
@@ -62,6 +63,8 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, [reload]);
+
+  useReplyPolling(state?.connection.status === "connected", () => void reload());
 
   const prospecting = useProspectRun(() => {
     void reload();

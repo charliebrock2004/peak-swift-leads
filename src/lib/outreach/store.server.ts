@@ -754,14 +754,14 @@ export async function markReplied(
   sql: Sql,
   userId: string,
   id: string,
-  reply: { from?: string; subject?: string; snippet?: string; kind?: string; suggestion?: string; at?: string } = {},
+  reply: { from?: string; subject?: string; snippet?: string; kind?: string; suggestion?: string; at?: string; intent?: string } = {},
 ): Promise<void> {
   await sql.query(
     `update outreach_emails
         set status = 'replied', replied_at = coalesce($8::timestamptz, now()), updated_at = now(),
             reply_from = $3, reply_subject = $4, reply_snippet = $5, reply_kind = $6,
             reply_stage = case when reply_stage = '' then 'new' else reply_stage end,
-            reply_suggestion = $7
+            reply_suggestion = $7, reply_intent = $9
       where user_id = $1 and id = $2 and status in ('sent', 'replied')`,
     [
       userId,
@@ -772,6 +772,7 @@ export async function markReplied(
       reply.kind ?? "human",
       reply.suggestion ?? "",
       reply.at ?? null,
+      (reply.intent ?? "").slice(0, 30),
     ],
   );
 }
@@ -785,7 +786,7 @@ export async function markBounced(
 ): Promise<void> {
   await sql.query(
     `update outreach_emails
-        set status = 'bounced', bounced_at = now(), updated_at = now(), reply_kind = 'bounce',
+        set status = 'bounced', bounced_at = now(), updated_at = now(), reply_kind = 'bounce', reply_intent = 'bounce',
             reply_from = $3, reply_subject = $4, reply_snippet = $5,
             error = 'Bounced: the recipient address did not accept the email.'
       where user_id = $1 and id = $2 and status = 'sent'`,
@@ -802,7 +803,7 @@ export async function markAutoReply(
 ): Promise<void> {
   await sql.query(
     `update outreach_emails
-        set auto_reply_at = now(), updated_at = now(), reply_kind = 'auto_reply',
+        set auto_reply_at = now(), updated_at = now(), reply_kind = 'auto_reply', reply_intent = 'ooo',
             reply_from = $3, reply_subject = $4, reply_snippet = $5
       where user_id = $1 and id = $2 and status = 'sent' and auto_reply_at is null`,
     [userId, id, reply.from.slice(0, 200), reply.subject.slice(0, 300), reply.snippet.slice(0, 600)],
@@ -1528,7 +1529,7 @@ export async function saveProfile(sql: Sql, userId: string, profile: BusinessPro
 export async function consumeBudget(
   sql: Sql,
   userId: string,
-  kind: "search" | "ai" | "companies-house" | "audit",
+  kind: "search" | "ai" | "companies-house" | "audit" | "email-verify",
   amount: number,
   limit: number,
   day: string = new Date().toISOString().slice(0, 10),

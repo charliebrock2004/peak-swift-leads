@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { ChevronDown, ExternalLink, Inbox, Loader2, PhoneCall, RefreshCw, X } from "lucide-react";
@@ -10,6 +10,8 @@ import { Badge, Card, EmptyState, PageHeader, SectionTitle, Segmented } from "@/
 import { phoneHref } from "@/lib/leads";
 import { checkReplies, setReplyStage, type OutreachState } from "@/lib/outreach/server";
 import { REPLY_STAGE_LABELS, REPLY_STAGES, type OutreachEmail, type ReplyStage } from "@/lib/outreach/types";
+import { REPLY_INTENT_LABEL, type ReplyIntent } from "@/lib/outreach/replies";
+import { getJob } from "@/lib/jobs/server";
 import { friendlyServerError } from "@/lib/server-errors";
 import { cn } from "@/lib/utils";
 import { useAppData } from "@/components/app/app-data";
@@ -40,6 +42,20 @@ function Replies({ state }: { state: OutreachState }) {
   const navigate = useNavigate();
   const [filter, setFilter] = useState<"all" | ReplyStage>("all");
   const [checking, setChecking] = useState(false);
+  const [lastPoll, setLastPoll] = useState<{ at: string; detail: string } | null>(null);
+  useEffect(() => {
+    let live = true;
+    getJob({ data: { type: "reply_poll" } })
+      .then((reply) => {
+        if (!live || !reply.ok || !reply.job) return;
+        const view = JSON.parse(reply.job) as { status: string; finishedAt: string; updatedAt: string; progress?: { detail?: string } };
+        setLastPoll({ at: view.finishedAt || view.updatedAt, detail: view.status === "done" ? (view.progress?.detail ?? "") : view.status === "failed" ? "the last check failed" : "checking now…" });
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [state]);
   const campaign = search.campaign ? state.campaigns.find((item) => item.id === search.campaign) : undefined;
   const campaignName = useMemo(() => new Map(state.campaigns.map((item) => [item.id, item.name])), [state.campaigns]);
   const leadsById = useMemo(() => new Map(state.leads.map((lead) => [lead.id, lead])), [state.leads]);
@@ -80,7 +96,7 @@ function Replies({ state }: { state: OutreachState }) {
       <PageHeader
         eyebrow="Replies"
         title={replies.length ? `${plural(replies.length, "reply", "replies")}` : "Replies"}
-        description="Read and answer replies in Gmail — Peak Swift never replies for you. Set how each conversation is going; that updates the prospect everywhere and stops follow-ups."
+        description={`Read and answer replies in Gmail — Peak Swift never replies for you. Set how each conversation is going; that updates the prospect everywhere and stops follow-ups.${lastPoll?.at ? ` Checked automatically ${relativeTime(lastPoll.at)}${lastPoll.detail ? ` — ${lastPoll.detail}` : ""}.` : ""}`}
         actions={
           <Button variant="secondary" onClick={() => void poll()} disabled={checking || state.connection.status !== "connected"}>
             {checking ? <Loader2 className="animate-spin" /> : <RefreshCw />}
@@ -175,6 +191,11 @@ function ReplyCard({
           <p className="truncate text-sm text-muted">{email.replyFrom || email.recipient}</p>
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+          {email.replyIntent && email.replyIntent !== "unsubscribe" ? (
+            <Badge tone={email.replyIntent === "positive" ? "good" : email.replyIntent === "negative" ? "bad" : "neutral"}>
+              {REPLY_INTENT_LABEL[email.replyIntent as ReplyIntent] ?? email.replyIntent}
+            </Badge>
+          ) : null}
           {suggestion ? <Badge tone="info">{suggestion}</Badge> : null}
           {email.replyKind === "unsubscribe" ? <Badge tone="warn">Asked to stop — suppressed</Badge> : null}
           <span className="text-xs text-subtle">{relativeTime(email.repliedAt)}</span>

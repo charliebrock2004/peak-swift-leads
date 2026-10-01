@@ -261,6 +261,24 @@ describe("the second gate, immediately before Gmail", () => {
     assert.equal((await row(id)).status, "skipped");
   });
 
+  it("blocks an address a verifier found undeliverable after approval", async () => {
+    const lead = await addLead("v");
+    const id = await addEmail(lead);
+    const { saveVerification } = await import("../contactability/store.server.ts");
+    await saveVerification(db.sql, USER, { email: lead.email, result: "invalid", provider: "test" });
+    const outcome = await send(id);
+    assert.equal(outcome.status, "blocked");
+    assert.equal(gmail.calls, 0);
+  });
+
+  it("a catch-all address is not refused by verification alone", async () => {
+    const lead = await addLead("c");
+    const id = await addEmail(lead);
+    const { saveVerification } = await import("../contactability/store.server.ts");
+    await saveVerification(db.sql, USER, { email: lead.email, result: "catch_all", provider: "test" });
+    assert.equal((await send(id)).status, "sent");
+  });
+
   it("blocks a lead that replied during the campaign", async () => {
     const lead = await addLead("r");
     const id = await addEmail(lead);

@@ -126,6 +126,7 @@ function SendScreen({ state }: { state: OutreachState }) {
         const result = await setEmailDecision({ data: { ids: [id], decision: "queue" } });
         if (!result.ok) toast(result.error);
         else if (result.refused.length) toast(result.refused[0]!);
+        else if (result.notes.length) toast(result.notes[0]!);
         await reload();
       }),
     skip: (id) =>

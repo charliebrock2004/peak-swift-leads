@@ -43,6 +43,7 @@ import {
   type SetupReason,
 } from "./setup-state.ts";
 import type { BusinessProfile } from "./profile.ts";
+import type { VerificationResult } from "@/lib/contactability/email";
 import {
   DEFAULT_SETTINGS,
   type EmailKind,
@@ -82,6 +83,7 @@ function contextFrom(
   suppressed: ReadonlySet<string>,
   settings: OutreachSettings,
   kind: EmailKind = "initial",
+  verifications?: ReadonlyMap<string, VerificationResult>,
 ): EligibilityContext {
   const live = new Set(["approved", "queued", "sending", "sent", "replied"]);
   const alreadyContacted = new Set<string>();
@@ -97,7 +99,40 @@ function contextFrom(
     alreadyContacted,
     contactedAddresses,
     rules: settings.contactRules,
+    verifications,
   };
+}
+
+/** Recorded verifier results by lowercased address. Empty before migration 0010. */
+async function verificationMap(sql: Awaited<ReturnType<typeof import("@/lib/db").getSql>>, userId: string): Promise<Map<string, VerificationResult>> {
+  const contacts = await import("@/lib/contactability/store.server");
+  const rows = await contacts.loadVerifications(sql, userId).catch(() => new Map());
+  return new Map([...rows].map(([email, entry]) => [email, entry.result as VerificationResult]));
+}
+
+/**
+ * The verifier's answer for an address about to become send-ready: the
+ * recorded one if it is under 30 days old, otherwise a fresh check (paid
+ * providers spend the daily verification budget; out of budget means no new
+ * check, never a pass).
+ */
+async function verifyBeforeSend(sql: Awaited<ReturnType<typeof import("@/lib/db").getSql>>, userId: string, address: string): Promise<{ result: VerificationResult; detail: string } | null> {
+  const contacts = await import("@/lib/contactability/store.server");
+  const verifier = await import("@/lib/contactability/verify-email.server");
+  const email = address.trim().toLowerCase();
+  const recorded = (await contacts.loadVerifications(sql, userId).catch(() => new Map())).get(email);
+  if (recorded && Date.now() - Date.parse(recorded.checkedAt) < verifier.VERIFICATION_FRESH_DAYS * 86_400_000) {
+    return { result: recorded.result, detail: `${recorded.provider} check` };
+  }
+  const chosen = verifier.configuredVerifier();
+  if (chosen.name !== "dns") {
+    const store = await import("./store.server.ts");
+    const allowed = await store.consumeBudget(sql, userId, "email-verify", 1, verifier.VERIFICATIONS_PER_DAY).catch(() => null);
+    if (allowed === null) return recorded ? { result: recorded.result, detail: `${recorded.provider} check` } : null;
+  }
+  const outcome = await chosen.verify(email);
+  await contacts.saveVerification(sql, userId, { email, result: outcome.result, provider: outcome.provider, detail: outcome.detail });
+  return { result: outcome.result, detail: outcome.detail };
 }
 
 /** Every server function needs the same four things; fetch them once. */
@@ -633,7 +668,7 @@ export async function generateEmailsCore(data: GenerateInput, context: { userId:
     if (data.leadIds.length === 0) return { ok: true, rows: [] };
     try {
       const { sql, store, settings, emails, suppression, templates } = await loadWorld(context.userId);
-      const eligibilityContext = contextFrom(emails, suppression, settings, data.kind);
+      const eligibilityContext = contextFrom(emails, suppression, settings, data.kind, await verificationMap(sql, context.userId));
       const profile = await store.loadProfile(sql, context.userId).catch(() => null);
       const { effectiveProfile } = await import("./profile.ts");
       const studio = effectiveProfile(profile).businessName;
@@ -793,19 +828,32 @@ export const setEmailDecision = createServerFn({ method: "POST" })
         | "skip",
     };
   })
-  .handler(async ({ data, context }): Promise<{ ok: true; changed: number; refused: string[] } | Fail> => {
+  .handler(async ({ data, context }): Promise<{ ok: true; changed: number; refused: string[]; notes: string[] } | Fail> => {
     try {
       const { sql, store, settings, emails, suppression } = await loadWorld(context.userId);
       const { effectiveProfile } = await import("./profile.ts");
       const studio = effectiveProfile(await store.loadProfile(sql, context.userId).catch(() => null)).businessName;
       const refused: string[] = [];
+      const notes: string[] = [];
       let changed = 0;
+      const verifications = await verificationMap(sql, context.userId);
+      const approving = data.decision === "approve" || data.decision === "queue";
 
       for (const id of data.ids) {
         const email = await store.loadEmail(sql, context.userId, id);
         // The lead is only needed for an approval, and only when the email
         // resolved. `decideApproval` handles both being absent.
         const lead = email ? await store.loadLead(sql, context.userId, email.leadId) : null;
+        // Verify the address now, as it becomes send-ready — not in bulk, and
+        // not again within 30 days. An invalid address is refused below by the
+        // same eligibility gate as everything else.
+        if (approving && email?.recipient.trim()) {
+          const verified = await verifyBeforeSend(sql, context.userId, email.recipient).catch(() => null);
+          if (verified) {
+            verifications.set(email.recipient.trim().toLowerCase(), verified.result);
+            if (verified.result === "catch_all" || verified.result === "risky") notes.push(`${email.businessName}: ${verified.detail} — delivery can't be confirmed.`);
+          }
+        }
         const outcome = decideApproval({
           decision: data.decision,
           email,
@@ -815,6 +863,7 @@ export const setEmailDecision = createServerFn({ method: "POST" })
             suppression,
             settings,
             email?.kind ?? "initial",
+            verifications,
           ),
           suppressed: suppression,
           studio,
@@ -850,7 +899,7 @@ export const setEmailDecision = createServerFn({ method: "POST" })
           );
         }
       }
-      return { ok: true, changed, refused };
+      return { ok: true, changed, refused, notes };
     } catch (error) {
       console.error("[outreach] decision failed:", error);
       return { ok: false, error: "Could not update those emails." };
@@ -1078,8 +1127,15 @@ export async function checkRepliesCore(userId: string): Promise<ReplyReport | Fa
           snippet: message.snippet,
           kind: verdict.kind,
           suggestion: verdict.suggestion,
+          intent: verdict.intent,
           at,
         });
+        // The next step a person takes — a task on Today. Never a reply sent
+        // for them: nothing here writes to anyone.
+        const { afterReply } = await import("@/lib/sales/actions.server");
+        await afterReply(sql, userId, { emailId: email.id, leadId: email.leadId, businessName: email.businessName, intent: verdict.intent, snippet: message.snippet }).catch((error: unknown) =>
+          console.warn("[outreach] reply follow-on task failed:", error),
+        );
         await store.updateLeadOutreach(sql, userId, email.leadId, { outreachStatus: "Replied" });
         replies += 1;
         await store.recordActivity(sql, userId, {
@@ -1951,6 +2007,11 @@ export const setReplyStage = createServerFn({ method: "POST" })
       const sql = await getSql();
       const email = await store.setReplyStage(sql, context.userId, data.emailId, data.stage);
       if (!email) return { ok: false as const, error: "That reply no longer exists." };
+      // Dealt with: the "reply to them" task on Today is done.
+      if (data.stage !== "new") {
+        const sales = await import("@/lib/sales/store.server");
+        await sales.completeOpenTasks(sql, context.userId, email.leadId, ["REPLY"]).catch(() => 0);
+      }
       const outcome = leadOutcomeForStage(data.stage as (typeof REPLY_STAGES)[number]);
       if (outcome) {
         await store.updateLeadOutcome(sql, context.userId, email.leadId, {

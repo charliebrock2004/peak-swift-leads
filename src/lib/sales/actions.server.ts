@@ -149,3 +149,31 @@ export async function addNote(sql: Sql, userId: string, input: { leadId: string;
   if (!(await store.loadLead(sql, userId, input.leadId))) throw new Error("That business no longer exists.");
   return sales.addInteraction(sql, userId, { leadId: input.leadId, type: "note", summary: text });
 }
+
+/**
+ * A person replied: leave the next step on Today. A positive reply becomes a
+ * high-priority task to answer it; "later" a check-back; a referral or a
+ * wrong person a task to read who they pointed to. Nobody is contacted by
+ * this — not the sender, and never the person they referred you to.
+ */
+export async function afterReply(
+  sql: Sql,
+  userId: string,
+  reply: { emailId: string; leadId: string; businessName: string; intent: string; snippet: string; today?: string },
+): Promise<Task | null> {
+  const name = reply.businessName || "them";
+  const today = reply.today ?? todayIso();
+  const note = reply.snippet.slice(0, 300);
+  const base = { leadId: reply.leadId, notes: note, source: "reply", sourceKey: `reply:${reply.emailId}` };
+  switch (reply.intent) {
+    case "positive":
+      return sales.createTask(sql, userId, { ...base, type: "REPLY", title: `Reply to ${name} — they're interested`, dueAt: new Date().toISOString(), priority: "high" });
+    case "later":
+      return sales.createTask(sql, userId, { ...base, type: "CHECK_BACK", title: `Check back in with ${name} — they said later`, dueAt: `${addDays(today, 60)}T10:00:00.000Z`, priority: "low" });
+    case "referral":
+    case "wrong_person":
+      return sales.createTask(sql, userId, { ...base, type: "REVIEW", title: `${name} pointed you to someone else — read their reply`, dueAt: new Date().toISOString(), priority: "normal" });
+    default:
+      return null;
+  }
+}

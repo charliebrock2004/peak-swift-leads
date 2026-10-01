@@ -18,7 +18,7 @@ import { derivedStage, effectiveStage, formatPence, parsePounds, pipelineTotals 
 import { buildTimeline } from "./timeline.ts";
 import { buildToday } from "./today.ts";
 import * as sales from "./store.server.ts";
-import { addNote, logCall, setStage } from "./actions.server.ts";
+import { addNote, afterReply, logCall, setStage } from "./actions.server.ts";
 import type { Opportunity, Task } from "./types.ts";
 
 const NOW = new Date("2026-10-01T09:00:00.000Z");
@@ -259,5 +259,21 @@ describe("sales actions", () => {
     await assert.rejects(logCall(db.sql, "someone-else", { leadId: "l1", outcome: "interested" }), /no longer exists/);
     assert.equal((await sales.interactionsForLead(db.sql, "someone-else", "l1")).length, 0);
     assert.equal((await sales.loadOpportunities(db.sql, "someone-else")).size, 0);
+  });
+
+  it("a reply leaves the right next step — once — and contacts nobody", async () => {
+    await seed();
+    const reply = { emailId: "e1", leadId: "l1", businessName: "Tayside Roofing", snippet: "Yes please, give me a ring", today: "2026-10-01" };
+    const task = await afterReply(db.sql, USER, { ...reply, intent: "positive" });
+    assert.equal(task?.type, "REPLY");
+    assert.equal(task?.priority, "high");
+    await afterReply(db.sql, USER, { ...reply, intent: "positive" });
+    assert.equal((await sales.tasksForLead(db.sql, USER, "l1")).length, 1, "polling the same reply twice makes one task");
+    const later = await afterReply(db.sql, USER, { ...reply, emailId: "e2", intent: "later" });
+    assert.equal(later?.type, "CHECK_BACK");
+    assert.equal(later?.dueAt, "2026-11-30T10:00:00.000Z");
+    assert.equal(await afterReply(db.sql, USER, { ...reply, emailId: "e3", intent: "negative" }), null);
+    const sent = await db.sql.query<{ n: number }>(`select count(*)::int as n from outreach_emails where user_id = $1`, [USER]);
+    assert.equal(sent[0]?.n, 0);
   });
 });

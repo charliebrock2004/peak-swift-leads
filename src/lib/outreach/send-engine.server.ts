@@ -30,6 +30,7 @@ import type { Lead } from "@/lib/leads";
 import type { MessageMeta, SendResult, SentLookup, GmailFailure } from "../gmail/client.server.ts";
 import { buildRawMessage } from "../gmail/mime.ts";
 import { checkEligibility, type EligibilityContext } from "./eligibility.ts";
+import type { VerificationResult } from "../contactability/email.ts";
 import { checkEmailQuality } from "./quality.ts";
 import { effectiveProfile, fromName, type BusinessProfile } from "./profile.ts";
 import { composeEmail, type AiGenerator } from "./compose.ts";
@@ -148,6 +149,11 @@ async function contextFor(sql: Sql, userId: string, email: OutreachEmail, settin
         and (lead_id = $4 or lower(recipient) = lower($5))`,
     [userId, email.id, email.kind, email.leadId, email.recipient],
   );
+  // A verifier result for this address, if one is recorded. It can only ever
+  // add a refusal (an invalid address), never lift one.
+  const verified = await sql
+    .query<{ result: string }>(`select result from email_verifications where user_id = $1 and email = lower($2)`, [userId, email.recipient.trim()])
+    .catch(() => []);
   return {
     suppressed,
     context: {
@@ -156,6 +162,7 @@ async function contextFor(sql: Sql, userId: string, email: OutreachEmail, settin
       alreadyContacted: new Set(rows.map((row) => row.lead_id)),
       contactedAddresses: new Set(rows.map((row) => row.recipient.toLowerCase())),
       rules: settings.contactRules,
+      verifications: verified[0] ? new Map([[email.recipient.trim().toLowerCase(), verified[0].result as VerificationResult]]) : undefined,
     },
   };
 }
