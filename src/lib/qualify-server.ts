@@ -382,17 +382,8 @@ export type FindEmailInput = {
  * background job as well as the server function above. Owner-scoped by `auth`.
  */
 export async function findLeadEmailCore(data: FindEmailInput, auth: { userId: string }): Promise<FindEmailResult> {
-    const rejectedDomains = new Set((data.rejectedDomains ?? []).map((domain) => domain.trim().toLowerCase().replace(/^www\./, "")).filter(Boolean));
-    const rejectedDomain = (url: string): boolean => {
-      if (!rejectedDomains.size) return false;
-      let host = "";
-      try {
-        host = new URL(/^https?:\/\//i.test(url) ? url : `https://${url}`).hostname.toLowerCase().replace(/^www\./, "");
-      } catch {
-        return false;
-      }
-      return [...rejectedDomains].some((domain) => host === domain || host.endsWith(`.${domain}`));
-    };
+    const { onRejectedDomain } = await import("@/lib/feedback/verdicts");
+    const rejectedDomain = (url: string): boolean => onRejectedDomain(url, data.rejectedDomains ?? []);
     // Every paid search spends one credit of today's budget, checked atomically
     // in the database before the call is made. A budget of 0 turns search off.
     const { getSql, dbSource } = await import("@/lib/db");

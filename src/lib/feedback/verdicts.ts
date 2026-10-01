@@ -74,3 +74,10 @@ export function emailOnDomain(email: string, domain: string): boolean {
   const at = email.trim().toLowerCase().split("@")[1] ?? "";
   return Boolean(domain && at && (at === domain || at.endsWith(`.${domain}`)));
 }
+
+/** Is `url` on one of the domains you marked as not this business's website (subdomains included)? */
+export function onRejectedDomain(url: string, domains: readonly string[]): boolean {
+  const host = domainOf(url);
+  if (!host) return false;
+  return domains.map((domain) => domain.trim().toLowerCase().replace(/^www\./, "")).some((domain) => domain && (host === domain || host.endsWith(`.${domain}`)));
+}

@@ -45,11 +45,11 @@ function Campaigns({ state }: { state: OutreachState }) {
         actions={
           <Button onClick={() => setCreating(true)}>
             <Plus />
-      <InsightsTabs current="/campaigns" />
             New campaign
           </Button>
         }
       />
+      <InsightsTabs current="/campaigns" />
       <Segmented
         label="Campaigns"
         value={tab}
