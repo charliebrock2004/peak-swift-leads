@@ -348,7 +348,8 @@ const EMAIL_COLUMNS = `campaign_id, personalisation_evidence, id, lead_id, busin
   generated_by, sending_account, gmail_message_id, gmail_thread_id, error, attempts,
   approved_at, sent_at, replied_at, created_at, updated_at,
   rfc822_message_id, run_id, failure_kind, provider_response, sending_started_at, personalisation_note,
-  reply_from, reply_subject, reply_snippet, reply_kind, reply_stage, reply_suggestion, bounced_at, auto_reply_at`;
+  reply_from, reply_subject, reply_snippet, reply_kind, reply_stage, reply_suggestion, bounced_at, auto_reply_at,
+  angle, reply_intent`;
 
 function emailFromRow(row: Record<string, unknown>): OutreachEmail {
   return {
@@ -379,6 +380,8 @@ function emailFromRow(row: Record<string, unknown>): OutreachEmail {
     providerResponse: text(row.provider_response),
     sendingStartedAt: iso(row.sending_started_at),
     personalisationNote: text(row.personalisation_note),
+    angle: text(row.angle),
+    replyIntent: text(row.reply_intent),
     replyFrom: text(row.reply_from),
     replySubject: text(row.reply_subject),
     replySnippet: text(row.reply_snippet),
@@ -429,6 +432,8 @@ export type NewEmail = {
   runId?: string;
   /** One sentence: what the text was personalised from. */
   personalisationNote?: string;
+  /** The angle the text leads with (angles.ts). */
+  angle?: string;
 };
 
 /**
@@ -444,8 +449,8 @@ export async function upsertDraft(sql: Sql, userId: string, email: NewEmail): Pr
     `insert into outreach_emails
        (user_id, id, lead_id, business_name, recipient, subject, body, status, kind,
         generated_by, gmail_thread_id, personalisation_evidence, campaign_id, run_id,
-        personalisation_note, created_at, updated_at)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15, now(), now())
+        personalisation_note, angle, created_at, updated_at)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16, now(), now())
      on conflict (user_id, id) do update set
        subject = excluded.subject, body = excluded.body, status = excluded.status,
        generated_by = excluded.generated_by, recipient = excluded.recipient,
@@ -455,6 +460,7 @@ export async function upsertDraft(sql: Sql, userId: string, email: NewEmail): Pr
                                        else excluded.personalisation_evidence end,
        personalisation_note = case when excluded.personalisation_note = '' then outreach_emails.personalisation_note
                                    else excluded.personalisation_note end,
+       angle = case when excluded.angle = '' then outreach_emails.angle else excluded.angle end,
        -- A campaign or run label is only ever set, never cleared: regenerating a
        -- draft outside a campaign must not erase which campaign it belongs to.
        campaign_id = case when excluded.campaign_id = '' then outreach_emails.campaign_id
@@ -479,6 +485,7 @@ export async function upsertDraft(sql: Sql, userId: string, email: NewEmail): Pr
       email.campaignId ?? "",
       email.runId ?? "",
       email.personalisationNote ?? "",
+      email.angle ?? "",
     ],
   );
 }

@@ -117,6 +117,10 @@ export type OutreachEmail = {
   replySuggestion?: ReplyStage | "";
   bouncedAt?: string;
   autoReplyAt?: string;
+  /** What the email led with (angles.ts). Empty for emails written before angles. */
+  angle?: string;
+  /** What the reply meant (replies.ts), when there is one. */
+  replyIntent?: string;
 };
 
 export const TEMPLATE_KINDS = [

@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Badge, Card } from "./ui";
 import { ProspectFacts, ScoreHeader, WhyThisProspect } from "./prospect-facts";
 import { parseEvidenceSummary } from "@/lib/outreach/evidence";
+import { ANGLE_LABEL, type Angle } from "@/lib/outreach/angles";
 import type { LeadEvidence } from "@/lib/outreach/evidence-record";
 import type { OutreachEmail, OutreachLead } from "@/lib/outreach/types";
 import { cn } from "@/lib/utils";
@@ -154,6 +155,12 @@ export function EmailCard({
         {showWhy ? (
           <div className="rise-in mt-2 rounded-md bg-surface-2 px-3 py-2.5 text-sm">
             <p className="text-xs text-subtle">{writtenBy(email)}</p>
+            {email.angle ? (
+              <p className="mt-1 text-xs text-muted">
+                <span className="text-subtle">Leads with: </span>
+                {ANGLE_LABEL[email.angle as Angle] ?? email.angle}
+              </p>
+            ) : null}
             {facts.length > 0 ? (
               <ul className="mt-1.5 list-disc space-y-0.5 pl-4 text-muted">
                 {facts.map((fact) => (

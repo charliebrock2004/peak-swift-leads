@@ -28,6 +28,7 @@ export type Evidence = {
     | "THIN_WEBSITE"
     | "POOR_WEBSITE"
     | "SITE_OBSERVATION"
+    | "AUDIT_FINDING"
     | "WELL_REVIEWED"
     | "ESTABLISHED"
     | "TRADE_AND_PLACE";
@@ -36,7 +37,12 @@ export type Evidence = {
   strength: EvidenceStrength;
   /** The lead field this came from, so any claim is traceable. */
   source: string;
+  /** For an audit finding: which measured finding (audit/findings.ts kind). */
+  finding?: string;
 };
+
+/** Audit findings older than this are not repeated to a prospect as fact. */
+export const AUDIT_EVIDENCE_MAX_AGE_DAYS = 90;
 
 const RANK: Record<EvidenceStrength, number> = { STRONG: 0, USEFUL: 1, CONTEXT: 2 };
 
@@ -107,6 +113,25 @@ export function gatherEvidence(lead: OutreachLead): Evidence[] {
       strength: "STRONG",
       source: "websiteAnalysis",
     });
+  }
+
+  // What a website audit MEASURED: each finding's own sentence, with its
+  // numbers and date. An email may repeat these — and only these — about the
+  // site (quality.ts licenses a site claim only when one of them backs it).
+  const audit = lead.facts?.audit;
+  if (audit && audit.status === "ok") {
+    const age = Date.now() - Date.parse(audit.finishedAt);
+    if (Number.isFinite(age) && age <= AUDIT_EVIDENCE_MAX_AGE_DAYS * 86_400_000) {
+      for (const finding of audit.keyFindings) {
+        out.push({
+          kind: "AUDIT_FINDING",
+          text: finding.evidence,
+          strength: finding.impact >= 5 ? "STRONG" : "USEFUL",
+          source: `website audit (${finding.source})`,
+          finding: finding.kind,
+        });
+      }
+    }
   }
 
   // ── Signals that they are a real, going concern ──────────────────────────

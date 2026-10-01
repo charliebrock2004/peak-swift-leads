@@ -153,7 +153,10 @@ describe("PeakSwiftStudio branding", () => {
   it("tells the model to name the studio and forbids the claims we cannot support", () => {
     const prompt = buildPrompt(lead({ websiteStatus: "No Website Found" }));
     assert.ok(prompt.includes("PeakSwiftStudio"));
-    assert.match(prompt, /Never claim anything about speed, mobile, design age, search ranking or traffic/);
+    // Site claims are allowed only from a measured audit finding; with none
+    // listed, the model is told to make no claim about the site at all.
+    assert.match(prompt, /If no such line is listed, make no claim at all about their site's speed, how it works on phones, how old it is, or whether it has a contact form/);
+    assert.match(prompt, /Never mention search ranking, SEO or traffic/);
     assert.match(prompt, /Never invent a first name/);
   });
 

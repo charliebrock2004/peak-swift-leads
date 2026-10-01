@@ -28,15 +28,21 @@ import {
 } from "./templates.ts";
 import type { EmailKind, OutreachLead, OutreachTemplate } from "./types.ts";
 import { effectiveProfile, profileSignature, type BusinessProfile } from "./profile.ts";
+import { ANGLE_BRIEF, ANGLE_LABEL, selectAngle, type Angle, type AngleChoice } from "./angles.ts";
 
 /** Only what we actually know. Anything absent is simply not mentioned. */
 export function leadFacts(lead: OutreachLead): string[] {
   return evidenceFacts(lead);
 }
 
-/** The evidence an email was built on, for storing and for the Review screen. */
+/**
+ * The evidence an email was built on, for storing and for the Review screen:
+ * the chosen angle's evidence (exactly what the writer was given), or — for a
+ * general introduction — the strongest context there is.
+ */
 export function evidenceFor(lead: OutreachLead): Evidence[] {
-  return strongestEvidence(gatherEvidence(lead));
+  const choice = selectAngle(lead);
+  return choice.evidence.length ? choice.evidence : strongestEvidence(gatherEvidence(lead));
 }
 
 /** Is there enough to write something genuinely personal? */
@@ -63,7 +69,7 @@ const KIND_BRIEF: Record<EmailKind, string> = {
  * Everything about the sender comes from the business profile, so the studio,
  * the area, what is on offer and how the email ends are the owner's words.
  */
-export function buildPrompt(lead: OutreachLead, kind: EmailKind = "initial", stored?: Partial<BusinessProfile>): string {
+export function buildPrompt(lead: OutreachLead, kind: EmailKind = "initial", stored?: Partial<BusinessProfile>, choice: AngleChoice = selectAngle(lead)): string {
   const profile = effectiveProfile(stored);
   const about = [
     `Name: ${profile.senderName}`,
@@ -78,35 +84,40 @@ export function buildPrompt(lead: OutreachLead, kind: EmailKind = "initial", sto
     .map((line) => `- ${line}`)
     .join("\n");
 
+  // Who they are, then ONLY the evidence behind the chosen angle. A model
+  // handed one true thing writes about one true thing.
+  const identity = [`Business name: ${lead.businessName}`, lead.trade.trim() ? `Trade: ${lead.trade}` : "", lead.town.trim() ? `Town: ${lead.town}` : ""].filter(Boolean);
+  const evidence = choice.evidence.map((item) => `Observed (${item.source}): ${item.text}`);
+
   return `Write a short cold email to a small UK business about building or improving their website.
 
 Who is writing:
 ${about}
 
 What we actually know about the business (nothing else is known):
-${leadFacts(lead)
-  .map((fact) => `- ${fact}`)
-  .join("\n")}
+${[...identity, ...evidence].map((fact) => `- ${fact}`).join("\n")}
+
+The angle for this email — ${ANGLE_LABEL[choice.angle]}: ${ANGLE_BRIEF[choice.angle]}
 
 ${KIND_BRIEF[kind]}
 
-How it should read: ${profile.tone}. Like one person who has had a look at their business writing to another — short, human, direct and specific. Three or four short paragraphs, 70 to 120 words, British English.
+How it should read: ${profile.tone}. Like one person who has had a look at their business writing to another — short, human, local, direct and specific. Three or four short paragraphs, 70 to 120 words, British English.
 
 The email should quickly cover, in plain words:
-1. why you are writing to THEM (one of the observations above, in your own words);
+1. why you are writing to THEM (the angle above, in your own words);
 2. what you noticed — only what is listed above;
 3. what you could do for them, briefly;
 4. a low-pressure next step, based on: "${profile.cta}".
 
-Rules — every one of them matters:
+Rules — every one of them matters, and every email is checked against them in code:
 - Write as ${profile.senderName} from ${profile.businessName}. Name ${profile.businessName} in the body so it is obvious who is writing.
 - Use ONLY the facts above. Never invent a detail, a service they offer, a statistic, a percentage, a competitor, a date, how long they have traded, or a compliment.
 - If you mention reviews or a rating, use exactly the numbers above. If none are listed, do not mention reviews at all.
-- Never claim anything about speed, mobile, design age, search ranking or traffic, and do not mention SEO. Nothing above measures those.
+- About their website, say only what an "Observed (website audit …)" line above says, with its exact numbers. If no such line is listed, make no claim at all about their site's speed, how it works on phones, how old it is, or whether it has a contact form. Never mention search ranking, SEO or traffic.
 - Never pretend to have spoken to them, used their services, been recommended to them, or know the owner. Never invent a first name — address the business, not a person, unless a name appears above.
 - If they have no website, say plainly that you could not find one — do not assume why.
-- If they have a website, be respectful about it. Never call it bad, old, ugly, broken or embarrassing. Suggest it could do more for them, at most.
-- No flattery ("amazing", "blown away", "stunning work"), no urgency, no buzzwords ("next level", "boost your online presence", "leverage"), no bullet lists, no exclamation marks.
+- If they have a website, be respectful about it. Never call it bad, old, ugly, broken or embarrassing.
+- No flattery ("amazing", "blown away", "stunning work"), no fake urgency, no buzzwords ("next level", "boost your online presence", "leverage", "reach out", "touch base"), no bullet lists, no exclamation marks, no long paragraphs.
 - Never open with "I hope this email finds you well" or "I hope you're well". Start with "Hi," and get to the point.
 - The goal is only to start a conversation, not to close a sale.
 - Mention the business by name at least once.
@@ -163,6 +174,8 @@ export type ComposeResult = ComposedEmail & {
   fellBackBecause?: string;
   /** What the email was personalised from, in one sentence, for the Review screen. */
   personalisation: string;
+  /** The one reason this email leads with (angles.ts), stored for analytics. */
+  angle: Angle;
 };
 
 /** The personalisation note for a template: which situation it was chosen for. */
@@ -186,11 +199,17 @@ export async function composeEmail(
 ): Promise<ComposeResult> {
   const kind = options.kind ?? "initial";
   const templates = options.templates?.length ? options.templates : DEFAULT_TEMPLATES;
+  const choice = selectAngle(lead);
   const profile = options.profile ? effectiveProfile(options.profile) : undefined;
 
-  const fromTemplate = (template: OutreachTemplate): ComposedEmail & { personalisation: string } => ({
+  // A template carries the angle only when it is written for that situation;
+  // otherwise it makes no claim, and is recorded as a general introduction.
+  const templateAngle = (template: OutreachTemplate): Angle =>
+    template.kind === "no-website" && ["no_website", "social_only", "directory_only", "reputation_gap"].includes(choice.angle) ? choice.angle : "general";
+  const fromTemplate = (template: OutreachTemplate): ComposedEmail & { personalisation: string; angle: Angle } => ({
     ...composeFromTemplate(lead, template, profile),
     personalisation: templateNote(lead, template),
+    angle: templateAngle(template),
   });
 
   const templateFallback = () => {
@@ -216,7 +235,7 @@ export async function composeEmail(
 
   let draft: AiDraft | null = null;
   try {
-    draft = await options.generate(buildPrompt(lead, kind, profile));
+    draft = await options.generate(buildPrompt(lead, kind, profile, choice));
   } catch {
     draft = null;
   }
@@ -283,6 +302,7 @@ export async function composeEmail(
     subject: draft.subject,
     body,
     generatedBy: "ai",
-    personalisation: draft.personalisation || "Written by AI from the evidence listed.",
+    personalisation: draft.personalisation || `Written by AI on the angle "${ANGLE_LABEL[choice.angle]}".`,
+    angle: choice.angle,
   };
 }

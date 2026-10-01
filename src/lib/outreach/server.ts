@@ -590,6 +590,8 @@ export type GeneratedRow = {
   generatedBy?: string;
   /** What the email was personalised from, so Review can show why. */
   evidence?: { kind: string; text: string; source: string }[];
+  /** The angle the draft leads with. */
+  angle?: string;
   note?: string;
   error?: string;
 };
@@ -701,6 +703,7 @@ export async function generateEmailsCore(data: GenerateInput, context: { userId:
           id,
           personalisationEvidence: evidenceSummary(evidence),
           personalisationNote: composed.personalisation,
+          angle: composed.angle,
           campaignId: data.campaignId,
           runId: data.runId,
           leadId,
@@ -729,6 +732,7 @@ export async function generateEmailsCore(data: GenerateInput, context: { userId:
           subject,
           body: composed.body,
           generatedBy: composed.generatedBy,
+          angle: composed.angle,
           evidence: evidence.map((item) => ({ kind: item.kind, text: item.text, source: item.source })),
           note: [composed.fellBackBecause, verdict.ok ? "" : verdict.problems[0]?.message]
             .filter(Boolean)

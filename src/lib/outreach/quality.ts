@@ -53,7 +53,42 @@ const BROKEN_MARKERS: [RegExp, string][] = [
  * a social page. Those are recorded observations with a field behind them, and
  * they are the honest reason most of these emails are worth sending at all.
  */
-const FABRICATED: [RegExp, string][] = [
+/**
+ * The measured findings (audit/findings.ts kinds) that license each kind of
+ * site claim. A claim is allowed only when a recent audit on record for THIS
+ * business recorded one of them — the prompt asks for that too, but the rule
+ * is enforced here, in code.
+ */
+const SPEED_FINDINGS = ["psi_performance", "slow_lcp", "slow_response", "heavy_page", "slow_interaction"];
+const MOBILE_FINDINGS = ["no_viewport", "phone_not_tappable"];
+const DATED_FINDINGS = ["stale_copyright"];
+const ENQUIRY_FINDINGS = ["no_enquiry_form", "no_quote_request", "no_online_booking", "no_cta"];
+const UNREACHABLE_FINDINGS = ["unreachable", "http_error"];
+const ANY_FINDING = ["*"];
+/** Audit findings older than this no longer support a claim (matches evidence.ts). */
+const CLAIM_EVIDENCE_MAX_AGE_DAYS = 90;
+
+type AuditLike = { status: string; finishedAt: string; keyFindings: { kind: string; evidence: string }[] } | null | undefined;
+
+/** The recent, successful audit's findings, or none. */
+function recentFindings(audit: AuditLike, now = Date.now()): { kind: string; evidence: string }[] {
+  if (!audit || audit.status !== "ok") return [];
+  const age = now - Date.parse(audit.finishedAt);
+  if (!Number.isFinite(age) || age > CLAIM_EVIDENCE_MAX_AGE_DAYS * 86_400_000) return [];
+  return audit.keyFindings;
+}
+
+function licensed(licence: readonly string[], lead: QualityInput["lead"]): boolean {
+  if (licence.length === 0) return false;
+  const findings = recentFindings(lead.facts?.audit);
+  if (licence === UNREACHABLE_FINDINGS && lead.facts) {
+    const verified = websiteVerificationOf({ website: lead.website ?? "", websiteStatus: lead.websiteStatus, facts: lead.facts });
+    if (verified.state === "WEBSITE_UNREACHABLE") return true;
+  }
+  return findings.some((finding) => licence.includes("*") || licence.includes(finding.kind));
+}
+
+const FABRICATED: [RegExp, string, readonly string[]][] = [
   // Each pattern requires a claim ABOUT THEIR SITE, never merely a word that can
   // appear in one. Two rounds of real regressions came from getting this wrong:
   // a bare "slow" refused "winter is a slow month", a bare "converting" refused
@@ -67,33 +102,78 @@ const FABRICATED: [RegExp, string][] = [
   // claim about something we never measured and is refused.
   [
     /\b(?:your|the|their)\s+(?:site|website|web ?page)\b[^.!?]{0,30}\b(?:is|runs|feels|loads?|seems|looks)\s+(?:a bit\s+|quite\s+|very\s+|really\s+|pretty\s+)?(?:slow|sluggish|slowly)\b|\byour\s+(?:site|website|page)\b[^.!?]{0,30}\b(?:loads? slowly|load times?|page ?speed)\b|\byour\s+(?:loading times?|load times?|page ?speed|pagespeed)\b|\b(?:loading times?|load times?|page ?speed|pagespeed)\b[^.!?]{0,20}\b(?:could|would|is|are|must)\s+(?:be\s+)?(?:better|improved|faster|slow)\b/i,
-    "claims something about load speed, which is never measured",
+    "claims something about load speed that no recent audit on record measured",
+    SPEED_FINDINGS,
   ],
   [
     // "your SEO", "improve your SEO", "ranking well" — a claim. Plain "SEO" in
     // "I'm not an SEO person" is not.
     /\byour\s+seo\b|\bseo\b[^.!?]{0,20}\b(?:is|isn'?t|could|would|needs?|suffer)\b|\b(?:improve|fix|sort|boost)\w*\s+your\s+(?:seo|ranking|search)\b|\b(?:search|google) ranking\b|\brank(?:ing|s)?\s+(?:higher|well|poorly|badly|anywhere|on google|in google|in search)\b|\bfirst page of google\b|\byour\b[^.!?]{0,20}\bsearch results?\b/i,
     "claims something about search ranking, which is never measured",
+    [],
   ],
   [
     // The negation is what makes it a claim. "I build mobile friendly websites"
     // is an offer; "your site isn't mobile friendly" is a verdict on their work.
     /\b(?:not|isn'?t|aren'?t|never|hardly|barely)\s+(?:very\s+|really\s+|that\s+)?mobile[- ]?(?:friendly|responsive|optimised|optimized)\b|\byour\s+(?:site|website|page)\b[^.!?]{0,30}\bmobile[- ]?(?:friendly|responsive|optimised|optimized)\b|\bdoesn'?t work on (?:a )?(?:phone|mobile)\b|\bnot responsive\b/i,
-    "claims something about mobile rendering, which is never checked",
+    "claims something about how the site works on phones that no recent audit on record measured",
+    MOBILE_FINDINGS,
   ],
   [
     /\b(?:out ?of ?date|outdated|old[- ]fashioned|looks old|dated)\b[^.!?]{0,30}\b(?:website|site|design|look)\b|\b(?:website|site|design)\b[^.!?]{0,30}\b(?:is|looks|feels|seems|looking|feeling|seeming)\s+(?:a bit\s+|quite\s+|very\s+|really\s+|pretty\s+)?(?:out ?of ?date|outdated|dated|old[- ]fashioned|old|tired)\b/i,
-    "claims the site is dated, which is never assessed",
+    "claims the site is dated, which no recent audit on record found",
+    DATED_FINDINGS,
   ],
   [
     /\b(?:conversion rates?|bounce rates?|click[- ]through|visitors? per|page views?|web traffic|site traffic|traffic to your)\b/i,
     "claims something about traffic or conversion, which is never measured",
+    [],
   ],
   [
     /\bi (?:noticed|saw|see|found) (?:that )?your (?:website|site) (?:is|was|looks|loads|seems)\b/i,
     "asserts an observation about their site that was never made",
+    ANY_FINDING,
+  ],
+  [
+    /\b(?:no|without\s+a|doesn'?t\s+have\s+a|don'?t\s+have\s+a|isn'?t\s+a|there'?s\s+no)\s+(?:simple\s+|easy\s+|obvious\s+)?(?:contact|enquiry|inquiry|quote)\s+(?:form|button|page)\b|\b(?:can'?t|cannot|couldn'?t|no way to)\s+(?:book|request a quote|get a quote|send an enquiry|enquire)\s+(?:online|on (?:your|the) (?:site|website))\b/i,
+    "claims the site has no way to enquire, which no recent audit on record found",
+    ENQUIRY_FINDINGS,
+  ],
+  [
+    /\byour\s+(?:site|website)\b[^.!?]{0,30}\b(?:is down|wouldn'?t load|won'?t load|didn'?t load|isn'?t loading|not loading|doesn'?t load|failed to load)\b/i,
+    "says their site would not load, which no recent check on record found",
+    UNREACHABLE_FINDINGS,
   ],
 ];
+
+/**
+ * Numbers stated about their site must be numbers an audit measured.
+ *
+ * "Your site took 7.8 seconds to load" is only allowed when a recent finding
+ * on record says 7.8 s. Sentences about reviews are left to the review check;
+ * offers ("a 5-page site", "a 15-minute chat") are not about their site and do
+ * not address them, so they are not touched.
+ */
+export function unmeasuredNumbers(text: string, lead: QualityInput["lead"]): QualityProblem[] {
+  const findings = recentFindings(lead.facts?.audit);
+  const measured = new Set(findings.flatMap((finding) => [...finding.evidence.matchAll(/\d+(?:\.\d+)?/g)].map((match) => String(Number(match[0])))));
+  const problems: QualityProblem[] = [];
+  for (const sentence of text.split(/(?<=[.!?])\s+|\n+/)) {
+    if (!/\b(?:your|you'?re|their)\b/i.test(sentence)) continue;
+    if (!/\b(?:site|website|page|homepage|load(?:s|ed|ing)?|seconds?|score[ds]?|speed|copyright|phones?|mobile)\b/i.test(sentence)) continue;
+    if (/\breviews?\b|\brated\b|\bstars?\b/i.test(sentence)) continue;
+    for (const match of sentence.matchAll(/\b\d+(?:\.\d+)?\b/g)) {
+      const value = String(Number(match[0]));
+      if (measured.has(value)) continue;
+      problems.push({
+        code: "unsupported",
+        message: `It says "${match[0]}" about their site, but no recent audit on record measured that. Use the measured figure or remove it.`,
+      });
+      return problems;
+    }
+  }
+  return problems;
+}
 
 /** Openers and phrases that announce the email as a circular. */
 const GENERIC_OPENERS: [RegExp, string][] = [
@@ -105,6 +185,10 @@ const GENERIC_OPENERS: [RegExp, string][] = [
     /\btake your business to the next level\b|\bskyrocket\b|\bgame[- ]?changer\b|\bunlock (?:your|the) (?:full )?potential\b|\bin today'?s (?:digital|online|modern) (?:age|world|landscape)\b|\bboost your online presence\b|\bsynerg(?:y|ies)\b|\bleverage\b/i,
     "uses marketing language nobody writes to a person",
   ],
+  [/\bi came across your\s+(?:amazing|great|fantastic|wonderful|lovely|brilliant|impressive)\b/i, "opens with a compliment nothing on record supports"],
+  [/\b(?:just\s+)?(?:wanted\s+to\s+)?reach(?:ing)?\s+out\b|\btouch(?:ing)? base\b|\bcircle back\b|\bquick question\b/i, "uses sales-speak"],
+  [/!(?:[^!]*!)/, "uses more than one exclamation mark"],
+  [/(?:^|\n\n)(?:(?!\n\n)[\s\S]){600,}/, "has a paragraph too long to read on a phone"],
 ];
 
 /**
@@ -326,8 +410,8 @@ export function checkEmailQuality(input: QualityInput): QualityVerdict {
       break;
     }
   }
-  for (const [pattern, why] of FABRICATED) {
-    if (pattern.test(body) || pattern.test(subject)) {
+  for (const [pattern, why, licence] of FABRICATED) {
+    if ((pattern.test(body) || pattern.test(subject)) && !licensed(licence, input.lead)) {
       add("fabricated", `The generated text ${why}.`);
       break;
     }
@@ -345,6 +429,7 @@ export function checkEmailQuality(input: QualityInput): QualityVerdict {
     }
   }
   for (const problem of unsupportedClaims(`${subject}\n${body}`, input.lead)) add(problem.code, problem.message);
+  for (const problem of unmeasuredNumbers(`${subject}\n${body}`, input.lead)) add(problem.code, problem.message);
 
   return problems.length === 0 ? { ok: true } : { ok: false, problems };
 }
