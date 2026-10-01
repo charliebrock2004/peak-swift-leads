@@ -2,7 +2,7 @@
  * Plain formatting helpers shared by the screens — no components here, so the
  * component modules stay hot-reloadable.
  */
-import { resolveWebsiteStatus, type Lead } from "@/lib/leads";
+import { websiteVerificationOf } from "@/lib/audit/website-state";
 import type { OutreachLead } from "@/lib/outreach/types";
 
 export type Tone = "neutral" | "good" | "warn" | "bad" | "info" | "accent";
@@ -40,13 +40,28 @@ export function relativeTime(iso: string, now: Date = new Date()): string {
   return new Date(at).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
 }
 
+/**
+ * The website, as far as it is actually known. "No independent website" only
+ * when a recent search found none — a listing without a website field just
+ * says so (audit/website-state.ts).
+ */
 export function websiteLine(lead: OutreachLead): string {
-  const status = resolveWebsiteStatus(lead as Lead);
-  if (status === "No Website Found") return "No independent website found";
-  if (status === "Social Only") return "Social media page only";
-  if (status === "Directory Only") return "Directory listings only";
-  if (status === "Unclear") return lead.website ? lead.website : "Not confirmed either way";
-  return lead.website || "Has a website";
+  const verified = websiteVerificationOf(lead);
+  const host = lead.website.trim().replace(/^https?:\/\//i, "").replace(/\/$/, "");
+  switch (verified.state) {
+    case "VERIFIED_NO_WEBSITE":
+      return "No independent website found";
+    case "SOCIAL_ONLY":
+      return verified.canClaimNoWebsite ? "Social media only — no website found" : "Social media page";
+    case "DIRECTORY_ONLY":
+      return verified.canClaimNoWebsite ? "Directory listings only — no website found" : "Directory listing";
+    case "WEBSITE_UNREACHABLE":
+      return `${host} — could not be reached`;
+    case "WEBSITE_FOUND":
+      return host;
+    default:
+      return host ? `${host} (not verified)` : "No website listed — not searched yet";
+  }
 }
 
 export function statusTone(status: string): "good" | "info" | "bad" | "warn" | "neutral" {

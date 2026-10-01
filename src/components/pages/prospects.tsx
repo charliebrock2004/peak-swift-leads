@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useSearch } from "@tanstack/react-router";
+import { Link, useNavigate, useSearch } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { Loader2, PenLine, Search, Users, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -17,6 +17,7 @@ import { blockedSentence } from "@/lib/outreach/block-reasons";
 import { generateEmails, getReviewQueue, recordLeadReview, type OutreachState } from "@/lib/outreach/server";
 import { checkCompanies } from "@/lib/contactability/server";
 import { LegalFormBadge, LegalFormPanel } from "@/components/app/contactability";
+import { OPPORTUNITY_LABEL } from "@/lib/audit/findings";
 import type { OutreachLead } from "@/lib/outreach/types";
 import { friendlyServerError } from "@/lib/server-errors";
 import { cn } from "@/lib/utils";
@@ -317,6 +318,21 @@ function Prospects({ state }: { state: OutreachState }) {
                   </div>
                   <p className="mt-0.5 truncate text-sm text-muted">
                     {[row.lead.trade, row.lead.town].filter(Boolean).join(" · ")} · {websiteLine(row.lead)}
+                  </p>
+                  <p className="mt-0.5 flex flex-wrap items-center gap-2 text-xs">
+                    {row.lead.facts?.audit && row.lead.facts.audit.opportunity !== "unmeasured" ? (
+                      <Badge tone={row.lead.facts.audit.opportunity === "strong" ? "good" : "neutral"}>
+                        {OPPORTUNITY_LABEL[row.lead.facts.audit.opportunity]}
+                      </Badge>
+                    ) : null}
+                    <Link
+                      to="/businesses/$leadId/audit"
+                      params={{ leadId: row.lead.id }}
+                      className="text-muted underline-offset-2 hover:text-fg hover:underline"
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      {row.lead.facts?.audit ? "Website audit" : row.lead.website ? "Audit website" : "Website check"}
+                    </Link>
                   </p>
                   <p className="mt-0.5 truncate text-xs text-subtle">
                     {row.lead.email ? `${row.lead.email} (${row.lead.emailConfidence || "unverified"})` : row.lead.phone ? `No public email · ${row.lead.phone}` : "No public email or phone"}
