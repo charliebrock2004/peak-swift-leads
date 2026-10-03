@@ -2,7 +2,9 @@
  * Job types shared by the server runner and the screens that watch jobs.
  * Client-safe: no server imports.
  */
+import type { DiscoveryLedger } from "../discovery-ledger.ts";
 import type { RunFunnel } from "../outreach/run-funnel.ts";
+import type { RunDiagnosis } from "../run-diagnosis.ts";
 import type { Action, Band } from "../scoring/prospect-score.ts";
 
 export const JOB_TYPES = ["find", "audit_batch", "company_batch", "reply_poll", "retention"] as const;
@@ -50,6 +52,12 @@ export type FindInput = {
   /** An existing campaign, or empty to create (or reuse) one called `campaignName`. */
   campaignId: string;
   campaignName: string;
+  /**
+   * When the places asked for run out of new businesses, search the rest of
+   * their region and the regions next door (never across a border you did not
+   * name or configure). On unless switched off.
+   */
+  widen?: boolean;
   /** "enrich": check, audit and score these existing businesses — no search, no drafts. */
   mode?: "find" | "enrich";
   leadIds?: string[];
@@ -57,7 +65,12 @@ export type FindInput = {
 
 export type FindEvent = { at: string; text: string; tone: "info" | "good" | "warn" | "bad" };
 
-export type FindRunStatus = "running" | "done" | "stopped" | "failed";
+/**
+ * "empty": the run finished, but left nothing to act on — no new prospects, or
+ * new ones none of which can be contacted or are worth it. Never shown as
+ * Ready: the run says which stage lost everything (`diagnosis`).
+ */
+export type FindRunStatus = "running" | "done" | "empty" | "stopped" | "failed";
 
 /** One business worth looking at first, with the reason in a line. */
 export type FindTopProspect = {
@@ -115,6 +128,10 @@ export type FindProgress = {
   detail: string;
   progress: { done: number; total: number };
   funnel: RunFunnel;
+  /** Every discovered listing's one outcome, per search. The discovery funnel is read from this. */
+  ledger: DiscoveryLedger;
+  /** Why the run left nothing to act on, when it did. */
+  diagnosis: RunDiagnosis | null;
   enrichment: FindEnrichment;
   config: FindInput;
   log: FindEvent[];

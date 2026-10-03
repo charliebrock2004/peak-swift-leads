@@ -5,7 +5,9 @@ import { Page } from "@/components/app/app-shell";
 
 import { WithState } from "@/components/app/setup-gate";
 import { Badge, Card, LoadingPage, Notice, PageHeader, ScoreBadge, SectionTitle, Stat } from "@/components/app/ui";
-import { FunnelDetail } from "@/components/pages/find";
+import { FunnelDetail, LedgerDetail } from "@/components/pages/find";
+import { parseLedger, reconcileLedger } from "@/lib/discovery-ledger";
+import type { RunDiagnosis } from "@/lib/run-diagnosis";
 import { statusTone } from "@/components/app/format";
 import { scoreProspect } from "@/lib/scoring/prospect-score";
 import { lifecycleOf, STAGE_LABELS } from "@/lib/outreach/lifecycle";
@@ -56,7 +58,17 @@ function RunDetail() {
   if (!detail || !since) return <LoadingPage />;
   const { run } = detail;
   const funnel = parseFunnel(run.funnel);
-  const problems = funnel ? reconcileFunnel(funnel) : [];
+  const stored = (() => {
+    try {
+      return JSON.parse(run.funnel || "{}") as { ledger?: unknown; diagnosis?: RunDiagnosis | null };
+    } catch {
+      return {};
+    }
+  })();
+  const ledger = parseLedger(stored.ledger);
+  const diagnosis = stored.diagnosis ?? null;
+  // Runs recorded before every listing had an outcome cannot be checked against the ledger's equations.
+  const problems = funnel && ledger ? [...reconcileFunnel(funnel), ...reconcileLedger(ledger)] : [];
   const campaign = state?.campaigns.find((item) => item.id === run.campaignId);
 
   return (
@@ -88,15 +100,23 @@ function RunDetail() {
               <Stat key={item.label} label={item.label} value={item.value} />
             ))}
           </div>
-          {problems.length ? (
+          {diagnosis ? (
+            <Notice tone="warn" title={diagnosis.headline}>
+              {diagnosis.details.join(" ")}
+            </Notice>
+          ) : null}
+          {!ledger ? (
+            <p className="text-sm text-muted">Recorded before every listing was given an outcome — the discovery numbers below are as that version counted them.</p>
+          ) : problems.length ? (
             <Notice tone="bad" title="These numbers do not add up">
               {problems.join(" · ")}
             </Notice>
           ) : (
             <p className="flex items-center gap-1.5 text-sm text-good">
-              <CircleCheck className="size-4" /> Every number reconciles — no business is unaccounted for.
+              <CircleCheck className="size-4" /> Every number reconciles — every listing has exactly one outcome.
             </p>
           )}
+          {ledger && ledger.listings > 0 ? <LedgerDetail ledger={ledger} /> : null}
           <FunnelDetail funnel={funnel} />
         </>
       ) : (

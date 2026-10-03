@@ -10,7 +10,9 @@ import {
   type FindStage,
   type JobView,
 } from "@/lib/jobs/types";
+import { emptyLedger, parseLedger, type DiscoveryLedger } from "@/lib/discovery-ledger";
 import { emptyFunnel, type RunFunnel } from "@/lib/outreach/run-funnel";
+import type { RunDiagnosis } from "@/lib/run-diagnosis";
 import { friendlyServerError } from "@/lib/server-errors";
 
 /**
@@ -24,7 +26,8 @@ import { friendlyServerError } from "@/lib/server-errors";
  */
 
 export type RunConfig = FindInput;
-export type RunStatus = "idle" | "starting" | "running" | "done" | "stopped" | "failed";
+/** "empty": finished with nothing to act on — shown with its diagnosis, never as Ready. */
+export type RunStatus = "idle" | "starting" | "running" | "done" | "empty" | "stopped" | "failed";
 
 export type ProspectRunState = {
   status: RunStatus;
@@ -34,6 +37,9 @@ export type ProspectRunState = {
   detail: string;
   progress: { done: number; total: number };
   funnel: RunFunnel;
+  /** Every discovered listing's one outcome, per search. */
+  ledger: DiscoveryLedger;
+  diagnosis: RunDiagnosis | null;
   enrichment: FindEnrichment;
   config: RunConfig | null;
   log: FindEvent[];
@@ -59,6 +65,8 @@ function initial(): ProspectRunState {
     detail: "",
     progress: { done: 0, total: 0 },
     funnel: emptyFunnel(),
+    ledger: emptyLedger(),
+    diagnosis: null,
     enrichment: emptyEnrichment(),
     config: null,
     log: [],
@@ -76,7 +84,7 @@ function fromJob(view: JobView<FindProgress, FindResult | null>): ProspectRunSta
   const status: RunStatus = active
     ? "running"
     : view.status === "done"
-      ? progress.status === "stopped" ? "stopped" : "done"
+      ? progress.status === "stopped" ? "stopped" : progress.status === "empty" ? "empty" : "done"
       : view.status === "cancelled"
         ? "stopped"
         : "failed";
@@ -88,6 +96,8 @@ function fromJob(view: JobView<FindProgress, FindResult | null>): ProspectRunSta
     detail: progress.detail || (view.status === "failed" ? view.error || "The run could not finish." : active ? "Starting…" : ""),
     progress: progress.progress ?? { done: 0, total: 0 },
     funnel: { ...emptyFunnel(), ...(progress.funnel ?? {}) },
+    ledger: parseLedger(progress.ledger) ?? emptyLedger(),
+    diagnosis: progress.diagnosis ?? null,
     enrichment: { ...emptyEnrichment(), ...(progress.enrichment ?? {}) },
     config: progress.config ?? null,
     log: progress.log ?? [],

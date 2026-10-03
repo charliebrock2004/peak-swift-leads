@@ -12,6 +12,12 @@ import {
   NATIONS,
   ENGLAND_TOWN_SUGGESTIONS,
   nationFor,
+  AREA_RADIUS_MILES,
+  areaKey,
+  planWiden,
+  rotateAreas,
+  splitLocations,
+  widenCandidates,
 } from "./scotland-places.ts";
 
 describe("detectPlace", () => {
@@ -28,7 +34,8 @@ describe("detectPlace", () => {
     const place = detectPlace("Dundee");
     assert.equal(place.kind, "city");
     assert.ok(place.towns.includes("Dundee"));
-    assert.ok(place.towns.includes("Broughty Ferry"));
+    assert.ok(place.towns.includes("Broughty Ferry, Dundee"));
+    assert.ok(place.towns.includes("Monifieth"));
   });
 
   it("treats Scotland as nationwide", () => {
@@ -82,12 +89,14 @@ describe("planSearch", () => {
     assert.equal(small.areas[0]?.quota, DISCOVERY_SAFETY.fetchPerArea);
   });
 
-  it("keeps a small city job as a single request", () => {
-    const plan = planSearch("Dundee", 12);
-    assert.deepEqual(
-      plan.areas.map((area) => area.name),
-      ["Dundee"],
-    );
+  it("searches a city district by district, each at street scale", () => {
+    const plan = planSearch("Dundee", 12, { radiusMiles: 25 });
+    const names = plan.areas.map((area) => area.name);
+    assert.equal(names[0], "Dundee");
+    assert.ok(names.length >= 4);
+    const district = plan.areas.find((area) => area.name.includes(", Dundee"))!;
+    assert.equal(district.radiusMiles, AREA_RADIUS_MILES.district);
+    assert.deepEqual(district.chTowns, [district.name.split(",")[0]]);
   });
 
   it("fans Perthshire into constituent towns, never one 'Perthshire' string", () => {
@@ -259,6 +268,117 @@ describe("nationFor", () => {
     assert.ok(ENGLAND_TOWN_SUGGESTIONS.length > 0);
     for (const town of ENGLAND_TOWN_SUGGESTIONS) {
       assert.equal(nationFor(town), "England");
+    }
+  });
+});
+
+describe("search diversity", () => {
+  const now = new Date("2026-10-01T12:00:00Z");
+  const searched = (searches: number, daysAgo: number, restDays = 0) => ({
+    searches,
+    lastSearchedAt: new Date(now.getTime() - daysAgo * 86_400_000).toISOString(),
+    exhaustedUntil: restDays ? new Date(now.getTime() + restDays * 86_400_000).toISOString() : "",
+  });
+
+  it("splits several places, and keeps a place whose name contains 'and'", () => {
+    assert.deepEqual(splitLocations("Perthshire, Fife"), ["Perthshire", "Fife"]);
+    assert.deepEqual(splitLocations("Perth and Dundee"), ["Perth", "Dundee"]);
+    assert.deepEqual(splitLocations("Dumfries and Galloway"), ["Dumfries and Galloway"]);
+    assert.deepEqual(splitLocations("Perth and Kinross"), ["Perth and Kinross"]);
+    assert.deepEqual(splitLocations("Leith, Edinburgh"), ["Leith, Edinburgh"]);
+    assert.deepEqual(splitLocations("Crieff; Comrie / Muthill"), ["Crieff", "Comrie", "Muthill"]);
+  });
+
+  it("plans several places across all of them, not as one unknown town", () => {
+    const plan = planSearch("Perthshire, Fife", 20);
+    assert.equal(plan.kind, "region");
+    assert.deepEqual(plan.places, ["Perthshire", "Fife"]);
+    const names = plan.areas.map((area) => area.name);
+    assert.ok(names.includes("Perth") && names.includes("Dunfermline"), names.join(", "));
+    assert.ok(!names.some((name) => name.includes(",")));
+  });
+
+  it("narrows each town of a wider plan, and keeps the user's radius for one place", () => {
+    const wide = planSearch("Perthshire", 20, { radiusMiles: 25 });
+    for (const area of wide.areas) {
+      assert.equal(area.radiusMiles, AREA_RADIUS_MILES.town);
+      assert.deepEqual(area.chTowns, [area.name]);
+    }
+    const single = planSearch("Crieff", 8, { radiusMiles: 25 });
+    assert.equal(single.areas[0]?.radiusMiles, 25);
+    assert.equal(single.areas[0]?.chTowns, undefined);
+  });
+
+  it("starts with towns never searched for this trade, then the least recent", () => {
+    const coverage = new Map([
+      [areaKey("Perth"), searched(3, 2)],
+      [areaKey("Crieff"), searched(1, 20)],
+      [areaKey("Auchterarder"), searched(1, 5)],
+    ]);
+    const plan = planSearch("Perthshire", 100, { coverage, now });
+    const names = plan.areas.map((area) => area.name);
+    assert.equal(names.indexOf("Pitlochry") < names.indexOf("Crieff"), true);
+    assert.ok(names.indexOf("Crieff") < names.indexOf("Auchterarder"));
+    assert.ok(names.indexOf("Auchterarder") < names.indexOf("Perth"));
+    assert.equal(plan.areas.find((area) => area.name === "Perth")?.variant, 3);
+  });
+
+  it("rests a town whose last search found nothing new, and says so", () => {
+    const coverage = new Map([[areaKey("Perth"), searched(2, 1, 29)]]);
+    const plan = planSearch("Perthshire", 100, { coverage, now });
+    assert.ok(!plan.areas.some((area) => area.name === "Perth"));
+    assert.deepEqual(plan.restingAreas, ["Perth"]);
+  });
+
+  it("two runs in a row reach different towns", () => {
+    const first = planSearch("Perthshire", 20, { now });
+    const coverage = new Map(first.areas.map((area) => [areaKey(area.name), searched(1, 0)]));
+    const second = planSearch("Perthshire", 20, { coverage, now });
+    const overlap = second.areas.filter((area) => first.areas.some((other) => other.name === area.name));
+    assert.equal(overlap.length, 0, overlap.map((area) => area.name).join(", "));
+  });
+
+  it("searches a resting single town anyway when it is all that was asked for", () => {
+    const coverage = new Map([[areaKey("Crieff"), searched(1, 1, 29)]]);
+    const plan = planSearch("Crieff", 8, { coverage, now });
+    assert.deepEqual(plan.areas.map((area) => area.name), ["Crieff"]);
+    assert.equal(plan.areas[0]?.exhausted, true);
+  });
+
+  it("never plans a town twice in one run", () => {
+    const skip = new Set(["perth", "crieff"]);
+    const { ordered } = rotateAreas(["Perth", "Crieff", "Comrie"], { skip });
+    assert.deepEqual(ordered, ["Comrie"]);
+  });
+
+  it("widens to the rest of the region and the regions next door, within the nation", () => {
+    const towns = widenCandidates("Crieff");
+    assert.ok(towns.includes("Pitlochry"), "rest of Perthshire");
+    assert.ok(towns.includes("Stirling") || towns.includes("Dunblane"), "Stirlingshire next door");
+    assert.ok(towns.includes("Kirkcaldy") || towns.includes("Dunfermline"), "Fife next door");
+    assert.ok(!towns.some((town) => nationFor(town) === "England"), "never across the border");
+  });
+
+  it("widens into England only when the profile names English areas", () => {
+    const towns = widenCandidates("Borders", ["Northumberland"]);
+    assert.ok(towns.includes("Hexham"));
+    const scottishOnly = widenCandidates("Borders");
+    assert.ok(!scottishOnly.includes("Hexham"));
+  });
+
+  it("a widening plan skips what this run searched and what is resting", () => {
+    const coverage = new Map([[areaKey("Pitlochry"), searched(1, 1, 29)]]);
+    const skip = new Set(["crieff", "comrie"]);
+    const plan = planWiden("Crieff", 10, [], { coverage, skip, now });
+    const names = plan.areas.map((area) => area.name);
+    assert.ok(names.length > 0);
+    assert.ok(!names.includes("Crieff") && !names.includes("Comrie") && !names.includes("Pitlochry"));
+    for (const area of plan.areas) assert.ok((area.radiusMiles ?? 99) <= AREA_RADIUS_MILES.town);
+  });
+
+  it("knows the towns of Glasgow, Edinburgh, Aberdeen, Stirlingshire and Fife well beyond the first few", () => {
+    for (const [place, at] of [["Glasgow", 15], ["Edinburgh", 15], ["Aberdeen", 12], ["Stirlingshire", 15], ["Fife", 20], ["Perthshire", 25]] as const) {
+      assert.ok(detectPlace(place).towns.length >= at, `${place}: ${detectPlace(place).towns.length}`);
     }
   });
 });

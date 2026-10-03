@@ -1,14 +1,15 @@
 import { createLead, independentHost, type LeadIdentity } from "./leads.ts";
 import { scoreProspect } from "./scoring/prospect-score.ts";
 import type { OutreachLead } from "./outreach/types.ts";
-import { createIdentityIndex, indexOf, type IdentityIndex } from "./identity-index.ts";
+import { createIdentityIndex, indexOf, type IdentityIndex, type Match, type MatchSubject } from "./identity-index.ts";
 import { DISCOVERY_SAFETY } from "./discovery-limits.ts";
+import { emptyOutcomes, type ListingOutcome, type OutcomeCounts, type ReviewItem, type ReviewMatch } from "./discovery-ledger.ts";
 import type { Prospect } from "./research.ts";
 
 export { DISCOVERY_SAFETY };
 
-/** Why a discovered business never became a prospect. */
-export type PoolExclusion = "duplicate" | "known" | "suppressed" | "contacted";
+/** A business already known, as the pool compares against it. */
+export type KnownBusiness = LeadIdentity & MatchSubject;
 
 /**
  * The sources a business can come from, as diagnostic buckets.
@@ -49,10 +50,18 @@ export type PoolDiagnostics = {
   collected: number;
   /** Offered twice or more — the same business listed under several towns. */
   duplicatesAcrossAreas: number;
+  /** Already taken by an earlier trade in this run. */
+  duplicatesAcrossTrades: number;
   /** Already on the sheet. These no longer consume a target slot. */
   alreadyKnown: number;
   suppressed: number;
   alreadyContacted: number;
+  /**
+   * Possibly a business already known (or already found in this run), but the
+   * evidence does not settle it: held for a person rather than dropped as a
+   * duplicate or added as new.
+   */
+  needsReview: number;
   /** The pool after every exclusion: genuinely new, genuinely distinct. */
   newCandidates: number;
   targetRequested: number;
@@ -95,9 +104,11 @@ export function funnelReconciles(d: PoolDiagnostics): boolean {
   const accountedFor =
     d.newCandidates +
     d.duplicatesAcrossAreas +
+    d.duplicatesAcrossTrades +
     d.alreadyKnown +
     d.suppressed +
     d.alreadyContacted +
+    d.needsReview +
     d.droppedToSafetyCeiling;
   if (accountedFor !== d.collected) return false;
   if (d.targetAchieved + d.remainingAfterTarget !== d.newCandidates) return false;
@@ -109,11 +120,13 @@ export type ProspectPoolOptions = {
   /** The user's requested number of genuinely new prospects. */
   target: number;
   /** Leads already on the sheet. Removed before the target is applied. */
-  known?: readonly LeadIdentity[];
-  /** Suppressed businesses, by the same identity rules. Never returned. */
-  suppressed?: readonly LeadIdentity[];
+  known?: readonly KnownBusiness[];
+  /** Suppressed or rejected businesses, by the same identity rules. Never returned. */
+  suppressed?: readonly KnownBusiness[];
   /** Already contacted. Never returned, and never counted against the target. */
-  contacted?: readonly LeadIdentity[];
+  contacted?: readonly KnownBusiness[];
+  /** Businesses an earlier trade in this run already took: a repeat is a duplicate, not "known". */
+  inRun?: readonly KnownBusiness[];
   /** Trade words the run asked for, used for ranking only — never to exclude. */
   tradeTerms?: readonly string[];
   /** Towns the run planned, used for ranking only — never to exclude. */
@@ -140,11 +153,20 @@ export type ProspectPoolResult = {
    */
   knownMatches: Prospect[];
   diagnostics: PoolDiagnostics;
+  /** Every offered listing's outcome, per search it came from (`offer`'s `origin`). */
+  byOrigin: Map<string, OutcomeCounts>;
+  /** Listings held for a person, with what each might be. */
+  review: ReviewItem[];
+  /** Every kept candidate, best first — the target's choice and the rest. */
+  kept: Prospect[];
 };
 
 export type ProspectPool = {
-  /** Add an area's results. Order never matters; duplicates are free. */
-  offer(prospects: readonly Prospect[]): void;
+  /**
+   * Add a search's results. `origin` names the search (town and trade) so each
+   * listing's outcome is counted against the search that found it.
+   */
+  offer(prospects: readonly Prospect[], origin?: string): void;
   /** Genuinely new, distinct candidates collected so far. */
   readonly size: number;
   /** True once the safety ceiling is reached and further areas cannot help. */
@@ -228,6 +250,7 @@ export function createProspectPool(options: ProspectPoolOptions): ProspectPool {
   const known = indexOf(options.known ?? []);
   const suppressed = indexOf(options.suppressed ?? []);
   const contacted = indexOf(options.contacted ?? []);
+  const inRun = indexOf(options.inRun ?? []);
   /**
    * Every business offered, whether it was kept or excluded.
    *
@@ -238,52 +261,128 @@ export function createProspectPool(options: ProspectPoolOptions): ProspectPool {
    */
   const seen: IdentityIndex<Prospect> = createIdentityIndex<Prospect>();
   const kept: Prospect[] = [];
+  const originOf = new Map<Prospect, string>();
   const knownMatches: Prospect[] = [];
+  const review: ReviewItem[] = [];
   const newBySource = emptySourceTally();
+  const byOrigin = new Map<string, OutcomeCounts>();
 
   const counts = {
     collected: 0,
     duplicates: 0,
+    acrossTrades: 0,
     known: 0,
     suppressed: 0,
     contacted: 0,
+    review: 0,
     ceilingDropped: 0,
   };
   let ceilingHit = false;
 
+  const tally = (origin: string, outcome: ListingOutcome) => {
+    const row = byOrigin.get(origin) ?? emptyOutcomes();
+    row[outcome] += 1;
+    byOrigin.set(origin, row);
+  };
+
+  const hold = (prospect: Prospect, origin: string, match: ReviewMatch, found: Match<KnownBusiness> | Match<Prospect>) => {
+    counts.review += 1;
+    tally(origin, "needs_review");
+    if (review.length >= 200) return;
+    const entry = found.entry as KnownBusiness & { id?: string };
+    review.push({
+      key: `${origin}#${review.length}`,
+      businessName: prospect.businessName,
+      trade: prospect.trade,
+      town: prospect.town,
+      address: prospect.address,
+      phone: prospect.phone,
+      email: prospect.email,
+      website: prospect.website,
+      source: prospect.source,
+      placeId: prospect.placeId,
+      area: origin.split("|")[0] ?? "",
+      match,
+      matchedName: entry.businessName,
+      matchedTown: entry.town,
+      matchedId: entry.id ?? entry.placeId ?? "",
+      reason: found.reasons.join("; "),
+    });
+  };
+
   return {
-    offer(prospects) {
+    offer(prospects, origin = "") {
       for (const prospect of prospects) {
         counts.collected += 1;
         // Cross-area dedupe first: a business listed in Perth, Scone and
         // Auchterarder is one candidate, and consumes one slot, not three.
-        if (seen.find(prospect)) {
+        // Only a `same` verdict is a duplicate — a similar name in another
+        // town is not evidence of anything, and is weighed below.
+        const again = seen.find(prospect);
+        if (again?.verdict === "same") {
           counts.duplicates += 1;
+          tally(origin, "duplicate_in_search");
+          continue;
+        }
+        const earlierTrade = inRun.find(prospect);
+        if (earlierTrade?.verdict === "same") {
+          seen.add(prospect, prospect);
+          counts.acrossTrades += 1;
+          tally(origin, "duplicate_in_search");
           continue;
         }
         seen.add(prospect, prospect);
-        // Then the exclusions, all before the target is anywhere near applied.
-        // Suppression is checked ahead of the sheet so an unsubscribed
-        // business is reported as suppressed rather than merely "known".
-        if (suppressed.find(prospect)) {
+        // Then the exclusions, all before the target is anywhere near applied,
+        // each only on real evidence. Suppression is checked ahead of the
+        // sheet so an unsubscribed business is reported as suppressed rather
+        // than merely "known".
+        const isSuppressed = suppressed.find(prospect);
+        if (isSuppressed?.verdict === "same") {
           counts.suppressed += 1;
+          tally(origin, "suppressed");
           continue;
         }
-        if (contacted.find(prospect)) {
+        const wasContacted = contacted.find(prospect);
+        if (wasContacted?.verdict === "same") {
           counts.contacted += 1;
+          tally(origin, "contacted");
           continue;
         }
-        if (known.find(prospect)) {
+        const onSheet = known.find(prospect);
+        if (onSheet?.verdict === "same") {
           counts.known += 1;
+          tally(origin, "in_database");
           knownMatches.push(prospect);
+          continue;
+        }
+        // Possibly one of them, but nothing settles it: a person decides.
+        // Neither silently dropped (it may be a new business with a familiar
+        // name) nor silently added (it may be one already being worked).
+        if (isSuppressed) {
+          hold(prospect, origin, "suppressed", isSuppressed);
+          continue;
+        }
+        if (wasContacted) {
+          hold(prospect, origin, "contacted", wasContacted);
+          continue;
+        }
+        if (onSheet) {
+          hold(prospect, origin, "database", onSheet);
+          continue;
+        }
+        const alike = again ?? earlierTrade;
+        if (alike) {
+          hold(prospect, origin, "this_run", alike);
           continue;
         }
         if (kept.length >= ceiling) {
           ceilingHit = true;
           counts.ceilingDropped += 1;
+          tally(origin, "beyond_target");
           continue;
         }
         kept.push(prospect);
+        originOf.set(prospect, origin);
         newBySource[sourceKeyOf(prospect.source)] += 1;
       }
     },
@@ -296,15 +395,27 @@ export function createProspectPool(options: ProspectPoolOptions): ProspectPool {
     result() {
       const ranked = rankProspects(kept, { tradeTerms, townTerms, sourceWeights: options.sourceWeights });
       const prospects = ranked.slice(0, target);
+      const outcomes = new Map<string, OutcomeCounts>([...byOrigin].map(([key, row]) => [key, { ...row }]));
+      ranked.forEach((prospect, index) => {
+        const key = originOf.get(prospect) ?? "";
+        const row = outcomes.get(key) ?? emptyOutcomes();
+        row[index < target ? "accepted" : "beyond_target"] += 1;
+        outcomes.set(key, row);
+      });
       return {
         prospects,
         knownMatches,
+        byOrigin: outcomes,
+        review,
+        kept: ranked,
         diagnostics: {
           collected: counts.collected,
           duplicatesAcrossAreas: counts.duplicates,
+          duplicatesAcrossTrades: counts.acrossTrades,
           alreadyKnown: counts.known,
           suppressed: counts.suppressed,
           alreadyContacted: counts.contacted,
+          needsReview: counts.review,
           newCandidates: kept.length,
           targetRequested: target,
           targetAchieved: prospects.length,

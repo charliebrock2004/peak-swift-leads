@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { mergeProspects, runPlannedSearch, sortProspects, type ResearchFn } from "./run-search.ts";
+import { emptyRejectTally } from "./discovery-reasons.ts";
+import { outcomeTotal, reconcileLedger } from "./discovery-ledger.ts";
+import type { DiscoveryFunnel } from "./osm-discover.ts";
 import type { Prospect } from "./research.ts";
 
 function prospect(partial: Partial<Prospect> & { businessName: string; town: string }): Prospect {
@@ -233,44 +236,44 @@ describe("runPlannedSearch", () => {
 describe("the discovery funnel a run reports", () => {
   const plan = { location: "Perth", businessType: "Joiner", limit: 20 };
 
-  function research(funnel?: Partial<{ queriesSent: number; rawTotal: number; unique: number;
-    duplicatesMerged: number; droppedToFetchBudget: number; withWebsite: number;
-    withoutWebsite: number; withListedEmail: number }>) {
+  function research(funnel?: Partial<DiscoveryFunnel>) {
     return async (input: { location: string }) => ({
       ok: true as const,
       prospects: [prospect({ businessName: `${input.location} Joinery`, town: input.location })],
       location: input.location,
       businessType: "Joiner",
       funnel: {
-        queriesSent: 0, towns: [], rawBySource: { nominatim: 0, photon: 0, companiesHouse: 0 },
-        rawTotal: 0, unique: 0, duplicatesMerged: 0, droppedToFetchBudget: 0,
-        withWebsite: 0, withoutWebsite: 0, withListedEmail: 0, returned: 1, ...funnel,
+        queriesSent: 0, towns: [], terms: [], listings: 1, rejected: emptyRejectTally(),
+        rawBySource: { nominatim: 1, photon: 0, companiesHouse: 0, overpass: 0 },
+        rawTotal: 1, unique: 1, duplicatesMerged: 0,
+        withWebsite: 0, withoutWebsite: 1, withListedEmail: 0, returned: 1, ...funnel,
       },
     });
   }
 
   it("sums the counters across every area searched", async () => {
+    const rejected = { ...emptyRejectTally(), chain: 2, outside_area: 3 };
     const result = await runPlannedSearch({
       ...plan,
-      research: research({ queriesSent: 5, rawTotal: 12, unique: 9, duplicatesMerged: 3, withWebsite: 4 }),
+      research: research({ queriesSent: 5, listings: 14, rejected, rawTotal: 9, unique: 1, duplicatesMerged: 8, withWebsite: 4 }),
     });
     assert.ok(result.funnel.areas >= 1);
     assert.equal(result.funnel.queriesSent, 5 * result.funnel.areas);
-    assert.equal(result.funnel.rawTotal, 12 * result.funnel.areas);
-    assert.equal(result.funnel.duplicatesMerged, 3 * result.funnel.areas);
-  });
-
-  it("reports businesses cut by the caller's own target", async () => {
-    // The number that separates "this area is thin" from "we asked for too
-    // few" — opposite diagnoses that would otherwise look identical.
-    const result = await runPlannedSearch({ ...plan, research: research({ droppedToFetchBudget: 7 }) });
-    assert.equal(result.funnel.droppedToFetchBudget, 7 * result.funnel.areas);
+    assert.equal(result.funnel.listings, 14 * result.funnel.areas);
+    assert.equal(result.funnel.duplicatesMerged, 8 * result.funnel.areas);
+    assert.equal(result.ledger.outcomes.invalid, 5 * result.funnel.areas);
+    assert.equal(result.ledger.invalidReasons.outside_area, 3 * result.funnel.areas);
+    assert.deepEqual(reconcileLedger(result.ledger), []);
   });
 
   it("counts zeros rather than going missing when a source returns nothing", async () => {
-    const result = await runPlannedSearch({ ...plan, research: research() });
+    const result = await runPlannedSearch({
+      ...plan,
+      research: async (input: { location: string }) => ({ ok: true as const, prospects: [], location: input.location, businessType: "Joiner" }),
+    });
     assert.equal(result.funnel.rawTotal, 0);
     assert.ok(result.funnel.areas >= 1, "an area that found nothing is still an area searched");
+    assert.equal(result.ledger.searches.length, result.funnel.areas, "and it has a row in the ledger");
   });
 
   it("survives a research function that reports no funnel at all", async () => {
@@ -283,8 +286,131 @@ describe("the discovery funnel a run reports", () => {
         businessType: "Joiner",
       }),
     });
-    assert.equal(result.funnel.areas, 0);
     assert.ok(result.prospects.length > 0, "the run still works without diagnostics");
+    assert.deepEqual(reconcileLedger(result.ledger), []);
+  });
+
+  it("records a failed search as a row with its error and no listings", async () => {
+    const result = await runPlannedSearch({
+      location: "Perthshire",
+      businessType: "Joiner",
+      limit: 8,
+      rateLimitPauseMs: 0,
+      research: async (input) => (input.location === "Perth" ? { ok: false as const, error: "Photon: HTTP 503" } : research()(input)),
+    });
+    const failed = result.ledger.searches.find((row) => row.area === "Perth");
+    assert.equal(failed?.error, "Photon: HTTP 503");
+    assert.equal(failed?.listings, 0);
+    assert.deepEqual(reconcileLedger(result.ledger), []);
+  });
+});
+
+describe("every listing has exactly one outcome", () => {
+  /**
+   * The failed real-world run, rebuilt: 138 listings across overlapping towns,
+   * most of them businesses already on the sheet or contacted. Every one of the
+   * 138 must land in exactly one outcome, per search and in total.
+   */
+  it("accounts for every listing of an overlapping, mostly-known search", async () => {
+    const firms = Array.from({ length: 46 }, (_, i) =>
+      prospect({ businessName: `Firm ${String.fromCharCode(65 + (i % 26))}${i} Joinery`, town: "Perth", phone: `01738 ${String(400000 + i)}`, placeId: `osm:node:${i}` }),
+    );
+    const known = firms.slice(0, 35).map((firm) => ({ ...firm, mapsLink: "" }));
+    const contacted = firms.slice(35, 46).map((firm) => ({ ...firm, mapsLink: "" }));
+    const towns = ["Perth", "Scone", "Crieff", "Auchterarder"];
+    const research: ResearchFn = async (input) => {
+      const index = towns.indexOf(input.location);
+      // Each town sees an overlapping window of the same 46 firms.
+      const slice = firms.slice(index * 7, index * 7 + 25);
+      return {
+        ok: true,
+        location: input.location,
+        businessType: "Joiner",
+        prospects: slice,
+        funnel: {
+          queriesSent: 3, towns: [input.location], terms: ["joiner"], listings: slice.length + 9, rejected: { ...emptyRejectTally(), chain: 2 },
+          rawBySource: { nominatim: slice.length, photon: 7, companiesHouse: 0, overpass: 0 },
+          rawTotal: slice.length + 7, unique: slice.length, duplicatesMerged: 7, withWebsite: 0, withoutWebsite: slice.length, withListedEmail: 0, returned: slice.length,
+        },
+      };
+    };
+    const result = await runPlannedSearch({
+      location: "Perth",
+      businessType: "Joiner",
+      limit: 20,
+      rateLimitPauseMs: 0,
+      plan: { kind: "city", label: "Perth", places: ["Perth"], restingAreas: [], areas: towns.map((name) => ({ name, quota: 60 })) },
+      research,
+      known,
+      contacted,
+    });
+    const { ledger } = result;
+    assert.deepEqual(reconcileLedger(ledger), []);
+    assert.equal(ledger.listings, 4 * 25 + 4 * 9);
+    assert.equal(ledger.outcomes.invalid, 8);
+    assert.equal(ledger.outcomes.accepted, 0, "nothing new existed");
+    assert.equal(ledger.outcomes.in_database + ledger.outcomes.contacted, 46, "each firm is counted once, at its first sighting");
+    assert.equal(ledger.duplicates.acrossSources, 28);
+    assert.equal(ledger.duplicates.acrossAreas, 100 - 46);
+    for (const row of ledger.searches) assert.equal(outcomeTotal(row.outcomes), row.listings, row.area);
+  });
+
+  it("holds a possible match for review instead of calling it known or new", async () => {
+    const result = await runPlannedSearch({
+      location: "Crieff",
+      businessType: "Joiner",
+      limit: 8,
+      rateLimitPauseMs: 0,
+      research: async (input) => ({
+        ok: true,
+        location: input.location,
+        businessType: "Joiner",
+        prospects: [
+          prospect({ businessName: "Strathearn Joinery Ltd", town: "Crieff" }),
+          prospect({ businessName: "Monzie Woodwork", town: "Crieff" }),
+        ],
+      }),
+      known: [{ businessName: "Strathearn Joinery", town: "Perth", phone: "", mapsLink: "" }],
+    });
+    assert.equal(result.ledger.outcomes.needs_review, 1);
+    assert.equal(result.ledger.outcomes.accepted, 1);
+    assert.equal(result.ledger.review[0]?.matchedName, "Strathearn Joinery");
+    assert.equal(result.ledger.review[0]?.match, "database");
+    assert.ok(result.prospects.every((item) => item.businessName !== "Strathearn Joinery Ltd"));
+  });
+
+  it("counts a business an earlier trade took as a duplicate, not as already known", async () => {
+    const firm = prospect({ businessName: "Tay Building & Joinery", town: "Perth", phone: "01738 555111" });
+    const result = await runPlannedSearch({
+      location: "Perth",
+      businessType: "Builder",
+      limit: 8,
+      rateLimitPauseMs: 0,
+      plan: { kind: "town", label: "Perth", places: ["Perth"], restingAreas: [], areas: [{ name: "Perth", quota: 60 }] },
+      research: async (input) => ({ ok: true, location: input.location, businessType: "Builder", prospects: [firm] }),
+      inRun: [{ ...firm, mapsLink: "" }],
+    });
+    assert.equal(result.ledger.outcomes.in_database, 0);
+    assert.equal(result.ledger.outcomes.duplicate_in_search, 1);
+    assert.equal(result.ledger.duplicates.acrossTrades, 1);
+  });
+
+  it("passes each area its own radius, Companies House town and search-word rotation", async () => {
+    const seen: { location: string; radiusMiles?: number; chTowns?: string[]; variant?: number }[] = [];
+    await runPlannedSearch({
+      location: "Perthshire",
+      businessType: "Joiner",
+      limit: 8,
+      rateLimitPauseMs: 0,
+      plan: { kind: "region", label: "Perthshire", places: ["Perthshire"], restingAreas: [], areas: [{ name: "Crieff", quota: 60, radiusMiles: 7, chTowns: ["Crieff"], variant: 2 }] },
+      research: async (input) => {
+        seen.push(input);
+        return { ok: true, location: input.location, businessType: "Joiner", prospects: [] };
+      },
+    });
+    assert.equal(seen[0]?.radiusMiles, 7);
+    assert.deepEqual(seen[0]?.chTowns, ["Crieff"]);
+    assert.equal(seen[0]?.variant, 2);
   });
 });
 

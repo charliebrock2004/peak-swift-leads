@@ -4,9 +4,11 @@
  * here is unit-tested directly, and the server job and any future caller count
  * the same way.
  */
-import { fillMissingLead, findDuplicate, newLeadId, type Lead } from "../leads.ts";
+import { findDuplicate } from "../identity-index.ts";
+import { fillMissingLead, newLeadId, type Lead } from "../leads.ts";
 import type { Prospect } from "../research.ts";
 import type { PlannedSearchResult } from "../run-search.ts";
+import { mergeLedger, moveOutcome, type DiscoveryLedger } from "../discovery-ledger.ts";
 import { websiteOutcome, type RunFunnel } from "../outreach/run-funnel.ts";
 import type { ProspectScore } from "../scoring/prospect-score.ts";
 import type { FindEvent, FindSummary, FindTopProspect } from "./types.ts";
@@ -50,40 +52,32 @@ export function prospectKey(prospect: Pick<Prospect, "placeId" | "businessName" 
 }
 
 /**
- * Fold one trade's search into the run: the funnel numbers it measured, and
- * the prospects not already taken by an earlier trade.
+ * Fold one trade's search into the run: its ledger, and the prospects not
+ * already taken by an earlier trade.
+ *
+ * The pool already treats an earlier trade's prospect as a duplicate (it is
+ * passed in as `inRun`), so `seen` is a backstop. If it ever catches one, the
+ * listing moves from "accepted" to "duplicate within this search" — it never
+ * silently disappears from the count.
  */
 export function absorbSearch(
-  funnel: RunFunnel,
-  search: Pick<PlannedSearchResult, "funnel" | "pool" | "prospects" | "knownMatches">,
+  ledger: DiscoveryLedger,
+  search: Pick<PlannedSearchResult, "ledger" | "prospects" | "knownMatches">,
   seen: Set<string>,
-): { added: Prospect[]; rediscovered: Prospect[] } {
-  funnel.rawFound += search.funnel.rawTotal;
-  funnel.unique += search.funnel.unique;
-  funnel.beyondFetchBudget += search.funnel.droppedToFetchBudget;
-  funnel.offered += search.pool.collected;
-  funnel.duplicatesAcrossAreas += search.pool.duplicatesAcrossAreas;
-  funnel.alreadyKnown += search.pool.alreadyKnown;
-  funnel.alreadyContacted += search.pool.alreadyContacted;
-  funnel.suppressed += search.pool.suppressed;
-  funnel.beyondSafetyCeiling += search.pool.droppedToSafetyCeiling;
-  funnel.newCandidates += search.pool.newCandidates;
-  funnel.notNeeded += search.pool.remainingAfterTarget;
-  funnel.selected += search.pool.targetAchieved;
+): { ledger: DiscoveryLedger; added: Prospect[]; rediscovered: Prospect[] } {
+  const next = mergeLedger(ledger, search.ledger);
   const added: Prospect[] = [];
   for (const prospect of search.prospects) {
     const key = prospectKey(prospect);
     if (seen.has(key)) {
-      // The same listing under two trades: one business, one slot.
-      funnel.selected -= 1;
-      funnel.newCandidates -= 1;
-      funnel.duplicatesAcrossAreas += 1;
+      moveOutcome(next, "accepted", "duplicate_in_search", 1, { area: "", trade: prospect.trade });
+      next.duplicates.acrossTrades += 1;
       continue;
     }
     seen.add(key);
     added.push(prospect);
   }
-  return { added, rediscovered: [...search.knownMatches] };
+  return { ledger: next, added, rediscovered: [...search.knownMatches] };
 }
 
 export type SavePlan = {
@@ -95,28 +89,40 @@ export type SavePlan = {
   ids: string[];
 };
 
-/** Decide, against the sheet as it stands, which prospects are new and which top up a lead. */
-export function planSave(funnel: RunFunnel, prospects: readonly Prospect[], rediscovered: readonly Prospect[], sheet: readonly Lead[], now: string): SavePlan {
+/**
+ * Decide, against the sheet as it stands, which prospects are new and which
+ * top up a lead.
+ *
+ * The sheet can change between discovery and save (an import, a business
+ * added by hand), so each prospect is checked again. One that is now on the
+ * sheet moves in the ledger from "accepted" to "already in your database";
+ * two prospects that turn out to be one business count the second as a
+ * duplicate. Either way every listing keeps exactly one outcome.
+ */
+export function planSave(ledger: DiscoveryLedger, prospects: readonly Prospect[], rediscovered: readonly Prospect[], sheet: readonly Lead[], now: string): SavePlan {
   const fresh: Partial<Lead>[] = [];
   const merges: { id: string; patch: Partial<Lead> }[] = [];
   const ids = new Set<string>();
+  const freshLeads: Lead[] = [];
   for (const prospect of prospects) {
     const duplicate = findDuplicate(prospect, sheet);
     if (duplicate) {
+      moveOutcome(ledger, "accepted", "in_database", 1);
       ids.add(duplicate.lead.id);
       const patch = fillMissingLead(duplicate.lead, leadFromProspect(prospect, now));
       if (patch) merges.push({ id: duplicate.lead.id, patch });
       continue;
     }
     const lead = leadFromProspect(prospect, now);
+    const twin = findDuplicate(prospect, freshLeads);
+    if (twin) {
+      moveOutcome(ledger, "accepted", "duplicate_in_search", 1);
+      ledger.duplicates.acrossTrades += 1;
+      continue;
+    }
+    freshLeads.push(lead as Lead);
     fresh.push(lead);
     ids.add(lead.id as string);
-  }
-  const collapsed = prospects.length - ids.size;
-  if (collapsed > 0) {
-    funnel.selected -= collapsed;
-    funnel.newCandidates -= collapsed;
-    funnel.duplicatesAcrossAreas += collapsed;
   }
   const patched = new Set(merges.map((item) => item.id));
   for (const prospect of rediscovered) {

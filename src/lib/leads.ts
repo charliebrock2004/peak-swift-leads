@@ -188,6 +188,40 @@ const DIRECTORY_HOSTS = [
   "gumtree.com",
   "tripadvisor.com",
   "opentable.com",
+  // Booking platforms and more directories: a profile page on one of these
+  // is not the business's own website, and two businesses listed on the same
+  // one are not the same business.
+  "tripadvisor.co.uk",
+  "yelp.com",
+  "yelp.co.uk",
+  "nextdoor.co.uk",
+  "fresha.com",
+  "booksy.com",
+  "treatwell.co.uk",
+  "setmore.com",
+  "linktr.ee",
+  "about.me",
+  "find-open.co.uk",
+  "opendi.co.uk",
+  "thebestof.co.uk",
+  "approvedtraders.co.uk",
+  "whatclinic.com",
+  "foursquare.com",
+  "uk.trustpilot.com",
+  "rated.people",
+  "constructionline.co.uk",
+  "companieshouse.gov.uk",
+  "company-information.service.gov.uk",
+  "endole.co.uk",
+  "companycheck.co.uk",
+  "bizdb.co.uk",
+  "uk.kompass.com",
+  "kompass.com",
+  "yably.co.uk",
+  "brownbook.net",
+  "infobel.com",
+  "streetmap.co.uk",
+  "scottishbusinessdirectory.co.uk",
 ];
 
 const HINT_TO_STATUS: Record<string, WebsiteStatus> = {
@@ -494,11 +528,6 @@ export type LeadIdentity = Pick<Lead, "businessName" | "town" | "phone" | "mapsL
   email?: string;
 };
 
-export type DuplicateMatch<T extends LeadIdentity = Lead> = {
-  lead: T;
-  via: "place" | "phone" | "email" | "website" | "maps" | "name" | "name+town";
-};
-
 /** Independent business host, or "" for social/directory/empty. */
 export function independentHost(url: string | undefined): string {
   const value = (url ?? "").trim();
@@ -506,47 +535,6 @@ export function independentHost(url: string | undefined): string {
   const status = classifyWebsiteUrl(value);
   if (status === "Social Only" || status === "Directory Only" || status === "No Website Found") return "";
   return hostnameOf(value);
-}
-
-function normalizeEmailAddress(value: string | undefined): string {
-  return (value ?? "").trim().toLowerCase();
-}
-
-export function findDuplicate<T extends LeadIdentity>(
-  candidate: LeadIdentity,
-  leads: readonly T[],
-): DuplicateMatch<T> | null {
-  const placeId = candidate.placeId?.trim() ?? "";
-  const phone = normalizePhone(candidate.phone);
-  const maps = (candidate.mapsLink ?? "").trim() ? normalizeMaps(candidate.mapsLink) : "";
-  const name = normalizeName(candidate.businessName);
-  const town = (candidate.town ?? "").trim().toLowerCase();
-  const email = normalizeEmailAddress(candidate.email);
-  const host = independentHost(candidate.website);
-
-  for (const lead of leads) {
-    const leadPlace = lead.placeId?.trim() ?? "";
-    if (placeId && leadPlace && placeId === leadPlace) return { lead, via: "place" };
-    const leadPhone = normalizePhone(lead.phone);
-    if (phone.length >= 10 && leadPhone.length >= 10 && phone === leadPhone) {
-      return { lead, via: "phone" };
-    }
-    const leadEmail = normalizeEmailAddress(lead.email);
-    if (email && leadEmail && email === leadEmail) return { lead, via: "email" };
-    const leadHost = independentHost(lead.website);
-    if (host && leadHost && host === leadHost) return { lead, via: "website" };
-    const leadMaps = (lead.mapsLink ?? "").trim() ? normalizeMaps(lead.mapsLink) : "";
-    if (maps && leadMaps && maps === leadMaps) return { lead, via: "maps" };
-    const sameName = name.length >= 3 && name === normalizeName(lead.businessName);
-    const sameTown = town && (lead.town ?? "").trim().toLowerCase() === town;
-    if (sameName && sameTown) return { lead, via: "name+town" };
-  }
-
-  for (const lead of leads) {
-    const sameName = name.length >= 8 && name.includes(" ") && name === normalizeName(lead.businessName);
-    if (sameName) return { lead, via: "name" };
-  }
-  return null;
 }
 
 /**

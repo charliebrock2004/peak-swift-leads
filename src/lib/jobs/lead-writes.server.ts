@@ -91,6 +91,22 @@ export async function loadSheet(sql: Sql, userId: string): Promise<Lead[]> {
   return rows.map(leadFromRow);
 }
 
+/** A business on the sheet as discovery compares against it: identity, company number and contact state. */
+export type KnownLead = Lead & { companyNumber: string };
+
+/**
+ * The sheet for de-duplication: every live lead with the company number a
+ * Companies House check confirmed, so a registered company rediscovered under
+ * a trading name is still recognised by its number.
+ */
+export async function loadKnownBusinesses(sql: Sql, userId: string): Promise<KnownLead[]> {
+  const rows = await sql.query<LeadRow & { company_number?: string }>(
+    `select ${ROW_COLUMNS}, company_number from leads where user_id = $1 and deleted_at is null order by updated_at desc limit 20000`,
+    [userId],
+  );
+  return rows.map((row) => ({ ...leadFromRow(row), companyNumber: String(row.company_number ?? "").trim().toUpperCase() }));
+}
+
 export async function loadSheetLeads(sql: Sql, userId: string, ids: readonly string[]): Promise<Lead[]> {
   if (ids.length === 0) return [];
   const rows = await sql.query<LeadRow>(

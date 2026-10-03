@@ -38,6 +38,12 @@ export type Prospect = {
   placeId: string;
   foundAt: string;
   businessStatus: string;
+  /**
+   * Every source record behind this business ("osm:node:1", "ch:SC612222").
+   * Carried so a company number found by one source still identifies the
+   * business when it is compared with the sheet.
+   */
+  sourceIds?: string[];
 };
 
 export type ResearchResult =
@@ -130,6 +136,7 @@ function scorePlace(place: DiscoveredPlace, websiteStatus: WebsiteStatus, extraN
     placeId: place.placeId,
     foundAt: new Date().toISOString(),
     businessStatus: place.businessStatus,
+    sourceIds: place.sourceIds?.length ? [...place.sourceIds] : place.placeId ? [place.placeId] : [],
   };
 }
 
@@ -182,7 +189,16 @@ export const researchProspects = createServerFn({ method: "POST" })
   })
   .handler(async ({ data, context }): Promise<ResearchResult> => researchCore(data, context));
 
-export type ResearchInput = { location: string; businessType: string; limit: number; radiusMiles: number };
+export type ResearchInput = {
+  location: string;
+  businessType: string;
+  limit: number;
+  radiusMiles: number;
+  /** Companies House towns for this search; omitted = a ring around the location. */
+  chTowns?: string[];
+  /** Earlier searches of this town and trade: rotates the search words. */
+  variant?: number;
+};
 
 /** One area's discovery, callable from a background job as well as the server function. */
 export async function researchCore(data: ResearchInput, context: { userId: string }): Promise<ResearchResult> {
@@ -224,16 +240,11 @@ export async function researchCore(data: ResearchInput, context: { userId: strin
       .sort((a, b) => {
         if (rank[a.priority] !== rank[b.priority]) return rank[a.priority] - rank[b.priority];
         return a.businessName.localeCompare(b.businessName, "en-GB");
-      })
-      .slice(0, data.limit);
+      });
 
-    if (prospects.length === 0) {
-      return {
-        ok: false,
-        error: `No ${data.businessType.toLowerCase()} businesses found in ${data.location}. Try a larger radius.`,
-      };
-    }
-
+    // An area that was searched and held nothing new is an answer, not a
+    // failure: it is returned (with its counts) so the run can record the
+    // search, and stop sending later runs back to an area that is empty.
     return {
       ok: true,
       prospects,

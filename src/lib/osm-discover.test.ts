@@ -12,6 +12,9 @@ import {
   milesBetween,
   nominatimViewbox,
   profileFor,
+  nominatimTerms,
+  NOMINATIM_TERMS_PER_SEARCH,
+  rejectReason,
   type DiscoveredPlace,
 } from "./osm-discover.ts";
 
@@ -38,8 +41,8 @@ function place(partial: Partial<DiscoveredPlace> & { businessName: string }): Di
 describe("profileFor", () => {
   it("maps joiners to Photon queries", () => {
     const profile = profileFor("Joiner");
-    assert.deepEqual(profile.queries, ["joinery", "joiner", "carpenter"]);
-    assert.deepEqual(profile.nominatim, ["joinery", "carpenter"]);
+    for (const word of ["joiner", "joinery", "carpenter", "carpentry"]) assert.ok(profile.queries.includes(word), word);
+    assert.ok(profile.nominatim.length > NOMINATIM_TERMS_PER_SEARCH, "more words than one search sends, so repeats rotate");
   });
 
   it("has no unknown third-party source in any trade profile", () => {
@@ -49,9 +52,33 @@ describe("profileFor", () => {
   });
 
   it("maps tilers, flooring and gyms", () => {
-    assert.deepEqual(profileFor("Tiler").queries, ["tiler", "tiling"]);
-    assert.deepEqual(profileFor("Flooring").queries, ["flooring", "floorer"]);
+    assert.ok(profileFor("Tiler").queries.includes("tiler"));
+    assert.ok(profileFor("Flooring").queries.includes("carpet fitter"));
     assert.ok(profileFor("Gym").queries.includes("gym"));
+  });
+});
+
+describe("search words rotate across repeat searches", () => {
+  it("asks different words the second time a town is searched", () => {
+    const profile = profileFor("Plumber");
+    const first = nominatimTerms(profile, 0);
+    const second = nominatimTerms(profile, 1);
+    assert.equal(first.length, NOMINATIM_TERMS_PER_SEARCH);
+    assert.notDeepEqual(first, second);
+    const covered = new Set([...first, ...second]);
+    assert.ok(covered.size >= 4, [...covered].join(", "));
+  });
+
+  it("a short list is sent whole every time", () => {
+    assert.deepEqual(nominatimTerms(profileFor("Locksmith"), 5), ["locksmith"]);
+  });
+
+  it("counts every refused row under exactly one reason", () => {
+    const profile = profileFor("Electrician");
+    assert.equal(rejectReason("Howdens Joinery", "shop", "trade", "", "", profile), "chain");
+    assert.equal(rejectReason("Mill Road", "highway", "residential", "", "", profile), "not_a_business");
+    assert.equal(rejectReason("EV Charging Hub", "amenity", "x", "", "", profile), "wrong_trade");
+    assert.equal(rejectReason("Sparks Electrical", "craft", "electrician", "", "", profile), null);
   });
 });
 

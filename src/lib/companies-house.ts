@@ -586,7 +586,14 @@ async function geocodePostcodes(postcodes: string[], fetchImpl: typeof fetch = f
   return map;
 }
 
-export type ChSearchResult = { hits: CompanyHit[]; error?: string; disabled?: boolean; requests: number };
+export type ChSearchResult = {
+  hits: CompanyHit[];
+  error?: string;
+  disabled?: boolean;
+  requests: number;
+  /** Companies returned and refused: not in the trade (or not a trading business), or outside the area. */
+  rejected?: { wrong_trade: number; outside_area: number };
+};
 
 /**
  * Companies in a trade near a place.
@@ -627,6 +634,8 @@ export async function searchCompaniesHouse(
   const errors = answers.filter((answer): answer is Extract<ChResponse, { ok: false }> => !answer.ok && answer.kind !== "not-found");
   const raw = answers.flatMap((answer) => (answer.ok ? (bySic ? parseAdvancedSearch(answer.json) : parseCompaniesHouseJson(answer.json)) : []));
   const merged = filterCompanyHits(raw, options.trade, bySic);
+  // The same company returned for two towns is one record, not two listings.
+  const distinctRaw = new Set(raw.map((hit) => hit.companyNumber || hit.businessName.toLowerCase())).size;
 
   const geo = await geocodePostcodes(merged.map((hit) => hit.postcode).filter(Boolean), client.fetchImpl ?? fetch);
   for (const hit of merged) {
@@ -646,8 +655,11 @@ export async function searchCompaniesHouse(
 
   const allFailed = errors.length === answers.length;
   return {
-    hits: ranked.slice(0, Math.max(options.limit, 20)),
+    // Every company in the area: none is cut here unseen. What a run keeps is
+    // decided once, across every area and source, after de-duplication.
+    hits: ranked,
     requests: requests.length,
+    rejected: { wrong_trade: Math.max(0, distinctRaw - merged.length), outside_area: merged.length - inArea.length },
     error: allFailed ? errors[0]?.error : ranked.length === 0 && errors.length ? errors[0]?.error : undefined,
   };
 }

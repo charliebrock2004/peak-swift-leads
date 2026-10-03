@@ -68,6 +68,6 @@ export function statusTone(status: string): "good" | "info" | "bad" | "warn" | "
   if (status === "done") return "good";
   if (status === "running") return "info";
   if (status === "failed") return "bad";
-  if (status === "stopped" || status === "interrupted") return "warn";
+  if (status === "stopped" || status === "interrupted" || status === "empty") return "warn";
   return "neutral";
 }

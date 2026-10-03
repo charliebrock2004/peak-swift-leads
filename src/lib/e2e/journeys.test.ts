@@ -22,7 +22,8 @@ import { findHandler, type FindDeps } from "../jobs/find.server.ts";
 import { runJobs, type HandlerLookup, type JobHandler } from "../jobs/runner.server.ts";
 import * as jobs from "../jobs/store.server.ts";
 import type { FindResult } from "../jobs/types.ts";
-import { createLead, findDuplicate, type Lead } from "../leads.ts";
+import { findDuplicate } from "../identity-index.ts";
+import { createLead, type Lead } from "../leads.ts";
 import { buildLeadUpsert } from "../leads-row.ts";
 import { decideApproval } from "../outreach/approval.ts";
 import { autoContext } from "../outreach/auto-run.ts";
@@ -95,7 +96,21 @@ function findDeps(listings = LISTINGS): FindDeps {
         prospects: listings,
         location: "Crieff",
         businessType: "Roofer",
-        funnel: { queriesSent: 1, towns: ["Crieff"], rawBySource: { nominatim: listings.length, photon: 0, companiesHouse: 0 }, rawTotal: listings.length, unique: listings.length, duplicatesMerged: 0, droppedToFetchBudget: 0, withWebsite: 1, withoutWebsite: listings.length - 1, withListedEmail: 0 },
+        funnel: {
+          queriesSent: 1,
+          towns: ["Crieff"],
+          terms: ["roofer"],
+          listings: listings.length,
+          rejected: { chain: 0, not_a_business: 0, wrong_trade: 0, outside_area: 0, inactive: 0 },
+          rawBySource: { nominatim: listings.length, photon: 0, companiesHouse: 0, overpass: 0 },
+          rawTotal: listings.length,
+          unique: listings.length,
+          duplicatesMerged: 0,
+          withWebsite: 1,
+          withoutWebsite: listings.length - 1,
+          withListedEmail: 0,
+          returned: listings.length,
+        },
       }) as Awaited<ReturnType<FindDeps["research"]>>,
     checkWebsite: async () => ({ ok: false, error: "offline in tests" }),
     findEmail: async (data) => {

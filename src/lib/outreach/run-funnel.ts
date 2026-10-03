@@ -11,26 +11,28 @@
  * Pure and client-safe: the Find screen builds it as the run goes, and the run
  * record stores it so "View run" can show exactly the same thing later.
  */
+import type { DiscoveryLedger } from "../discovery-ledger.ts";
 import { checkEligibility, isWorthRinging, type EligibilityContext } from "./eligibility.ts";
 import type { OutreachLead } from "./types.ts";
 
 export type RunFunnel = {
-  // ── Discovery (from the sources) ──────────────────────────────────────────
-  /** Listings returned by every source, before anything was merged. */
+  // ── Discovery: every listing's one outcome (discovery-ledger.ts) ─────────
+  /** Every row the sources returned, refused ones included. */
   rawFound: number;
-  /** Distinct businesses once the same business across sources was merged. */
+  /** Distinct businesses: every listing that was not refused or a repeat. */
   unique: number;
-  /** Cut by the per-area fetch budget (an area held more than one page). */
-  beyondFetchBudget: number;
-  /** Offered to the run's candidate pool: unique minus the fetch-budget cut. */
-  offered: number;
-  // ── De-duplication and exclusions (the pool) ──────────────────────────────
+  /** Refused as not a business in the trade (chains, streets, out of area…). */
+  invalid: number;
+  /** A second record of a business already found in this search (sources, towns or trades). */
   duplicatesAcrossAreas: number;
-  /** Already on your sheet — or found under an earlier trade in this run. */
+  /** Already in your database. */
   alreadyKnown: number;
   alreadyContacted: number;
+  /** Suppressed, opted out, or rejected by you. */
   suppressed: number;
-  beyondSafetyCeiling: number;
+  /** Possibly a business you already have: held for your decision, not dropped or added. */
+  needsReview: number;
+  /** Genuinely new businesses found: taken now plus held back by the target. */
   newCandidates: number;
   /** New, but not needed: the run's target was already met. */
   notNeeded: number;
@@ -71,17 +73,35 @@ export type RunFunnel = {
   heldForTomorrow: number;
 };
 
+/**
+ * The discovery half of the funnel, read straight off the ledger, so the run
+ * screen, the run record and the ledger can never disagree.
+ */
+export function discoveryFromLedger(f: RunFunnel, ledger: DiscoveryLedger): void {
+  const o = ledger.outcomes;
+  f.rawFound = ledger.listings;
+  f.invalid = o.invalid;
+  f.duplicatesAcrossAreas = o.duplicate_in_search;
+  f.alreadyKnown = o.in_database;
+  f.alreadyContacted = o.contacted;
+  f.suppressed = o.suppressed;
+  f.needsReview = o.needs_review;
+  f.selected = o.accepted;
+  f.notNeeded = o.beyond_target;
+  f.newCandidates = o.accepted + o.beyond_target;
+  f.unique = ledger.listings - o.invalid - o.duplicate_in_search;
+}
+
 export function emptyFunnel(): RunFunnel {
   return {
     rawFound: 0,
     unique: 0,
-    beyondFetchBudget: 0,
-    offered: 0,
+    invalid: 0,
     duplicatesAcrossAreas: 0,
     alreadyKnown: 0,
     alreadyContacted: 0,
     suppressed: 0,
-    beyondSafetyCeiling: 0,
+    needsReview: 0,
     newCandidates: 0,
     notNeeded: 0,
     selected: 0,
@@ -221,12 +241,13 @@ export function reconcileFunnel(f: RunFunnel): string[] {
   const expect = (label: string, left: number, right: number) => {
     if (left !== right) problems.push(`${label}: ${left} ≠ ${right}`);
   };
-  if (f.offered > 0 || f.newCandidates > 0) {
+  if (f.rawFound > 0 || f.newCandidates > 0) {
     expect(
-      "offered = duplicates + known + contacted + suppressed + ceiling + new",
-      f.offered,
-      f.duplicatesAcrossAreas + f.alreadyKnown + f.alreadyContacted + f.suppressed + f.beyondSafetyCeiling + f.newCandidates,
+      "listings = invalid + duplicates + known + contacted + suppressed + review + new",
+      f.rawFound,
+      f.invalid + f.duplicatesAcrossAreas + f.alreadyKnown + f.alreadyContacted + f.suppressed + f.needsReview + f.newCandidates,
     );
+    expect("unique = listings − invalid − duplicates", f.unique, f.rawFound - f.invalid - f.duplicatesAcrossAreas);
     expect("new candidates = selected + not needed", f.newCandidates, f.selected + f.notNeeded);
   }
   if (f.checked > 0) {

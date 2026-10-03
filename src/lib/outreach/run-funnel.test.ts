@@ -58,11 +58,12 @@ describe("the funnel adds up, or says where it does not", () => {
     ...emptyFunnel(),
     rawFound: 142,
     unique: 103,
-    offered: 103,
+    invalid: 30,
     duplicatesAcrossAreas: 9,
     alreadyKnown: 14,
     alreadyContacted: 2,
     suppressed: 1,
+    needsReview: 9,
     newCandidates: 77,
     notNeeded: 27,
     selected: 50,
@@ -100,7 +101,12 @@ describe("the funnel adds up, or says where it does not", () => {
   });
 
   it("does not demand numbers from stages a stopped run never reached", () => {
-    assert.deepEqual(reconcileFunnel({ ...emptyFunnel(), rawFound: 40, unique: 30, offered: 30, newCandidates: 30, selected: 30 }), []);
+    assert.deepEqual(reconcileFunnel({ ...emptyFunnel(), rawFound: 40, unique: 30, invalid: 10, newCandidates: 30, selected: 30 }), []);
+  });
+
+  it("catches a listing with no outcome", () => {
+    const problems = reconcileFunnel({ ...good(), alreadyKnown: 13 });
+    assert.match(problems.join("\n"), /listings = invalid \+ duplicates/);
   });
 
   it("round-trips through storage and tolerates old runs", () => {

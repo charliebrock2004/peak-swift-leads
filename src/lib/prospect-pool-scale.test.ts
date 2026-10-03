@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { findDuplicate } from "./leads.ts";
+import { findDuplicate } from "./identity-index.ts";
 import {
   buildProspectPool,
   funnelReconciles,

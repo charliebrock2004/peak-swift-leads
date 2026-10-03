@@ -4,7 +4,6 @@ import {
   classifyWebsiteUrl,
   createLead,
   extractIndependentUrl,
-  findDuplicate,
   fillMissingLead,
   mergeWebsiteEvidence,
   migrateLead,
@@ -17,6 +16,7 @@ import {
   websiteActionLabel,
   type Lead,
 } from "./leads.ts";
+import { findDuplicate, matchLead } from "./identity-index.ts";
 
 function lead(partial: Partial<Lead>): Lead {
   return createLead(partial);
@@ -105,7 +105,7 @@ describe("duplicates", () => {
     assert.equal(normalizeName("W B Dodds Ltd"), normalizeName("WB Dodds"));
   });
 
-  it("matches on maps URL", () => {
+  it("does not treat a shared maps link as evidence (a postcode-centre pin is shared by every company there)", () => {
     const match = findDuplicate(
       {
         businessName: "Other",
@@ -115,7 +115,7 @@ describe("duplicates", () => {
       },
       existing,
     );
-    assert.equal(match?.via, "maps");
+    assert.equal(match, null);
   });
 
   it("does not treat different Maps search queries as the same place", () => {
@@ -138,30 +138,28 @@ describe("duplicates", () => {
     );
   });
 
-  it("matches a distinctive name even in another town", () => {
-    const match = findDuplicate(
-      { businessName: "W B Dodds Limited", town: "Perth", phone: "", mapsLink: "" },
-      existing,
-    );
-    assert.equal(match?.via, "name");
+  it("holds a matching name in another town as only possible, never a duplicate", () => {
+    const candidate = { businessName: "W B Dodds Limited", town: "Perth", phone: "", mapsLink: "" };
+    assert.equal(findDuplicate(candidate, existing), null);
+    assert.equal(matchLead(candidate, existing)?.verdict, "possible");
   });
 
-  it("matches on place id before name", () => {
+  it("matches on the same source record before the name", () => {
     const sheet = [lead({ id: "ch", businessName: "Crieff Construction", town: "Crieff", placeId: "ch:SC612222" })];
     const match = findDuplicate(
       { businessName: "Other Name", town: "Perth", phone: "", mapsLink: "", placeId: "ch:SC612222" },
       sheet,
     );
-    assert.equal(match?.via, "place");
+    assert.equal(match?.via, "company");
   });
 
-  it("matches on a public email", () => {
+  it("matches on a public email with a matching name; a different name is only possible", () => {
     const sheet = [lead({ id: "a", businessName: "ECG Joinery", town: "Crieff", email: "info@ecgjoinery.co.uk" })];
-    const match = findDuplicate(
-      { businessName: "Other", town: "Perth", phone: "", mapsLink: "", email: "info@ecgjoinery.co.uk" },
-      sheet,
-    );
-    assert.equal(match?.via, "email");
+    const same = findDuplicate({ businessName: "ECG Joinery Ltd", town: "Perth", phone: "", mapsLink: "", email: "info@ecgjoinery.co.uk" }, sheet);
+    assert.equal(same?.via, "email");
+    const other = { businessName: "Other", town: "Perth", phone: "", mapsLink: "", email: "info@ecgjoinery.co.uk" };
+    assert.equal(findDuplicate(other, sheet), null);
+    assert.equal(matchLead(other, sheet)?.verdict, "possible");
   });
 
   it("matches on an independent website host, not a directory listing", () => {

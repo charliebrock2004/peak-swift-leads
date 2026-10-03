@@ -115,7 +115,38 @@ const GENERIC = new Set([
   "and",
   "sons",
   "son",
+  "joiner",
+  "roofer",
+  "roofers",
+  "plumber",
+  "plumbers",
+  "electrician",
+  "decorators",
+  "decorating",
+  "painter",
+  "painters",
+  "landscaping",
+  "landscapes",
+  "gardening",
+  "maintenance",
+  "property",
+  "construction",
+  "carpentry",
+  "kitchens",
+  "bathrooms",
+  "windows",
+  "home",
+  "homes",
+  "improvements",
 ]);
+
+/**
+ * The words of a name that identify it: folded, legal suffixes and generic
+ * trade words removed ("Tayside Roofing Services Ltd" → ["tayside"]).
+ */
+export function distinctiveTokens(name: string): string[] {
+  return tokens(foldName(name)).filter((token) => !GENERIC.has(token));
+}
 
 export type NameRelation = "equal" | "contains" | "similar" | "different";
 
@@ -141,6 +172,8 @@ export function nameRelation(a: string, b: string): NameRelation {
   // only when that part is long enough for one letter not to be a new name.
   const distinctX = tx.filter((token) => !GENERIC.has(token)).join("");
   const distinctY = ty.filter((token) => !GENERIC.has(token)).join("");
+  // Numbers are not spellings: "Unit 10 Joinery" and "Unit 11 Joinery" are two names.
+  if (distinctX.replace(/\D/g, "") !== distinctY.replace(/\D/g, "")) return "different";
   const longest = Math.max(distinctX.length, distinctY.length);
   if (distinctX && distinctY && longest >= 7) {
     const distance = levenshtein(distinctX, distinctY);
@@ -166,20 +199,90 @@ export function normalizePostcode(value: string | undefined): string {
   return /^[A-Z]{1,2}\d[A-Z\d]?\d[A-Z]{2}$/.test(compact) ? compact : "";
 }
 
+/** The full UK postcode in an address ("1 High St, Crieff PH7 3AA" → "PH73AA"), or "". */
+export function postcodeIn(text: string): string {
+  const match = /\b([A-Z]{1,2}\d[A-Z\d]?)\s*(\d[A-Z]{2})\b/i.exec(text ?? "");
+  return match ? normalizePostcode(`${match[1]}${match[2]}`) : "";
+}
+
+/**
+ * Hosts where every customer gets a subdomain: "joesroofing.wixsite.com" and
+ * "bobsbuilders.wixsite.com" are two businesses, so the whole host is the
+ * identity, never the platform's domain.
+ */
+const SHARED_PLATFORMS = [
+  "wixsite.com",
+  "business.site",
+  "square.site",
+  "godaddysites.com",
+  "weebly.com",
+  "wordpress.com",
+  "blogspot.com",
+  "webs.com",
+  "jimdosite.com",
+  "jimdofree.com",
+  "sites.google.com",
+  "carrd.co",
+  "netlify.app",
+  "vercel.app",
+  "github.io",
+  "myshopify.com",
+  "mystrikingly.com",
+  "strikingly.com",
+  "yolasite.com",
+  "ueniweb.com",
+  "site123.me",
+  "simdif.com",
+  "wix.com",
+  "squarespace.com",
+  "webador.co.uk",
+  "webnode.page",
+  "ucoz.com",
+  "tradesite.co.uk",
+];
+
 function registrableDomain(host: string): string {
-  const parts = host.toLowerCase().replace(/^www\./, "").split(".").filter(Boolean);
+  const clean = host.toLowerCase().replace(/^www\./, "");
+  if (SHARED_PLATFORMS.some((platform) => clean.endsWith(`.${platform}`))) return clean;
+  const parts = clean.split(".").filter(Boolean);
   if (parts.length <= 2) return parts.join(".");
   const tail = parts.slice(-2).join(".");
   return /^(co|org|ltd|plc|me|net|ac|gov|com)\.[a-z]{2}$/.test(tail) ? parts.slice(-3).join(".") : tail;
 }
 
+/**
+ * What identifies a business by its website: the registrable domain of an
+ * independent site, the whole host on a shared website builder, and nothing
+ * for social pages, directories or a builder's bare domain (a site path on
+ * "sites.google.com" says nothing about who owns it).
+ */
+export function websiteIdentity(url: string | undefined): string {
+  const host = independentHost(url);
+  if (!host) return "";
+  if (SHARED_PLATFORMS.includes(host.replace(/^www\./, ""))) return "";
+  return registrableDomain(host);
+}
+
 function domainOf(record: BusinessRecord): string {
-  const host = independentHost(record.website);
-  return host ? registrableDomain(host) : "";
+  return websiteIdentity(record.website);
+}
+
+/** Phone parsing is the costly part of a comparison, and the same numbers are compared many times. */
+const PHONE_CACHE = new Map<string, string>();
+
+export function phoneKey(raw: string | undefined): string {
+  const value = (raw ?? "").trim();
+  if (!value) return "";
+  const cached = PHONE_CACHE.get(value);
+  if (cached !== undefined) return cached;
+  const e164 = normalizeUkPhone(value)?.e164 ?? "";
+  if (PHONE_CACHE.size > 20_000) PHONE_CACHE.clear();
+  PHONE_CACHE.set(value, e164);
+  return e164;
 }
 
 function phoneOf(record: BusinessRecord): string {
-  return normalizeUkPhone(record.phone ?? "")?.e164 ?? "";
+  return phoneKey(record.phone);
 }
 
 function emailOf(record: BusinessRecord): string {
@@ -261,6 +364,12 @@ export function compareBusinesses(a: BusinessRecord, b: BusinessRecord, override
     return nameAlike
       ? { verdict: "possible", reasons: ["A matching name in the same town, but different phone numbers"] }
       : { verdict: "different", reasons: ["Different names and phone numbers"] };
+  }
+
+  if (!sameTown && townA && townB && phoneA && phoneB) {
+    // Different towns and different numbers: two businesses (or two branches,
+    // each its own premises) — a shared name is not evidence against that.
+    return { verdict: "different", reasons: [`Different towns (${a.town}, ${b.town}) and different phone numbers`] };
   }
 
   if (sameTown && name === "equal") return { verdict: "same", reasons: ["The same name in the same town, and nothing contradicts it"] };

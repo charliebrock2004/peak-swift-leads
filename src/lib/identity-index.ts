@@ -1,122 +1,191 @@
-import {
-  findDuplicate,
-  independentHost,
-  normalizeMaps,
-  normalizeName,
-  normalizePhone,
-  type DuplicateMatch,
-  type LeadIdentity,
-} from "./leads.ts";
+/**
+ * Is this business one we already have? — answered with evidence.
+ *
+ * Every duplicate decision in discovery, import and hand entry goes through
+ * the entity resolver (`entity/resolve.ts`): a shared company number, source
+ * record, website, phone or email that nothing contradicts, or the same name
+ * at the same postcode or in the same town. A similar name alone is never
+ * enough, two company numbers are never merged, and two businesses that share
+ * a building (an accountant's registered office, a business centre) stay two
+ * businesses.
+ *
+ * The previous index matched on exact keys, and three of them were unsafe:
+ *   - map coordinates — every company registered at one postcode got the
+ *     same postcode-centroid "maps link", so one accountant's office made a
+ *     dozen unrelated companies one business;
+ *   - a long name anywhere in the country ("Property Maintenance Services"
+ *     in Perth = the one in Glasgow);
+ *   - a website host shared by many businesses (a website builder's
+ *     subdomains, a directory the host list did not know).
+ *
+ * The index only narrows the search (blocking keys); the resolver decides.
+ * `possible` matches are reported as such, so the caller can hold them for a
+ * person instead of silently dropping or silently adding them.
+ */
+import { compareBusinesses, distinctiveTokens, foldName, normalizePostcode, phoneKey, postcodeIn, websiteIdentity, type BusinessRecord, type Verdict } from "./entity/resolve.ts";
+import type { LeadIdentity } from "./leads.ts";
+
+/** What a duplicate check can know about a business. */
+export type MatchSubject = LeadIdentity & {
+  id?: string;
+  address?: string;
+  companyNumber?: string;
+  sourceIds?: string[];
+};
+
+export type MatchVia = "company" | "source" | "website" | "phone" | "email" | "postcode" | "name+town" | "ruling";
+
+export type Match<T> = { entry: T; verdict: Exclude<Verdict, "different">; via: MatchVia; reasons: string[] };
+
+/** The resolver's view of a lead, a listing or a typed-in business. */
+export function recordFor(subject: MatchSubject, fallbackId = ""): BusinessRecord {
+  const ids = [...new Set([...(subject.sourceIds ?? []), subject.placeId ?? ""].map((id) => id.trim()).filter(Boolean))];
+  const chId = ids.find((id) => id.startsWith("ch:"));
+  return {
+    id: subject.id || subject.placeId || fallbackId,
+    name: subject.businessName,
+    phone: subject.phone,
+    email: subject.email,
+    website: subject.website,
+    postcode: postcodeIn(subject.address ?? ""),
+    address: subject.address,
+    town: subject.town,
+    companyNumber: (subject.companyNumber || (chId ? chId.slice(3) : "")).trim().toUpperCase(),
+    sourceIds: ids,
+  };
+}
 
 /**
- * `findDuplicate` in index form.
- *
- * Discovery now pools every area before capping, which means a candidate is
- * checked against thousands of businesses rather than a dozen. `findDuplicate`
- * re-normalises every stored lead on every call, so that pattern is quadratic
- * with a regex in the inner loop — fine for 12 leads, far too slow for 2,000.
- *
- * Every rule inside `findDuplicate` is an exact equality on a derived key, so
- * the same decision can be reached by keying those values once on insert and
- * looking them up in constant time. This file deliberately adds **no new
- * matching rules and no fuzzy matching**: it derives the identical keys from
- * the identical helpers, and `identity-index.test.ts` checks it agrees with
- * `findDuplicate` case for case.
- *
- * One documented difference: when a candidate collides with two different
- * stored businesses at once, `findDuplicate` returns whichever appears first
- * in the array and this returns whichever key is checked first. Both say
- * "duplicate"; only the reported `via` can differ. Dedupe cares about the
- * former, so this is safe — and it is why `findDuplicate` remains the
- * authority anywhere the matched lead itself matters.
+ * Where to look for possible matches. Every key is a necessary condition for
+ * some resolver rule, so a business the resolver would match always shares at
+ * least one key with it.
  */
-export type IdentityKey = { via: DuplicateMatch["via"]; key: string };
+export function blockingKeys(record: BusinessRecord): string[] {
+  const keys: string[] = [];
+  if (record.companyNumber) keys.push(`cn:${record.companyNumber}`);
+  for (const id of record.sourceIds ?? []) keys.push(`src:${id}`);
+  const phone = phoneKey(record.phone);
+  if (phone) keys.push(`ph:${phone}`);
+  const email = (record.email ?? "").trim().toLowerCase();
+  if (email) keys.push(`em:${email}`);
+  const site = websiteIdentity(record.website);
+  if (site) keys.push(`web:${site}`);
+  const postcode = normalizePostcode(record.postcode);
+  if (postcode) keys.push(`pc:${postcode}`);
+  // Names: the whole folded name, each distinctive word ("Tayside Roofing"
+  // meets "Tayside Roofing Services"), and the first letters of the
+  // distinctive part (a near-spelling — "Strathearn"/"Strathern" — meets its
+  // twin). Generic trade words are not keys: "joinery" would make every
+  // joiner a candidate for every other. Only candidates — the resolver decides.
+  const folded = foldName(record.name);
+  if (folded) {
+    keys.push(`nm:${folded.replace(/ /g, "")}`);
+    const distinctive = distinctiveTokens(record.name);
+    // The distinctive part as a whole: "Tayside Roofing" and "Tayside Roofing
+    // Services Ltd" both reduce to "tayside", however common the word is.
+    if (distinctive.length) keys.push(`nd:${distinctive.join("")}`);
+    for (const word of distinctive) if (word.length >= 3) keys.push(`nw:${word}`);
+    const stem = distinctive.join("");
+    if (stem.length >= 5) keys.push(`np:${stem.slice(0, 5)}`);
+  }
+  return [...new Set(keys)];
+}
 
-/**
- * Keys in the order `findDuplicate` tests them: every strong signal first,
- * then the loose whole-name rule that it only reaches in its second pass.
- *
- * A key is emitted only when the underlying rule would actually fire, so an
- * empty phone or a social-media "website" contributes nothing and can never
- * collide with another business that is also missing it.
- */
-export function identityKeys(candidate: LeadIdentity): IdentityKey[] {
-  const keys: IdentityKey[] = [];
+const VIA: [RegExp, MatchVia][] = [
+  [/You marked/, "ruling"],
+  [/Companies House number/, "company"],
+  [/source record/, "source"],
+  [/website/i, "website"],
+  [/phone/i, "phone"],
+  [/email/i, "email"],
+  [/postcode/i, "postcode"],
+];
 
-  const placeId = candidate.placeId?.trim() ?? "";
-  if (placeId) keys.push({ via: "place", key: `place:${placeId}` });
-
-  const phone = normalizePhone(candidate.phone);
-  if (phone.length >= 10) keys.push({ via: "phone", key: `phone:${phone}` });
-
-  const email = (candidate.email ?? "").trim().toLowerCase();
-  if (email) keys.push({ via: "email", key: `email:${email}` });
-
-  // `independentHost` returns "" for directories and social pages, so two
-  // unrelated joiners who both only have a Facebook page never collide.
-  const host = independentHost(candidate.website);
-  if (host) keys.push({ via: "website", key: `website:${host}` });
-
-  const maps = candidate.mapsLink.trim() ? normalizeMaps(candidate.mapsLink) : "";
-  if (maps) keys.push({ via: "maps", key: `maps:${maps}` });
-
-  const name = normalizeName(candidate.businessName);
-  const town = candidate.town.trim().toLowerCase();
-  if (name.length >= 3 && town) keys.push({ via: "name+town", key: `nametown:${name}|${town}` });
-
-  // The loose rule: a long, multi-word name is distinctive enough to match on
-  // its own. "Smith" is not, which is why the length and space are required.
-  if (name.length >= 8 && name.includes(" ")) keys.push({ via: "name", key: `name:${name}` });
-
-  return keys;
+function viaOf(reasons: string[]): MatchVia {
+  const text = reasons.join(" ");
+  return VIA.find(([pattern]) => pattern.test(text))?.[1] ?? "name+town";
 }
 
 export type IdentityIndex<T> = {
-  /** The stored entry this candidate duplicates, or null when it is new. */
-  find(candidate: LeadIdentity): { entry: T; via: DuplicateMatch["via"] } | null;
-  /** Index an entry under every key it owns. First writer of a key keeps it. */
-  add(candidate: LeadIdentity, entry: T): void;
+  /** The best match for this candidate: a `same` before any `possible`, or null. */
+  find(candidate: MatchSubject): Match<T> | null;
+  /** Index an entry so later candidates can be matched against it. */
+  add(candidate: MatchSubject, entry: T): void;
   readonly size: number;
 };
 
-export function createIdentityIndex<T>(seed: readonly (LeadIdentity & { entry?: T })[] = []): IdentityIndex<T> {
-  const byKey = new Map<string, { entry: T; via: DuplicateMatch["via"] }>();
-  let size = 0;
+/** How many entries one blocking key may pull in before it stops narrowing anything. */
+const KEY_FANOUT = 400;
+/**
+ * A single name word shared by more entries than this ("perth", "firm") is no
+ * longer distinctive in this pool, so it is not used to find candidates. The
+ * whole name, the distinctive part as a whole, and every identifier still are.
+ */
+const COMMON_WORD = 40;
 
-  const index: IdentityIndex<T> = {
+export function createIdentityIndex<T>(): IdentityIndex<T> {
+  const records: { record: BusinessRecord; entry: T }[] = [];
+  const byKey = new Map<string, number[]>();
+
+  return {
     find(candidate) {
-      for (const { key } of identityKeys(candidate)) {
-        const hit = byKey.get(key);
-        if (hit) return hit;
+      const record = recordFor(candidate, "candidate");
+      const seen = new Set<number>();
+      let possible: Match<T> | null = null;
+      for (const key of blockingKeys(record)) {
+        const hits = byKey.get(key);
+        if (!hits) continue;
+        if ((key.startsWith("nw:") || key.startsWith("np:")) && hits.length > COMMON_WORD) continue;
+        for (const index of hits.slice(0, KEY_FANOUT)) {
+          if (seen.has(index)) continue;
+          seen.add(index);
+          const other = records[index]!;
+          const resolution = compareBusinesses(other.record, record);
+          if (resolution.verdict === "same") return { entry: other.entry, verdict: "same", via: viaOf(resolution.reasons), reasons: resolution.reasons };
+          if (resolution.verdict === "possible" && !possible) {
+            possible = { entry: other.entry, verdict: "possible", via: viaOf(resolution.reasons), reasons: resolution.reasons };
+          }
+        }
       }
-      return null;
+      return possible;
     },
     add(candidate, entry) {
-      size += 1;
-      for (const { via, key } of identityKeys(candidate)) {
-        // Never overwrite: the first business to claim a key owns it, which
-        // mirrors `findDuplicate` returning the earliest match in the array.
-        if (!byKey.has(key)) byKey.set(key, { entry, via });
+      const index = records.length;
+      const record = recordFor(candidate, `entry-${index}`);
+      records.push({ record, entry });
+      for (const key of blockingKeys(record)) {
+        const list = byKey.get(key);
+        if (list) list.push(index);
+        else byKey.set(key, [index]);
       }
     },
     get size() {
-      return size;
+      return records.length;
     },
   };
-
-  for (const item of seed) index.add(item, item.entry as T);
-  return index;
 }
 
 /** Build an index over existing leads, where the lead itself is the entry. */
-export function indexOf<T extends LeadIdentity>(leads: readonly T[]): IdentityIndex<T> {
+export function indexOf<T extends MatchSubject>(leads: readonly T[]): IdentityIndex<T> {
   const index = createIdentityIndex<T>();
   for (const lead of leads) index.add(lead, lead);
   return index;
 }
 
+export type DuplicateMatch<T> = { lead: T; via: MatchVia; reasons: string[] };
+
 /**
- * The authority, kept for callers that need the matched lead exactly as
- * `findDuplicate` would pick it (field merging, outreach history).
+ * The one existing business this candidate certainly is, or null.
+ *
+ * Only a `same` verdict counts. A `possible` match is not a duplicate: use
+ * `matchLead` where the caller can hold it for a person to decide.
  */
-export { findDuplicate };
+export function findDuplicate<T extends MatchSubject>(candidate: MatchSubject, leads: readonly T[]): DuplicateMatch<T> | null {
+  const match = matchLead(candidate, leads);
+  return match && match.verdict === "same" ? { lead: match.entry, via: match.via, reasons: match.reasons } : null;
+}
+
+/** The best match among `leads`, `same` or `possible`, for a single candidate. */
+export function matchLead<T extends MatchSubject>(candidate: MatchSubject, leads: readonly T[]): Match<T> | null {
+  return indexOf(leads).find(candidate);
+}

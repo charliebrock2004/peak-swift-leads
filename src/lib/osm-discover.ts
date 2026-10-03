@@ -10,6 +10,7 @@
  * Places adapter behind the same DiscoveredPlace shape.
  */
 
+import { addRejects, emptyRejectTally, rejectTotal, type RejectReason, type RejectTally } from "./discovery-reasons.ts";
 import { compareBusinesses, type BusinessRecord } from "./entity/resolve.ts";
 import { normalizeName } from "./leads.ts";
 import { chSearchTowns } from "./scotland-places.ts";
@@ -74,21 +75,22 @@ export type DiscoveryFunnel = {
   queriesSent: number;
   /** The towns Companies House was asked about. */
   towns: string[];
-  rawBySource: { nominatim: number; photon: number; companiesHouse: number };
-  /** Rows returned before de-duplication. */
-  rawTotal: number;
-  /** Distinct businesses after merging. */
-  unique: number;
-  duplicatesMerged: number;
+  /** The search words used on the map sources this time. */
+  terms: string[];
   /**
-   * Businesses this area found and then cut by the per-area fetch budget.
-   *
-   * Not the user's target — the target is applied once, to the pooled results
-   * of every area, after cross-area dedupe. Saying otherwise is what made the
-   * old run log advise "raise your target" about a cap the target could not
-   * reach.
+   * Every row the sources returned, each map or register record counted once:
+   * the ones refused (`rejected`) plus the ones kept (`rawTotal`).
    */
-  droppedToFetchBudget: number;
+  listings: number;
+  /** Rows refused, by the one reason each was refused. */
+  rejected: RejectTally;
+  rawBySource: { nominatim: number; photon: number; companiesHouse: number; overpass: number };
+  /** Rows kept, before records of the same business were merged. */
+  rawTotal: number;
+  /** Distinct businesses after merging. All of them are returned. */
+  unique: number;
+  /** Rows that were another source's record of a business already found here. */
+  duplicatesMerged: number;
   withWebsite: number;
   withoutWebsite: number;
   /** Businesses whose listing already carried an address. */
@@ -190,7 +192,7 @@ const REJECT_VALUES = new Set([
   "unclassified",
 ]);
 
-type TradeProfile = {
+export type TradeProfile = {
   queries: string[];
   nominatim: string[];
   rejectName?: RegExp;
@@ -198,71 +200,120 @@ type TradeProfile = {
   bounded?: boolean;
 };
 
+/**
+ * The words each trade is searched under.
+ *
+ * Businesses name themselves in many ways — a "heating engineer" is a plumber
+ * to a customer, a "slater" is a roofer — and a search that only ever asks for
+ * one or two words finds the same handful of firms every time. Every map query
+ * word is sent on every search; Nominatim (one request a second) takes three
+ * at a time and rotates through the rest across repeat searches of the same
+ * town, so a second search of an area asks different questions than the first.
+ */
 const TRADE_PROFILES: Array<{ match: RegExp; profile: TradeProfile }> = [
   {
     match: /join|carpent/,
-    profile: { queries: ["joinery", "joiner", "carpenter"], nominatim: ["joinery", "carpenter"] },
+    profile: {
+      queries: ["joiner", "joinery", "carpenter", "carpentry", "kitchen fitter", "shopfitter"],
+      nominatim: ["joiner", "joinery", "carpenter", "carpentry", "kitchen fitter", "shopfitter"],
+    },
   },
   {
-    match: /plumb/,
+    match: /plumb|heating|gas engineer|boiler/,
     profile: {
-      queries: ["plumber", "plumbing"],
-      nominatim: ["plumbing", "plumber"],
+      queries: ["plumber", "plumbing", "heating engineer", "gas engineer", "plumbing and heating"],
+      nominatim: ["plumber", "plumbing", "heating engineer", "gas engineer", "plumbing and heating"],
       bounded: false,
     },
   },
   {
     match: /electric/,
     profile: {
-      queries: ["electrician", "electrical"],
-      nominatim: ["electrician"],
+      queries: ["electrician", "electrical contractor", "electrical services", "electrical"],
+      nominatim: ["electrician", "electrical contractor", "electrical services", "electrical"],
       rejectName: /charging|ev\b|bike|fleet|center|factors|yesss|cottage/i,
     },
   },
   {
     match: /build/,
-    profile: { queries: ["builder", "builders"], nominatim: ["builders"], bounded: false },
+    profile: {
+      queries: ["builder", "builders", "building contractor", "building services", "stonemason", "construction"],
+      nominatim: ["builders", "building contractor", "building services", "stonemason", "builder", "construction"],
+      bounded: false,
+    },
   },
-  { match: /roof/, profile: { queries: ["roofer", "roofing"], nominatim: ["roofer", "roofing"], bounded: false } },
-  { match: /paint|decorat/, profile: { queries: ["painter", "decorator"], nominatim: ["painter", "decorator"] } },
+  {
+    match: /roof/,
+    profile: {
+      queries: ["roofer", "roofing", "roofing contractor", "slater", "roughcaster"],
+      nominatim: ["roofer", "roofing", "slater", "roofing contractor", "roughcaster"],
+      bounded: false,
+    },
+  },
+  {
+    match: /paint|decorat/,
+    profile: {
+      queries: ["painter", "decorator", "painter and decorator", "painting"],
+      nominatim: ["painter", "decorator", "painter and decorator", "painting"],
+    },
+  },
   {
     match: /landscap|garden/,
-    profile: { queries: ["landscaper", "gardener", "garden"], nominatim: ["gardener", "landscaper"] },
+    profile: {
+      queries: ["landscaper", "landscaping", "gardener", "garden services", "groundworks"],
+      nominatim: ["gardener", "landscaper", "landscaping", "garden services", "groundworks"],
+    },
   },
-  { match: /tree/, profile: { queries: ["tree surgeon", "arborist"], nominatim: ["tree surgeon"] } },
+  { match: /tree/, profile: { queries: ["tree surgeon", "arborist", "tree services"], nominatim: ["tree surgeon", "arborist", "tree services"] } },
   {
     match: /mechan/,
-    profile: { queries: ["mechanic", "garage"], nominatim: ["car repair", "garage"] },
+    profile: { queries: ["mechanic", "garage", "car repair", "auto repairs", "mot"], nominatim: ["car repair", "garage", "mechanic", "auto repairs"] },
   },
   {
     match: /garage/,
-    profile: { queries: ["garage", "car repair"], nominatim: ["garage"] },
+    profile: { queries: ["garage", "car repair", "auto repairs", "mot"], nominatim: ["garage", "car repair", "auto repairs"] },
   },
-  { match: /barber/, profile: { queries: ["barber"], nominatim: ["barber", "hairdresser"] } },
+  { match: /barber/, profile: { queries: ["barber", "barbers", "barber shop"], nominatim: ["barber", "hairdresser", "barbers"] } },
   {
     match: /hair/,
-    profile: { queries: ["hairdresser", "salon"], nominatim: ["hairdresser"] },
+    profile: { queries: ["hairdresser", "salon", "hair salon", "hair studio"], nominatim: ["hairdresser", "hair salon", "hair studio"] },
   },
-  { match: /beauty|beautician/, profile: { queries: ["beauty salon", "beauty"], nominatim: ["beauty"] } },
-  { match: /florist|flower/, profile: { queries: ["florist"], nominatim: ["florist"] } },
+  {
+    match: /beauty|beautician|nail/,
+    profile: { queries: ["beauty salon", "beauty", "nail salon", "beautician", "aesthetics"], nominatim: ["beauty", "beauty salon", "nail salon", "beautician"] },
+  },
+  { match: /florist|flower/, profile: { queries: ["florist", "flowers"], nominatim: ["florist", "flowers"] } },
   {
     match: /restaurant/,
-    profile: { queries: ["restaurant"], nominatim: ["restaurant"] },
+    profile: { queries: ["restaurant", "bistro", "grill"], nominatim: ["restaurant", "bistro"] },
   },
-  { match: /cafe|café/, profile: { queries: ["cafe"], nominatim: ["cafe"] } },
-  { match: /\bpub\b/, profile: { queries: ["pub"], nominatim: ["pub"] } },
+  { match: /cafe|café|coffee/, profile: { queries: ["cafe", "coffee shop", "tearoom"], nominatim: ["cafe", "coffee shop", "tearoom"] } },
+  { match: /\bpub\b|\bbar\b|inn\b/, profile: { queries: ["pub", "bar", "inn"], nominatim: ["pub", "bar", "inn"] } },
   {
     match: /takeaway|take away/,
-    profile: { queries: ["takeaway", "fast food"], nominatim: ["fast food", "takeaway"] },
+    profile: { queries: ["takeaway", "fast food", "fish and chips", "pizza"], nominatim: ["fast food", "takeaway", "fish and chips"] },
   },
-  { match: /clean/, profile: { queries: ["cleaner", "cleaning"], nominatim: ["cleaning"] } },
-  { match: /dog groom/, profile: { queries: ["dog groomer", "grooming"], nominatim: ["pet grooming"] } },
-  { match: /tile|tiler/, profile: { queries: ["tiler", "tiling"], nominatim: ["tiler", "tiles"], bounded: false } },
   {
-    match: /floor/,
-    profile: { queries: ["flooring", "floorer"], nominatim: ["flooring"], bounded: false },
+    match: /clean/,
+    profile: {
+      queries: ["cleaner", "cleaning", "cleaning services", "window cleaner", "carpet cleaning"],
+      nominatim: ["cleaning", "cleaning services", "window cleaner", "carpet cleaning"],
+    },
   },
-  { match: /\bgym\b|fitness/, profile: { queries: ["gym", "fitness"], nominatim: ["gym", "fitness centre"] } },
+  { match: /dog groom|groomer/, profile: { queries: ["dog groomer", "grooming", "pet grooming"], nominatim: ["pet grooming", "dog groomer"] } },
+  { match: /tile|tiler/, profile: { queries: ["tiler", "tiling", "wall and floor tiling"], nominatim: ["tiler", "tiling"], bounded: false } },
+  {
+    match: /floor|carpet fit/,
+    profile: { queries: ["flooring", "floorer", "carpet fitter", "floor sanding"], nominatim: ["flooring", "carpet fitter", "floor sanding"], bounded: false },
+  },
+  { match: /plaster|render/, profile: { queries: ["plasterer", "plastering", "rendering"], nominatim: ["plasterer", "plastering", "rendering"], bounded: false } },
+  { match: /glaz|window/, profile: { queries: ["glazier", "double glazing", "windows and doors"], nominatim: ["glazier", "double glazing", "windows"], bounded: false } },
+  { match: /locksmith/, profile: { queries: ["locksmith"], nominatim: ["locksmith"], bounded: false } },
+  { match: /kitchen/, profile: { queries: ["kitchen fitter", "kitchens", "kitchen installer"], nominatim: ["kitchen fitter", "kitchens"], bounded: false } },
+  { match: /bathroom/, profile: { queries: ["bathroom fitter", "bathrooms", "bathroom installer"], nominatim: ["bathroom fitter", "bathrooms"], bounded: false } },
+  { match: /scaffold/, profile: { queries: ["scaffolding", "scaffolder"], nominatim: ["scaffolding", "scaffolder"], bounded: false } },
+  { match: /handyman|odd job/, profile: { queries: ["handyman", "property maintenance", "odd jobs"], nominatim: ["handyman", "property maintenance"], bounded: false } },
+  { match: /\bgym\b|fitness/, profile: { queries: ["gym", "fitness", "personal trainer"], nominatim: ["gym", "fitness centre", "personal trainer"] } },
 ];
 
 const DEFAULT_PROFILE: TradeProfile = { queries: [], nominatim: [] };
@@ -277,6 +328,21 @@ export function profileFor(trade: string): TradeProfile {
   if (found) return found.profile;
   const word = key.replace(/[^a-z0-9]+/g, " ").trim();
   return word ? { queries: [word], nominatim: [word] } : DEFAULT_PROFILE;
+}
+
+/** How many words one Nominatim search sends (it asks for one request a second). */
+export const NOMINATIM_TERMS_PER_SEARCH = 3;
+
+/**
+ * The Nominatim words for one search, rotated by how many times this town and
+ * trade have been searched before: the first search asks the first three, the
+ * next asks the following three, and so on round the list.
+ */
+export function nominatimTerms(profile: TradeProfile, variant = 0): string[] {
+  const all = profile.nominatim.length ? profile.nominatim : profile.queries;
+  if (all.length <= NOMINATIM_TERMS_PER_SEARCH) return [...all];
+  const offset = (Math.max(0, Math.floor(variant)) * NOMINATIM_TERMS_PER_SEARCH) % all.length;
+  return Array.from({ length: NOMINATIM_TERMS_PER_SEARCH }, (_, i) => all[(offset + i) % all.length]!);
 }
 
 export function isNationalChain(name: string): boolean {
@@ -607,20 +673,21 @@ function toPlace(
   };
 }
 
-function keepPlace(
+/** Null when the row is a business in the trade; otherwise the one reason it is not. */
+export function rejectReason(
   name: string,
   osmKey: string,
   osmValue: string,
   phone: string,
   website: string,
   profile: TradeProfile,
-): boolean {
-  if (name.length < 2) return false;
-  if (isNationalChain(name) || isMerchantName(name)) return false;
-  if (isRejectedOsm(osmKey, osmValue, name)) return false;
-  if (profile.rejectName?.test(name)) return false;
-  if (isStreetLike(name, phone, website)) return false;
-  return true;
+): RejectReason | null {
+  if (name.length < 2) return "not_a_business";
+  if (isNationalChain(name) || isMerchantName(name)) return "chain";
+  if (isRejectedOsm(osmKey, osmValue, name)) return "not_a_business";
+  if (profile.rejectName?.test(name)) return "wrong_trade";
+  if (isStreetLike(name, phone, website)) return "not_a_business";
+  return null;
 }
 
 async function searchPhoton(
@@ -630,8 +697,9 @@ async function searchPhoton(
   radiusMiles: number,
   limit: number,
   fallbackTown: string,
-): Promise<{ places: DiscoveredPlace[]; error?: string }> {
+): Promise<{ places: DiscoveredPlace[]; rejected: RejectTally; error?: string }> {
   const bbox = bboxFrom(center, radiusMiles);
+  const rejected = emptyRejectTally();
   const queryLimit = Math.min(50, Math.max(15, limit));
   const hits: PhotonHit[] = [];
   const seen = new Set<string>();
@@ -651,8 +719,15 @@ async function searchPhoton(
   }
 
   const nearby = hits.filter((hit) => {
-    if (!keepPlace(hit.name, hit.osmKey, hit.osmValue, "", "", profile)) return false;
-    if (milesBetween(center, { lat: hit.lat, lng: hit.lng }) > radiusMiles + 1) return false;
+    const reason = rejectReason(hit.name, hit.osmKey, hit.osmValue, "", "", profile);
+    if (reason) {
+      rejected[reason] += 1;
+      return false;
+    }
+    if (milesBetween(center, { lat: hit.lat, lng: hit.lng }) > radiusMiles + 1) {
+      rejected.outside_area += 1;
+      return false;
+    }
     return true;
   });
 
@@ -675,7 +750,11 @@ async function searchPhoton(
     const phone = tag(osm, "phone", "contact:phone", "contact:mobile");
     const email = tag(osm, "email", "contact:email");
     const website = tag(osm, "website", "contact:website", "contact:facebook");
-    if (!keepPlace(name, hit.osmKey, hit.osmValue, phone, website, profile)) continue;
+    const reason = rejectReason(name, hit.osmKey, hit.osmValue, phone, website, profile);
+    if (reason) {
+      rejected[reason] += 1;
+      continue;
+    }
     const town = tag(osm, "addr:city", "addr:town", "addr:village") || hit.city || fallbackTown;
     const address = formatAddress([
       tag(osm, "addr:housenumber"),
@@ -704,7 +783,7 @@ async function searchPhoton(
       ),
     );
   }
-  return { places, error: hits.length === 0 && errors.length ? errors[0] : undefined };
+  return { places, rejected, error: hits.length === 0 && errors.length ? errors[0] : undefined };
 }
 
 type NominatimHit = {
@@ -765,16 +844,21 @@ async function searchNominatim(
   radiusMiles: number,
   limit: number,
   fallbackTown: string,
-): Promise<{ places: DiscoveredPlace[]; error?: string }> {
+  variant = 0,
+): Promise<{ places: DiscoveredPlace[]; rejected: RejectTally; error?: string }> {
   // Every term the profile lists, not just the first. Slicing to one meant a
   // joinery search never looked for "carpenter" on the map at all, and the
   // second term costs one more request against a source with no key and no
   // quota. Still bounded, so an over-long profile cannot run away.
-  const terms = (profile.nominatim.length ? profile.nominatim : profile.queries).slice(0, 3);
-  if (terms.length === 0) return { places: [] };
+  const terms = nominatimTerms(profile, variant);
+  const rejected = emptyRejectTally();
+  if (terms.length === 0) return { places: [], rejected };
   const bounded = profile.bounded !== false;
   const places: DiscoveredPlace[] = [];
   const errors: string[] = [];
+  // The same map record returned by two search words is one listing. Two
+  // records with the same name are NOT collapsed here: whether they are one
+  // business is the entity resolver's call (mergePlaces), and it is counted.
   const seen = new Set<string>();
 
   for (let i = 0; i < terms.length; i += 1) {
@@ -792,16 +876,22 @@ async function searchNominatim(
       const phone = asText(extra.phone || extra["contact:phone"] || extra["contact:mobile"]);
       const email = asText(extra.email || extra["contact:email"]);
       const website = asText(extra.website || extra["contact:website"] || extra["contact:facebook"]);
-      if (!keepPlace(name, osmKey, osmValue, phone, website, profile)) continue;
+      const key = hit.osm_type && hit.osm_id ? `${hit.osm_type}:${hit.osm_id}` : `name:${name.toLowerCase()}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const reason = rejectReason(name, osmKey, osmValue, phone, website, profile);
+      if (reason) {
+        rejected[reason] += 1;
+        continue;
+      }
       const lat = asNum(hit.lat);
       const lng = asNum(hit.lon);
       if (typeof lat === "number" && typeof lng === "number") {
-        if (milesBetween(center, { lat, lng }) > radiusMiles + 1.5) continue;
+        if (milesBetween(center, { lat, lng }) > radiusMiles + 1.5) {
+          rejected.outside_area += 1;
+          continue;
+        }
       }
-      const key = `${hit.osm_type}:${hit.osm_id}:${name.toLowerCase()}`;
-      if (seen.has(key) || seen.has(name.toLowerCase())) continue;
-      seen.add(key);
-      seen.add(name.toLowerCase());
       const town =
         asText(addr.city || addr.town || addr.village || addr.suburb) || fallbackTown;
       const address = formatAddress([
@@ -833,6 +923,7 @@ async function searchNominatim(
 
   return {
     places,
+    rejected,
     error: places.length === 0 && errors.length ? errors[0] : undefined,
   };
 }
@@ -872,9 +963,10 @@ async function searchOverpass(
   center: GeoPoint,
   radiusMiles: number,
   fallbackTown: string,
-): Promise<{ places: DiscoveredPlace[]; error?: string }> {
+): Promise<{ places: DiscoveredPlace[]; rejected: RejectTally; error?: string }> {
   const query = overpassQuery(profile, center, radiusMiles);
-  if (!query) return { places: [] };
+  const rejected = emptyRejectTally();
+  if (!query) return { places: [], rejected };
 
   const attempts = await Promise.all(
     OVERPASS_ENDPOINTS.map((endpoint) =>
@@ -889,7 +981,7 @@ async function searchOverpass(
   const result = attempts.find((item) => item.ok && item.json && typeof item.json === "object");
   if (!result) {
     const lastError = attempts.map((item) => item.error || `HTTP ${item.status}`).find(Boolean);
-    return { places: [], error: lastError || undefined };
+    return { places: [], rejected, error: lastError || undefined };
   }
 
   const elements =
@@ -915,9 +1007,14 @@ async function searchOverpass(
     const osmValue = tag(tags, "craft", "shop", "amenity", "office");
     const phone = tag(tags, "phone", "contact:phone");
     const website = tag(tags, "website", "contact:website");
-    if (!keepPlace(name, osmKey, osmValue, phone, website, profile)) continue;
-    if (seen.has(name.toLowerCase())) continue;
-    seen.add(name.toLowerCase());
+    const key = el.id ? `${asText(el.type)}:${el.id}` : `name:${name.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const reason = rejectReason(name, osmKey, osmValue, phone, website, profile);
+    if (reason) {
+      rejected[reason] += 1;
+      continue;
+    }
     const lat =
       asNum(el.lat) ||
       asNum((el.center as { lat?: number } | undefined)?.lat);
@@ -925,7 +1022,10 @@ async function searchOverpass(
       asNum(el.lon) ||
       asNum((el.center as { lon?: number } | undefined)?.lon);
     if (typeof lat === "number" && typeof lng === "number") {
-      if (milesBetween(center, { lat, lng }) > radiusMiles + 2) continue;
+      if (milesBetween(center, { lat, lng }) > radiusMiles + 2) {
+        rejected.outside_area += 1;
+        continue;
+      }
     }
     const town = tag(tags, "addr:city", "addr:town", "addr:village") || fallbackTown;
     places.push(
@@ -952,7 +1052,7 @@ async function searchOverpass(
       ),
     );
   }
-  return { places };
+  return { places, rejected };
 }
 
 function fillMissing(target: DiscoveredPlace, extra: DiscoveredPlace): DiscoveredPlace {
@@ -1041,7 +1141,7 @@ export function listingWebsiteHint(
 
 function fromCompanyHit(hit: CompanyHit, trade: string, fallbackTown: string): DiscoveredPlace {
   const town = hit.town || fallbackTown;
-  return toPlace(
+  const place = toPlace(
     hit.businessName,
     trade,
     town,
@@ -1057,6 +1157,11 @@ function fromCompanyHit(hit: CompanyHit, trade: string, fallbackTown: string): D
     "Active",
     false,
   );
+  // The coordinates are the postcode's centre (postcodes.io), often an
+  // accountant's registered office: a map pin there is not the business. The
+  // link searches for the company by name and address instead.
+  const query = [hit.businessName, hit.address].filter(Boolean).join(", ");
+  return { ...place, mapsLink: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}` };
 }
 
 async function enrichCompanyContacts(
@@ -1129,15 +1234,24 @@ async function enrichCompanyContacts(
 export async function discoverBusinesses(options: {
   location: string;
   businessType: string;
+  /** Rows asked of each source query. Not a cap on what is returned. */
   limit: number;
   radiusMiles: number;
+  /**
+   * The towns Companies House is asked about. Defaults to a ring around the
+   * location; a town searched as one area of a wider plan passes just itself,
+   * so neighbouring areas do not each re-fetch the same registered companies.
+   */
+  chTowns?: string[];
+  /** How many times this town and trade were searched before: rotates the search words. */
+  variant?: number;
   /** Key, shared rate limiter and transport for Companies House. */
   companiesHouse?: ChClientOptions;
 }): Promise<DiscoverResult> {
   const location = options.location.trim();
   const trade = options.businessType.trim();
   const limit = Math.min(100, Math.max(1, Math.round(options.limit) || 25));
-  const radiusMiles = Math.min(80, Math.max(5, Math.round(options.radiusMiles) || 25));
+  const radiusMiles = Math.min(80, Math.max(2, Math.round(options.radiusMiles) || 25));
   if (location.length < 2) return { ok: false, error: "Enter a location.", warnings: [] };
   if (trade.length < 2) return { ok: false, error: "Enter a business type.", warnings: [] };
 
@@ -1147,25 +1261,22 @@ export async function discoverBusinesses(options: {
     return {
       ok: false,
       error: geo.reached
-        ? `Could not find “${location}”. Try a town or city in Scotland.`
+        ? `Could not find “${location}”. Try a town or city in the UK.`
         : `The map lookup service could not be reached${geo.error ? ` (${geo.error})` : ""}, so nothing was searched. Try again in a minute.`,
       warnings: [],
     };
   }
 
   const profile = profileFor(trade);
+  const variant = Math.max(0, Math.floor(options.variant ?? 0));
   const warnings: string[] = [];
-  // How wide a ring of towns Companies House is asked about. Three towns was
-  // far too narrow for a city like Perth, whose working radius covers a dozen;
-  // the query builder now spends its budget on one search word per outlying
-  // town rather than every word in three, so a wider ring costs no more calls.
-  const towns = chSearchTowns(location, radiusMiles >= 40 ? 12 : 8);
+  const towns = options.chTowns?.length ? options.chTowns : chSearchTowns(location, radiusMiles >= 40 ? 12 : 8);
 
   const chQueryCount = companiesHouseKey() ? Math.min(14, towns.length + 1) : 0;
-  const nominatimTermCount = (profile.nominatim.length ? profile.nominatim : profile.queries).slice(0, 3).length;
+  const terms = nominatimTerms(profile, variant);
 
   const [nominatim, photon, companies] = await Promise.all([
-    searchNominatim(trade, profile, center, radiusMiles, limit, center.label),
+    searchNominatim(trade, profile, center, radiusMiles, limit, center.label, variant),
     searchPhoton(trade, profile, center, radiusMiles, limit, center.label),
     searchCompaniesHouse(
       {
@@ -1187,17 +1298,17 @@ export async function discoverBusinesses(options: {
   if (companies.disabled) warnings.push(companies.error ?? "Companies House is off.");
   else if (companies.error && companies.hits.length === 0) sourceErrors.push(companies.error);
 
-  // The funnel, counted rather than guessed at. Without these it is impossible
-  // to tell whether a disappointing run failed to FIND businesses, failed to
-  // verify their websites, or failed to find their emails — and those need
-  // completely different fixes.
+  // The funnel, counted rather than guessed at. Every row a source returned is
+  // either refused for a named reason or kept; every kept row is either a new
+  // business here or another source's record of one already found.
   const companyPlaces = companies.hits.map((hit) => fromCompanyHit(hit, trade, center.label));
+  const rejected = addRejects(addRejects(addRejects(emptyRejectTally(), nominatim.rejected), photon.rejected), companies.rejected);
   const rawBySource = {
     nominatim: nominatim.places.length,
     photon: photon.places.length,
     companiesHouse: companyPlaces.length,
+    overpass: 0,
   };
-  const rawTotal = rawBySource.nominatim + rawBySource.photon + rawBySource.companiesHouse;
 
   let places = mergePlaces(nominatim.places, photon.places);
   places = mergePlaces(places, companyPlaces);
@@ -1211,34 +1322,31 @@ export async function discoverBusinesses(options: {
     const extra = await searchOverpass(trade, profile, center, radiusMiles, center.label);
     if (extra.error) sourceErrors.push(`Overpass: ${extra.error}`);
     overpassPlaces = extra.places;
+    rawBySource.overpass = extra.places.length;
+    addRejects(rejected, extra.rejected);
     places = mergePlaces(places, extra.places);
   }
+  const rawTotal = rawBySource.nominatim + rawBySource.photon + rawBySource.companiesHouse + rawBySource.overpass;
 
   if (places.length === 0) {
     warnings.push(...sourceErrors);
+    // Every source failed: nothing was searched, and that is an error. A
+    // search that worked and found nothing (or only rows it had to refuse) is
+    // an answer, and it is returned as one so the run can count it.
     const sourceDown =
-      warnings.length > 0 && warnings.every((item) => /timed out|http|unavailable|failed|rate limited/i.test(item));
+      rawTotal + rejectTotal(rejected) === 0 &&
+      sourceErrors.length > 0 &&
+      sourceErrors.every((item) => /timed out|http|unavailable|failed|rate limited|network|fetch/i.test(item));
     if (sourceDown) {
       return {
         ok: false,
-        error: `Lead search is temporarily unavailable (${warnings[0]}). Try again in a minute.`,
+        error: `Lead search is temporarily unavailable (${sourceErrors[0]}). Try again in a minute.`,
         warnings,
       };
     }
-    return {
-      ok: false,
-      error: `No ${trade.toLowerCase()} businesses found within ${radiusMiles} miles of ${center.label}. Try 50 miles, or a nearby town.`,
-      warnings,
-    };
   }
 
   places = await enrichCompanyContacts(places, center, radiusMiles);
-
-  if (places.length < 3 && companies.hits.length === 0) {
-    warnings.push(
-      `Only ${places.length} mapped ${trade.toLowerCase()}${places.length === 1 ? "" : "s"} in this area. A larger radius may find more.`,
-    );
-  }
 
   places.sort((a, b) => {
     const dist = (place: DiscoveredPlace) =>
@@ -1248,31 +1356,29 @@ export async function discoverBusinesses(options: {
     return dist(a) - dist(b);
   });
 
-  const kept = places.slice(0, limit);
   const funnel: DiscoveryFunnel = {
-    queriesSent: chQueryCount + nominatimTermCount + profile.queries.length,
+    queriesSent: chQueryCount + terms.length + profile.queries.length,
     towns,
+    terms: [...new Set([...terms, ...profile.queries])],
+    listings: rawTotal + rejectTotal(rejected),
+    rejected,
     rawBySource,
     rawTotal,
     unique: places.length,
     duplicatesMerged: Math.max(0, rawTotal - places.length),
-    // What this area's fetch budget threw away. Non-zero means the area holds
-    // more than one page of businesses — useful, but never a reason to tell
-    // the user to raise a target that does not control this number.
-    droppedToFetchBudget: Math.max(0, places.length - kept.length),
-    withWebsite: kept.filter((place) => place.website).length,
-    withoutWebsite: kept.filter((place) => !place.website).length,
-    withListedEmail: kept.filter((place) => place.email).length,
-    returned: kept.length,
+    withWebsite: places.filter((place) => place.website).length,
+    withoutWebsite: places.filter((place) => !place.website).length,
+    withListedEmail: places.filter((place) => place.email).length,
+    returned: places.length,
   };
 
   return {
     ok: true,
     funnel,
-    places: kept,
+    places,
     warnings,
     locationLabel: center.label,
-    records: sourceRecordsFor(kept, [...nominatim.places, ...photon.places, ...overpassPlaces], companies.hits),
+    records: sourceRecordsFor(places, [...nominatim.places, ...photon.places, ...overpassPlaces], companies.hits),
   };
 }
 

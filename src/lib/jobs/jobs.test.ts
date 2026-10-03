@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import { createTestDb, type TestDb } from "../test-support/pglite.ts";
 import * as jobs from "./store.server.ts";
 import { runJobs, runSlice, type HandlerLookup, type JobHandler } from "./runner.server.ts";
+import { reconcileLedger } from "../discovery-ledger.ts";
 import { findHandler, findInputProblem, sanitizeFindInput, type FindDeps } from "./find.server.ts";
 import type { FindProgress, FindResult } from "./types.ts";
 import { createLead } from "../leads.ts";
@@ -249,25 +250,30 @@ const LISTINGS = [
   prospect({ businessName: "Known Roofers", phone: "01764 333333", placeId: "osm:4", address: "Crieff PH7 5CC" }),
 ];
 
-type Calls = { research: number; findEmail: string[]; company: string[]; audit: string[]; generate: string[][] };
+type Calls = { research: number; locations: string[]; findEmail: string[]; company: string[]; audit: string[]; generate: string[][] };
 
-function fakeDeps(calls: Calls, listings = LISTINGS): FindDeps {
+function fakeDeps(calls: Calls, listings = LISTINGS, down = false): FindDeps {
   return {
-    research: async () => {
+    research: async (input) => {
       calls.research += 1;
+      calls.locations.push(input.location);
+      if (down) return { ok: false, error: "Lead search is temporarily unavailable (Photon: HTTP 503). Try again in a minute." };
       const funnel = {
         queriesSent: 1,
-        towns: ["Crieff"],
-        rawBySource: { nominatim: listings.length, photon: 0, companiesHouse: 0 },
+        towns: [input.location],
+        terms: ["roofer"],
+        listings: listings.length + 1,
+        rejected: { chain: 1, not_a_business: 0, wrong_trade: 0, outside_area: 0, inactive: 0 },
+        rawBySource: { nominatim: listings.length, photon: 0, companiesHouse: 0, overpass: 0 },
         rawTotal: listings.length,
         unique: listings.length,
         duplicatesMerged: 0,
-        droppedToFetchBudget: 0,
         withWebsite: listings.filter((item) => item.website).length,
         withoutWebsite: listings.filter((item) => !item.website).length,
         withListedEmail: 0,
+        returned: listings.length,
       };
-      return { ok: true, prospects: listings, location: "Crieff", businessType: "Roofer", funnel } as Awaited<ReturnType<FindDeps["research"]>>;
+      return { ok: true, prospects: listings, location: input.location, businessType: "Roofer", funnel } as Awaited<ReturnType<FindDeps["research"]>>;
     },
     checkWebsite: async () => ({ ok: false, error: "offline in tests" }),
     findEmail: async (data) => {
@@ -306,9 +312,10 @@ function fakeDeps(calls: Calls, listings = LISTINGS): FindDeps {
   };
 }
 
-const newCalls = (): Calls => ({ research: 0, findEmail: [], company: [], audit: [], generate: [] });
+const newCalls = (): Calls => ({ research: 0, locations: [], findEmail: [], company: [], audit: [], generate: [] });
 
-const INPUT = { location: "Crieff", trades: ["Roofer"], target: 10, dailyLimit: 5, radiusMiles: 10, campaignId: "", campaignName: "Crieff roofers" };
+/** Widening off: these tests follow one discovery through every later step. Widening has its own tests. */
+const INPUT = { location: "Crieff", trades: ["Roofer"], target: 10, dailyLimit: 5, radiusMiles: 10, campaignId: "", campaignName: "Crieff roofers", widen: false };
 
 async function seedKnown() {
   // Already on the sheet: re-found, never re-added.
@@ -358,6 +365,13 @@ describe("the Find job", () => {
     assert.equal(progress.funnel.alreadyKnown, 1);
     assert.equal(progress.funnel.selected, 3);
     assert.deepEqual(progress.reconcileProblems, []);
+    // Every listing has one outcome: 5 returned = 1 chain refused + 1 already yours + 3 new.
+    assert.equal(progress.ledger.listings, 5);
+    assert.equal(progress.ledger.outcomes.invalid, 1);
+    assert.equal(progress.ledger.outcomes.in_database, 1);
+    assert.equal(progress.ledger.outcomes.accepted, 3);
+    assert.deepEqual(reconcileLedger(progress.ledger), []);
+    assert.equal(progress.diagnosis, null, "a run with someone to contact needs no diagnosis");
 
     // The email it found was written onto the lead.
     const roofing = leads.find((lead) => lead.businessName === "Strathearn Roofing")!;
@@ -444,18 +458,78 @@ describe("the Find job", () => {
     assert.equal(run?.status, "stopped");
   });
 
-  it("nothing new: done, with the reason; nothing at all: failed, with the reason", async () => {
+  it("nothing new is not Ready: it ends at de-duplication with the reason and every listing accounted for", async () => {
     await seedKnown();
     const calls = newCalls();
     const { job } = await jobs.createJob(db.sql, USER, { type: "find", input: INPUT });
     const known = await runToEnd(fakeDeps(calls, [LISTINGS[3]!]), job.id);
     assert.equal(known.status, "done");
-    assert.match((known.progress as FindProgress).detail, /none are new/);
+    const progress = known.progress as FindProgress;
+    assert.equal(progress.status, "empty");
+    assert.notEqual(progress.stage, "ready");
+    assert.ok(!progress.completed.includes("ready"));
+    assert.equal(progress.stage, "deduplicating");
+    assert.match(progress.detail, /already yours/);
+    assert.equal(progress.diagnosis?.stage, "deduplication");
+    assert.deepEqual(progress.diagnosis?.exhausted.map((row) => row.area), ["Crieff"]);
+    assert.equal(progress.ledger.outcomes.in_database, 1);
+    assert.deepEqual(reconcileLedger(progress.ledger), []);
+    const run = await outreach.loadRunRow(db.sql, USER, progress.runId);
+    assert.equal(run?.status, "empty");
+  });
 
+  it("nothing at all is not Ready either: it ends at discovery and says the sources came back empty", async () => {
     const empty = await jobs.createJob(db.sql, USER, { type: "find", input: INPUT });
     const none = await runToEnd(fakeDeps(newCalls(), []), empty.job.id);
-    assert.equal(none.status, "failed");
-    assert.match((none.progress as FindProgress).detail, /No roofer businesses found around Crieff/);
+    const progress = none.progress as FindProgress;
+    assert.equal(progress.status, "empty");
+    assert.equal(progress.diagnosis?.stage, "discovery");
+    assert.equal(progress.stage, "discovering");
+    assert.ok(progress.ledger.listings > 0, "the refused chain is still a listing");
+    assert.deepEqual(reconcileLedger(progress.ledger), []);
+  });
+
+  it("every source down: failed, saying nothing was searched", async () => {
+    const down = await jobs.createJob(db.sql, USER, { type: "find", input: INPUT });
+    const failed = await runToEnd(fakeDeps(newCalls(), [], true), down.job.id);
+    assert.equal(failed.status, "failed");
+    const progress = failed.progress as FindProgress;
+    assert.match(progress.detail, /every search failed/);
+    assert.equal(progress.ledger.searches[0]?.error.includes("503"), true);
+  });
+
+  it("short of its target, a run searches further afield — never a town it already searched", async () => {
+    const calls = newCalls();
+    const { job } = await jobs.createJob(db.sql, USER, { type: "find", input: { ...INPUT, widen: true } });
+    const done = await runToEnd(fakeDeps(calls), job.id);
+    assert.equal(done.status, "done", done.error);
+    assert.ok(calls.locations.length > 1, "it widened");
+    assert.equal(calls.locations[0], "Crieff");
+    assert.equal(new Set(calls.locations).size, calls.locations.length, `searched twice: ${calls.locations.join(", ")}`);
+    const progress = done.progress as FindProgress;
+    // The same three businesses come back from every town: duplicates, not new and not "known".
+    assert.equal(progress.ledger.outcomes.accepted, 4);
+    assert.equal(progress.ledger.outcomes.in_database, 0);
+    assert.ok(progress.ledger.duplicates.acrossAreas > 0);
+    assert.deepEqual(reconcileLedger(progress.ledger), []);
+    assert.ok(progress.log.some((event) => /further afield/.test(event.text)));
+  });
+
+  it("remembers what it searched: the next run starts somewhere new and rests a worked-out town", async () => {
+    await seedKnown();
+    const first = await jobs.createJob(db.sql, USER, { type: "find", input: { ...INPUT, location: "Perthshire", target: 8 } });
+    const calls1 = newCalls();
+    await runToEnd(fakeDeps(calls1, [LISTINGS[3]!]), first.job.id);
+    const rows = await db.sql.query<{ area_key: string; exhausted_until: unknown; searches: number }>(`select area_key, exhausted_until, searches from search_coverage where user_id = $1`, [USER]);
+    assert.equal(rows.length, calls1.locations.length);
+    assert.ok(rows.every((row) => row.exhausted_until), "every town that found only known businesses is rested");
+
+    const second = await jobs.createJob(db.sql, USER, { type: "find", input: { ...INPUT, location: "Perthshire", target: 8 } });
+    const calls2 = newCalls();
+    const done = await runToEnd(fakeDeps(calls2, [LISTINGS[3]!]), second.job.id);
+    const overlap = calls2.locations.filter((town) => calls1.locations.includes(town));
+    assert.deepEqual(overlap, [], "the second run did not repeat the first run's towns");
+    assert.ok((done.progress as FindProgress).log.some((event) => /left out \d+ towns searched recently/.test(event.text)));
   });
 
   it("enrich mode checks businesses you already have — no search, no drafts", async () => {

@@ -25,19 +25,24 @@ import { AUDITS_PER_DAY } from "../audit/findings.ts";
 import { websiteVerificationOf } from "../audit/website-state.ts";
 import { legalFormOf } from "../contactability/lead.ts";
 import type { CompanyCheckOutcome } from "../contactability/company-check.server.ts";
-import { autoContext, planTargets, searchBreadth, tradeBreadth } from "../outreach/auto-run.ts";
+import { autoContext, planTargets, searchBreadth } from "../outreach/auto-run.ts";
 import { clampCampaign, campaignProblem, newCampaign } from "../outreach/campaigns.ts";
 import { allowance } from "../outreach/limits.ts";
 import { effectiveProfile, scoringProfile } from "../outreach/profile.ts";
 import { sourceWeights } from "../feedback/quality.ts";
 import { log as slog } from "../log.server.ts";
 import { domainOf } from "../feedback/verdicts.ts";
-import { emptyFunnel, reconcileFunnel, tallyOutcomes, type RunFunnel } from "../outreach/run-funnel.ts";
+import { discoveryFromLedger, emptyFunnel, reconcileFunnel, tallyOutcomes, type RunFunnel } from "../outreach/run-funnel.ts";
+import { emptyLedger, reconcileLedger, type DiscoveryLedger } from "../discovery-ledger.ts";
+import { tradeKey } from "../discovery-coverage.ts";
+import { diagnoseRun, type RunDiagnosis, type SearchSuggestion } from "../run-diagnosis.ts";
+import { areaKey, planSearch, planWiden, rotateAreas, splitLocations, widenCandidates } from "../scotland-places.ts";
+import type { KnownBusiness } from "../prospect-pool.ts";
 import type { GeneratedRow, GenerateInput } from "../outreach/server.ts";
 import type { LeadWithFacts } from "../outreach/types.ts";
 import { scoreAll } from "../scoring/records.ts";
 import { absorbSearch, appendEvent, countChecks, finishLine, planSave, summarise, type SavePlan } from "./find-steps.ts";
-import { insertLeads, loadSheet, loadSheetLeads, patchLead } from "./lead-writes.server.ts";
+import { insertLeads, loadKnownBusinesses, loadSheetLeads, patchLead } from "./lead-writes.server.ts";
 import type { JobHandler, StepContext, StepResult } from "./runner.server.ts";
 import {
   emptyEnrichment,
@@ -70,6 +75,20 @@ export type FindState = {
   prospects: Prospect[];
   rediscovered: Prospect[];
   seen: string[];
+  /**
+   * Every new business an earlier trade (or round) of this run kept, as
+   * identities: a later trade that finds one again counts a duplicate within
+   * this search, never "already in your database".
+   */
+  inRun: KnownBusiness[];
+  /** Towns searched this run, per trade (`tradeKey` → `areaKey`s): never searched twice in one run. */
+  searched: Record<string, string[]>;
+  /** 0 = the places asked for; 1+ = widening rounds further afield. */
+  widenRound: number;
+  /** Towns reached by widening. */
+  widenedTo: string[];
+  /** Towns left out because a recent search found nothing new there. */
+  resting: string[];
   errors: string[];
   save: SavePlan | null;
   leadIds: string[];
@@ -121,6 +140,10 @@ const DRAFT_BATCH = 3;
 const COMPANY_RECHECK_DAYS = 90;
 const AUDIT_FRESH_DAYS = 30;
 const REDISCOVERED_MAX = 300;
+/** Identities kept for cross-trade duplicate checks; enough for any target. */
+const IN_RUN_MAX = 1200;
+/** Widening rounds a run may take when the places asked for are out of new businesses. */
+export const MAX_WIDEN_ROUNDS = 2;
 
 type Snapshot = { input: FindInput; state: FindState; progress: FindProgress };
 
@@ -146,12 +169,13 @@ export function sanitizeFindInput(raw: unknown, accountDailyLimit = 50): FindInp
     radiusMiles: num(source.radiusMiles, 25, 5, 50),
     campaignId: text(source.campaignId, 40),
     campaignName: text(source.campaignName, 60),
+    widen: source.widen !== false,
   };
 }
 
 export function findInputProblem(input: FindInput): string {
   if (input.mode === "enrich") return input.leadIds?.length ? "" : "Choose some businesses to check.";
-  if (input.location.length < 2) return "Choose an area.";
+  if (input.location.length < 2 || splitLocations(input.location).length === 0) return "Choose an area.";
   if (input.trades.length === 0) return "Choose at least one trade.";
   if (!input.campaignId && input.campaignName.length < 2) return "Name the campaign.";
   return "";
@@ -165,6 +189,8 @@ function initialProgress(input: FindInput, runId: string, now: Date): FindProgre
     detail: `Searching ${input.location} for ${input.trades.join(", ")}…`,
     progress: { done: 0, total: 0 },
     funnel: emptyFunnel(),
+    ledger: emptyLedger(),
+    diagnosis: null,
     enrichment: emptyEnrichment(),
     config: input,
     log: [],
@@ -223,7 +249,7 @@ async function persistRun(sql: Sql, userId: string, snap: Snapshot, status: stri
       errors: funnel.checkErrors + funnel.prepareFailed,
       bottleneck: "",
       summary: extra.summary ?? "",
-      funnel: JSON.stringify({ ...funnel, enrichment: progress.enrichment }),
+      funnel: JSON.stringify({ ...funnel, enrichment: progress.enrichment, ledger: progress.ledger, diagnosis: progress.diagnosis }),
       leadIds: state.leadIds,
       updatedAt: "",
     })
@@ -233,20 +259,23 @@ async function persistRun(sql: Sql, userId: string, snap: Snapshot, status: stri
 async function end(
   ctx: StepContext,
   snap: Snapshot,
-  status: "done" | "stopped" | "failed",
+  status: "done" | "empty" | "stopped" | "failed",
   text: string,
   result: FindResult | null,
 ): Promise<StepResult<FindState, FindProgress, FindResult | null>> {
   const finishedAt = new Date().toISOString();
-  const problems = reconcileFunnel(snap.progress.funnel);
+  const problems = [...reconcileFunnel(snap.progress.funnel), ...(snap.input.mode === "enrich" ? [] : reconcileLedger(snap.progress.ledger))];
   let progress = snap.progress;
-  if (problems.length > 0) progress = log(progress, `The run's numbers do not add up: ${problems.join("; ")}`, "bad");
+  if (problems.length > 0) {
+    progress = log(progress, `The run's numbers do not add up: ${problems.join("; ")}`, "bad");
+    slog.error("find_ledger_unreconciled", { userId: ctx.userId, jobId: ctx.jobId, problems });
+  }
   progress = log(
     {
       ...progress,
       status,
       stage: status === "done" ? "ready" : progress.stage,
-      completed: status === "done" ? [...FIND_STAGES] : progress.completed,
+      completed: status === "done" ? [...FIND_STAGES] : status === "empty" && progress.stage === "ready" ? FIND_STAGES.filter((stage) => stage !== "ready") : progress.completed,
       detail: text,
       finishedAt,
       result,
@@ -255,6 +284,7 @@ async function end(
     text,
     status === "done" ? "good" : status === "failed" ? "bad" : "warn",
   );
+  if (progress.diagnosis) for (const line of progress.diagnosis.details) progress = log(progress, line, "warn");
   const finished = { ...snap, progress };
   await persistRun(ctx.sql, ctx.userId, finished, status, { summary: text, finishedAt });
   const { store } = await stores();
@@ -264,7 +294,7 @@ async function end(
       type: "SEARCH_COMPLETED",
       result: status,
       reason: text,
-      metadata: JSON.stringify({ runId: snap.state.runId, found: progress.funnel.selected, prepared: progress.funnel.prepared }),
+      metadata: JSON.stringify({ runId: snap.state.runId, found: progress.funnel.selected, prepared: progress.funnel.prepared, outcome: status, stage: progress.diagnosis?.stage ?? "" }),
     })
     .catch(() => undefined);
   if (status === "failed") return { kind: "failed", state: snap.state, progress, error: text };
@@ -329,72 +359,185 @@ async function setup(ctx: StepContext, snap: Snapshot): Promise<Snapshot> {
   return next;
 }
 
+/** Where-to-look-next suggestions for a run that ran dry: unsearched towns nearby, and other trades you sell to. */
+async function suggestionsFor(ctx: StepContext, snap: Snapshot, configuredAreas: string[], profileTrades: string[]): Promise<SearchSuggestion[]> {
+  const { input, state } = snap;
+  const out: SearchSuggestion[] = [];
+  const { loadCoverage } = await import("../discovery-coverage.server.ts");
+  const candidates = widenCandidates(input.location, configuredAreas);
+  // A town is worth suggesting when, for every trade asked, it was neither
+  // searched in this run nor is resting after an empty search.
+  let open = candidates;
+  for (const trade of input.trades) {
+    const coverage = await loadCoverage(ctx.sql, ctx.userId, trade).catch(() => new Map());
+    const skip = new Set(state.searched[tradeKey(trade)] ?? []);
+    const { ordered } = rotateAreas(open, { coverage, skip });
+    const keep = new Set(ordered.map(areaKey));
+    open = open.filter((town) => keep.has(areaKey(town)));
+  }
+  if (open.length > 0) {
+    out.push({ location: open.slice(0, 4).join(", "), trades: [...input.trades], why: `Not yet searched for ${input.trades.join(", ").toLowerCase()}` });
+    if (open.length > 4) out.push({ location: open.slice(4, 8).join(", "), trades: [...input.trades], why: "Further out, also not yet searched" });
+  }
+  const asked = new Set(input.trades.map(tradeKey));
+  const others = profileTrades.filter((trade) => !asked.has(tradeKey(trade))).slice(0, 3);
+  if (others.length > 0) out.push({ location: input.location, trades: others, why: "Other trades you sell to, not searched in this run" });
+  return out.slice(0, 4);
+}
+
+/** Should the run look further afield? Only when it is short, may widen, and widening can reach somewhere new. */
+function shouldWiden(snap: Snapshot): boolean {
+  const { input, state } = snap;
+  if (input.widen === false || state.widenRound >= MAX_WIDEN_ROUNDS) return false;
+  if (state.prospects.length >= searchBreadth(input.target)) return false;
+  // Every search failing means the sources are down: more towns cannot help.
+  const rows = snap.progress.ledger.searches;
+  return rows.length === 0 || rows.some((row) => !row.error);
+}
+
 async function discover(ctx: StepContext, snap: Snapshot, deps: FindDeps): Promise<Snapshot> {
   const { input } = snap;
   const trade = input.trades[snap.state.tradeIndex]!;
-  const sheet = await loadSheet(ctx.sql, ctx.userId);
+  const tkey = tradeKey(trade);
+  const sheet = await loadKnownBusinesses(ctx.sql, ctx.userId);
   // Businesses you rejected stay out, even after you removed them; and the
   // sources whose results you keep rejecting rank lower (feedback/quality.ts).
   const feedback = await import("../feedback/store.server.ts");
-  const [rejected, marks] = await Promise.all([
+  const coverageStore = await import("../discovery-coverage.server.ts");
+  const [rejected, marks, coverage] = await Promise.all([
     feedback.rejectedIdentities(ctx.sql, ctx.userId).catch(() => []),
     feedback.loadFeedback(ctx.sql, ctx.userId).catch(() => []),
+    coverageStore.loadCoverage(ctx.sql, ctx.userId, trade).catch(() => new Map()),
   ]);
-  const known = [...sheet, ...rejected];
-  const suppressed = sheet.filter((lead) => lead.unsubscribed.trim());
-  const contacted = sheet.filter((lead) => lead.lastEmailedAt.trim());
-  const funnel: RunFunnel = { ...snap.progress.funnel };
-  const started = Date.now();
-  const perTrade = tradeBreadth(searchBreadth(input.target), input.trades.length);
-  const search = await runPlannedSearch({
-    location: input.location,
-    businessType: trade,
-    limit: perTrade,
-    known: [...known, ...snap.state.prospects],
-    suppressed,
-    contacted,
-    sourceWeights: sourceWeights(marks),
-    concurrency: 2,
-    shouldCancel: () => Date.now() - started > DISCOVERY_STEP_MAX_MS,
-    research: (query) => deps.research({ location: query.location, businessType: query.businessType, limit: query.limit, radiusMiles: input.radiusMiles }, ctx.userId),
-  });
-  // What each source gave, so a failing or empty source is visible in the logs.
-  const ids = { userId: ctx.userId, jobId: ctx.jobId, trade, location: input.location };
-  slog.info("discovery_search", { ...ids, areas: search.funnel.areas, raw: search.funnel.rawTotal, rawBySource: search.funnel.rawBySource, newCandidates: search.pool.newCandidates, errors: search.errors.length });
-  for (const error of search.errors.slice(0, 5)) slog.warn("discovery_source_failed", { ...ids, error });
-  if (search.funnel.queriesSent > 0) {
-    for (const [source, rows] of Object.entries(search.funnel.rawBySource)) if (rows === 0) slog.info("discovery_zero_yield_source", { ...ids, source });
+  // Each list is checked in turn — suppressed, then contacted, then the rest
+  // of the sheet — and only a certain match ("same") excludes a business.
+  const suppressed: KnownBusiness[] = [...sheet.filter((lead) => lead.unsubscribed.trim()), ...rejected];
+  const contacted: KnownBusiness[] = sheet.filter((lead) => lead.lastEmailedAt.trim() || (lead.called && lead.called !== "Not Called"));
+  const known: KnownBusiness[] = sheet;
+
+  // The run's target is shared by the trades left in this round, and whatever
+  // an earlier trade did not use passes on to the next.
+  const wanted = Math.max(0, searchBreadth(input.target) - snap.state.prospects.length);
+  const tradesLeft = Math.max(1, input.trades.length - snap.state.tradeIndex);
+  const perTrade = Math.max(6, Math.ceil(wanted / tradesLeft));
+  const skip = new Set(snap.state.searched[tkey] ?? []);
+  let configured: string[] = [];
+  if (snap.state.widenRound > 0) {
+    const { store } = await stores();
+    const profile = await store.loadProfile(ctx.sql, ctx.userId).catch(() => null);
+    configured = (profile?.targetAreas ?? "").split(",").map((area: string) => area.trim()).filter(Boolean);
   }
-  const seen = new Set(snap.state.seen);
-  const { added, rediscovered } = absorbSearch(funnel, search, seen);
-  let progress = { ...snap.progress, funnel };
-  progress = log(progress, `${trade}: ${search.funnel.rawTotal} listings, ${added.length} new.`);
-  if (search.cancelled) progress = log(progress, `${trade}: stopped after ${search.funnel.areas} areas to keep the run moving; the rest can be searched in another run.`, "warn");
-  const state: FindState = {
-    ...snap.state,
-    tradeIndex: snap.state.tradeIndex + 1,
-    prospects: [...snap.state.prospects, ...added],
-    rediscovered: [...snap.state.rediscovered, ...rediscovered].slice(0, REDISCOVERED_MAX),
-    seen: [...seen],
-    errors: [...new Set([...snap.state.errors, ...search.errors])].slice(0, 20),
-  };
+  const plan =
+    snap.state.widenRound > 0
+      ? planWiden(input.location, perTrade, configured, { radiusMiles: input.radiusMiles, coverage, skip })
+      : planSearch(input.location, perTrade, { radiusMiles: input.radiusMiles, coverage, skip });
+
+  let progress = { ...snap.progress };
+  const funnel: RunFunnel = { ...snap.progress.funnel };
+  const searched = { ...snap.state.searched, [tkey]: [...skip, ...plan.areas.map((area) => areaKey(area.name))] };
+  let state: FindState = { ...snap.state, searched, resting: [...new Set([...snap.state.resting, ...plan.restingAreas])].slice(0, 40) };
+  if (plan.restingAreas.length > 0) {
+    progress = log(progress, `${trade}: left out ${plan.restingAreas.length} towns searched recently with nothing new (${plan.restingAreas.slice(0, 5).join(", ")}${plan.restingAreas.length > 5 ? "…" : ""}).`);
+  }
+
+  if (plan.areas.length > 0) {
+    const started = Date.now();
+    const search = await runPlannedSearch({
+      location: input.location,
+      businessType: trade,
+      limit: perTrade,
+      plan,
+      known,
+      suppressed,
+      contacted,
+      inRun: snap.state.inRun,
+      sourceWeights: sourceWeights(marks),
+      concurrency: 2,
+      shouldCancel: () => Date.now() - started > DISCOVERY_STEP_MAX_MS,
+      research: (query) =>
+        deps.research(
+          {
+            location: query.location,
+            businessType: query.businessType,
+            limit: query.limit,
+            radiusMiles: query.radiusMiles ?? input.radiusMiles,
+            ...(query.chTowns ? { chTowns: query.chTowns } : {}),
+            variant: query.variant ?? 0,
+          },
+          ctx.userId,
+        ),
+    });
+    await coverageStore.recordCoverage(ctx.sql, ctx.userId, search.ledger.searches).catch((error: unknown) => slog.warn("coverage_not_saved", { userId: ctx.userId, jobId: ctx.jobId, error }));
+    // What each source gave, so a failing or empty source is visible in the logs.
+    const ids = { userId: ctx.userId, jobId: ctx.jobId, trade, location: input.location, round: snap.state.widenRound };
+    slog.info("discovery_search", { ...ids, areas: search.funnel.areas, listings: search.ledger.listings, outcomes: search.ledger.outcomes, rawBySource: search.funnel.rawBySource, errors: search.errors.length });
+    for (const error of search.errors.slice(0, 5)) slog.warn("discovery_source_failed", { ...ids, error });
+    if (search.funnel.queriesSent > 0) {
+      for (const [source, rows] of Object.entries(search.funnel.rawBySource)) if (rows === 0) slog.info("discovery_zero_yield_source", { ...ids, source });
+    }
+    const seen = new Set(snap.state.seen);
+    const absorbed = absorbSearch(snap.progress.ledger, search, seen);
+    discoveryFromLedger(funnel, absorbed.ledger);
+    const o = search.ledger.outcomes;
+    const fresh = o.accepted + o.beyond_target;
+    progress = log(
+      { ...progress, ledger: absorbed.ledger, funnel },
+      `${trade}${snap.state.widenRound ? " (further afield)" : ""}: ${search.ledger.listings} listings in ${search.ledger.searches.length} searches → ${fresh} new` +
+        ` · ${o.in_database} already yours · ${o.contacted} contacted · ${o.suppressed} opted out or rejected · ${o.needs_review} to check · ${o.duplicate_in_search} repeats · ${o.invalid} not businesses in the trade.`,
+      fresh > 0 ? "info" : "warn",
+    );
+    if (search.cancelled) progress = log(progress, `${trade}: stopped after ${search.funnel.areas} areas to keep the run moving; the rest can be searched in another run.`, "warn");
+    const keptIds: KnownBusiness[] = search.kept.map((item) => ({ businessName: item.businessName, town: item.town, phone: item.phone, mapsLink: "", website: item.website, email: item.email, placeId: item.placeId, address: item.address, sourceIds: item.sourceIds }));
+    state = {
+      ...state,
+      prospects: [...state.prospects, ...absorbed.added],
+      rediscovered: [...state.rediscovered, ...absorbed.rediscovered].slice(0, REDISCOVERED_MAX),
+      seen: [...seen],
+      inRun: [...state.inRun, ...keptIds].slice(0, IN_RUN_MAX),
+      errors: [...new Set([...state.errors, ...search.errors])].slice(0, 20),
+      widenedTo: snap.state.widenRound > 0 ? [...new Set([...state.widenedTo, ...plan.areas.map((area) => area.name)])].slice(0, 40) : state.widenedTo,
+    };
+  } else {
+    progress = log(progress, `${trade}${snap.state.widenRound ? " (further afield)" : ""}: no town left that has not been searched recently.`, "warn");
+  }
+
+  state = { ...state, tradeIndex: state.tradeIndex + 1 };
+  const snapNext: Snapshot = { ...snap, state, progress };
   if (state.tradeIndex < input.trades.length) {
-    return { ...snap, state, progress: at(progress, "discover", `Searching for ${input.trades[state.tradeIndex]}…`, state.tradeIndex, input.trades.length) };
+    return { ...snapNext, progress: at(progress, "discover", `Searching for ${input.trades[state.tradeIndex]}…`, state.tradeIndex, input.trades.length) };
+  }
+  if (shouldWiden(snapNext)) {
+    const round = state.widenRound + 1;
+    const short = searchBreadth(input.target) - state.prospects.length;
+    progress = log(
+      progress,
+      state.prospects.length === 0
+        ? `Nothing new around ${input.location} — searching further afield (round ${round} of ${MAX_WIDEN_ROUNDS}).`
+        : `${short} short of your target — searching further afield (round ${round} of ${MAX_WIDEN_ROUNDS}).`,
+      "warn",
+    );
+    return { ...snapNext, state: { ...state, tradeIndex: 0, widenRound: round }, progress: at(progress, "discover", `Searching further afield for ${input.trades[0]}…`, 0, input.trades.length) };
   }
   for (const problem of state.errors.slice(0, 3)) progress = log(progress, friendlyServerError(new Error(problem)), "warn");
-  return { ...snap, state: { ...state, step: "plan_save" }, progress: at(progress, "plan_save", `${funnel.unique} unique businesses → ${state.prospects.length} new to you`) };
+  return {
+    ...snapNext,
+    state: { ...state, step: "plan_save" },
+    progress: at(progress, "plan_save", `${funnel.rawFound} listings → ${funnel.unique} distinct businesses → ${state.prospects.length} new to you`),
+  };
 }
 
 async function planSaveStep(ctx: StepContext, snap: Snapshot): Promise<Snapshot> {
-  const sheet = await loadSheet(ctx.sql, ctx.userId);
+  const sheet = await loadKnownBusinesses(ctx.sql, ctx.userId);
   const funnel: RunFunnel = { ...snap.progress.funnel };
-  const save = planSave(funnel, snap.state.prospects, snap.state.rediscovered, sheet, new Date().toISOString());
+  const ledger: DiscoveryLedger = structuredClone(snap.progress.ledger);
+  const save = planSave(ledger, snap.state.prospects, snap.state.rediscovered, sheet, new Date().toISOString());
+  discoveryFromLedger(funnel, ledger);
   // The plan (with the new leads' ids) is checkpointed before anything is
   // written, so a repeat of the write step writes the same rows.
   return {
     ...snap,
-    state: { ...snap.state, step: "write", save, leadIds: save.ids, prospects: [], rediscovered: [] },
-    progress: at({ ...snap.progress, funnel }, "write", `Saving ${save.fresh.length} new prospects…`),
+    state: { ...snap.state, step: "write", save, leadIds: save.ids, prospects: [], rediscovered: [], inRun: [] },
+    progress: at({ ...snap.progress, funnel, ledger }, "write", `Saving ${save.fresh.length} new prospects…`),
   };
 }
 
@@ -696,11 +839,48 @@ async function finishStep(ctx: StepContext, snap: Snapshot) {
   const progress = { ...snap.progress, funnel };
   const done = { ...snap, progress };
   const summary = snap.state.summary;
-  const line =
-    snap.input.mode === "enrich"
-      ? `Checked ${snap.state.leadIds.length} businesses — ${summary?.strong ?? 0} strong, ${funnel.eligible} can be emailed, ${summary?.callReady ?? 0} to call.`
-      : finishLine(funnel, summary?.callReady ?? 0);
-  return end(ctx, done, "done", line, resultOf(snap.state, progress));
+  if (snap.input.mode === "enrich") {
+    const line = `Checked ${snap.state.leadIds.length} businesses — ${summary?.strong ?? 0} strong, ${funnel.eligible} can be emailed, ${summary?.callReady ?? 0} to call.`;
+    return end(ctx, done, "done", line, resultOf(snap.state, progress));
+  }
+  // New businesses were saved, but if none can be emailed, rung or checked,
+  // the run has nothing for you to act on: it says why rather than "Ready".
+  const actionable = funnel.prepared + funnel.eligible + (summary?.callReady ?? funnel.call) + (summary?.review ?? funnel.manualReview);
+  if (actionable === 0) {
+    const diagnosis = await diagnosisFor(ctx, done);
+    if (diagnosis) {
+      const flagged = { ...done, progress: { ...done.progress, diagnosis } };
+      return end(ctx, flagged, "empty", diagnosis.headline, resultOf(snap.state, progress));
+    }
+  }
+  return end(ctx, done, "done", finishLine(funnel, summary?.callReady ?? 0), resultOf(snap.state, progress));
+}
+
+async function profileLists(ctx: StepContext): Promise<{ areas: string[]; trades: string[] }> {
+  const { store } = await stores();
+  const profile = await store.loadProfile(ctx.sql, ctx.userId).catch(() => null);
+  const list = (text: string | undefined) => (text ?? "").split(",").map((item) => item.trim()).filter(Boolean);
+  return { areas: list(profile?.targetAreas), trades: [...new Set([...list(profile?.preferredTrades), ...list(profile?.targetTrades)])] };
+}
+
+async function diagnosisFor(ctx: StepContext, snap: Snapshot): Promise<RunDiagnosis | null> {
+  const diagnosis = diagnoseRun(snap.progress.ledger, snap.progress.funnel, { location: snap.input.location, trades: snap.input.trades, widenedTo: snap.state.widenedTo });
+  if (!diagnosis) return null;
+  const { areas, trades } = await profileLists(ctx);
+  diagnosis.suggestions = await suggestionsFor(ctx, snap, areas, trades).catch(() => []);
+  return diagnosis;
+}
+
+/** A discovery that found nothing new: ends at the stage that lost it, with the reason and the next searches. */
+async function endEmpty(ctx: StepContext, snap: Snapshot): Promise<StepResult<FindState, FindProgress, FindResult | null>> {
+  const diagnosis = await diagnosisFor(ctx, snap);
+  const ledger = snap.progress.ledger;
+  const sourcesDown = ledger.listings === 0 && ledger.searches.length > 0 && ledger.searches.every((row) => row.error);
+  const step: Step = diagnosis?.stage === "deduplication" ? "plan_save" : "discover";
+  const why = diagnosis?.headline ?? `No new ${snap.input.trades.join(", ").toLowerCase()} businesses found around ${snap.input.location}.`;
+  const ended = { ...snap, progress: at({ ...snap.progress, diagnosis }, step, why) };
+  // Sources that never answered are a failure; an area worked out is an empty result.
+  return end(ctx, ended, sourcesDown ? "failed" : "empty", why, null);
 }
 
 /** Stopped by a person: say how far it got, keep everything it made. */
@@ -737,6 +917,11 @@ export function findHandler(deps: FindDeps): JobHandler<FindInput, FindState, Fi
           prospects: [],
           rediscovered: [],
           seen: [],
+          inRun: [],
+          searched: {},
+          widenRound: 0,
+          widenedTo: [],
+          resting: [],
           errors: [],
           save: null,
           leadIds: enrich ? (input.leadIds ?? []) : [],
@@ -771,16 +956,10 @@ export function findHandler(deps: FindDeps): JobHandler<FindInput, FindState, Fi
         case "discover":
           next = await discover(ctx, snap, deps);
           if (next.state.step === "plan_save" && next.state.prospects.length === 0) {
-            const funnel = next.progress.funnel;
-            const why =
-              funnel.rawFound === 0
-                ? next.state.errors[0]
-                  ? friendlyServerError(new Error(next.state.errors[0]))
-                  : `No ${snap.input.trades.join(", ").toLowerCase()} businesses found around ${snap.input.location}.`
-                : `Found ${funnel.rawFound} listings, but none are new — every one is already on your sheet, contacted or opted out.`;
-            // It ended in discovery: say so, rather than ticking discovery off.
-            const ended = { ...next, progress: at(next.progress, "discover", why) };
-            return end(ctx, ended, funnel.rawFound === 0 ? "failed" : "done", why, null);
+            // Nothing new to save. This is not a finished run with results:
+            // say which stage lost everything, what was searched, and where to
+            // look next — and stop at that stage rather than ticking it off.
+            return endEmpty(ctx, next);
           }
           break;
         case "plan_save":

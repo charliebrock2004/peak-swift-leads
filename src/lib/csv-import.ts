@@ -13,13 +13,13 @@
  * - Nothing is written until the plan has been reviewed, and every row's verdict
  *   (new / merge / skip) is visible before that.
  */
+import { findDuplicate, type MatchVia } from "./identity-index.ts";
 import {
   CALLED_OPTIONS,
   CALL_RESULT_OPTIONS,
   WEBSITE_STATUS_OPTIONS,
   classifyWebsiteUrl,
   createLead,
-  findDuplicate,
   hasWebsite,
   parseNumberInput,
   type CallResult,
@@ -297,7 +297,7 @@ export type ImportEntry = {
   draft: ImportDraft;
   /** The lead this row already exists as, if any. */
   existing: Lead | null;
-  matchedVia: "place" | "phone" | "email" | "website" | "maps" | "name" | "name+town" | null;
+  matchedVia: MatchVia | null;
   /** Fields a merge would fill in on the existing lead. Empty means nothing to do. */
   fills: ImportField[];
   action: ImportAction;
@@ -380,6 +380,10 @@ export function planImport(rows: string[][], map: (ImportField | null)[], existi
         town: draft.town ?? "",
         phone: draft.phone ?? "",
         mapsLink: draft.mapsLink ?? "",
+        website: draft.website ?? "",
+        email: draft.email ?? "",
+        address: draft.address ?? "",
+        placeId: draft.placeId ?? "",
       },
       known,
     );

@@ -87,7 +87,7 @@ export async function loadFeedback(sql: Sql, userId: string): Promise<FeedbackRo
  */
 export async function rejectedIdentities(sql: Sql, userId: string) {
   const rows = await sql.query<Record<string, unknown>>(
-    `select l.id, l.business_name, l.town, l.phone, l.website, l.place_id, l.address, l.email, l.maps_link
+    `select l.id, l.business_name, l.town, l.phone, l.website, l.place_id, l.address, l.email, l.maps_link, l.company_number
        from leads l
       where l.user_id = $1
         and exists (select 1 from prospect_feedback f where f.user_id = l.user_id and f.lead_id = l.id and f.verdict = any($2::text[]))
@@ -104,5 +104,6 @@ export async function rejectedIdentities(sql: Sql, userId: string) {
     address: String(row.address ?? ""),
     email: String(row.email ?? ""),
     mapsLink: String(row.maps_link ?? ""),
+    companyNumber: String(row.company_number ?? "").trim().toUpperCase(),
   }));
 }
